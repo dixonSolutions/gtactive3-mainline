@@ -88,17 +88,40 @@ reboot [download|recovery|normal]. pstore: `/sys/fs/pstore/console-ramoops-0`.
 | Backlight (DSIM DCS 0x51, both links) | driver accepts 0..3977; visual confirmation pending |
 | TMU thermal (8 zones) | works |
 | ACPM + S2MPS18 read-only (45 regulators, PMIC ID 0x09) | works |
-| MAX77705 charger + fuel gauge (simple-mfd-i2c) + hwmon | works; **init caps charge current at 1.5 A** (no battery NTC yet) |
-| Panfrost (Mali-G72 0x6221 r0p1) | probes, runs null/WRITE_VALUE jobs; timestamp job DATA_INVALID (test only); GPU power-domain link dropped while CONFIG_PM=n |
-| Touch (SPI21: CMU_CHUB + USI + spi-s3c64xx, Himax HX83102E) | SPI works, **chip ID reads 0** (ideas: sense-off before the ID read like stock, lower SPI rate, TSP power/reset sequence from the T570 GPL himax_83102E driver) |
+| MAX77705 charger + fuel gauge (simple-mfd-i2c) + hwmon | works; **USB-C/BC1.2 input detection** (max77705_usbc_psy, drv/power) feeds the charger's input limit (SDP 475 mA on the laptop port: the battery drains ~50-130 mA under load, watch it); driver caps fast charge at 1.5 A; battery temp 29.5 °C reads |
+| Panfrost (Mali-G72 0x6221 r0p1) | probes, runs jobs; GPU power-domain link dropped while CONFIG_PM=n |
+| UFS DMA | **must be 32-bit** (EXYNOS_UFS_OPT_DMA_32BIT): with buffers above 4 GiB every transfer is a System Bus Fatal Error; this hung the first Duranium boot |
+| Wi-Fi (BCM4375 B1, PCIe ch0) | **works**: PCIe Gen2 x1 link, [14e4:4475], brcmfmac fw 18.41.117, wlan0 scans 2.4+5 GHz. Connect test needs the laptop's network: `scripts/wifi-push-creds` (user runs it; passphrase never printed), then `scripts/wifi-test connect` |
+| Bluetooth (BCM4375 on UART_BT) | **works**: hci0, BCM4375B1 SEMCO, patch RAM build 0171 |
+| Audio (A-Box + RT5665 + RT5510) | card registers, headset jack input, both PCMs stream (pcm-tone, 48 kHz); audibility not yet confirmed by a human |
+| S Pen (Wacom W9019, HSI2C_23) | **works**: input "Wacom W9019 Digitizer" 17222x10764 |
+| NFC (S3FWRN5, HSI2C_20) | nfc0 registers (load rfkill first); NCI init untested |
+| Vibrator, flash LED (RT8547), hall sensor | drivers bind; hall polarity correct (open = 1) |
+| Grip sensor (A96T3x6, HSI2C_34) | bus now 100 kHz (10 kHz could not be divided); needs S2MPS18 LDO40 (read-only PMIC) |
+| SM5504 pogo MUIC | probe fails: no USB role switch on dwc3 yet |
+| Touch (SPI21, Himax HX83102E) | **chip detected (ID 83102e)** after byte-wide bus access + burst like Samsung's driver; IRQ fires; idle frames fail the plain checksum, needs a real finger test |
 | Keys | Home/Back/Recent/Power/Vol+ work. **Vol− and Active: gpa0-4/5 never change level even when held** (user confirmed) → wired elsewhere on hw_rev 4 |
-| Big cores, clk driver, Wi-Fi (BCM4375 B1, PCIe), BT, audio (ABOX), pen, NFC, sensors, cameras | branches exist (build/wt/<track>, drv/<track>), untested |
+| Big cores, cameras, sensors (BCM4773 hub), GPS, fingerprint | not done (cameras/sensors/FP blocked, see docs/re locally) |
 
 Kernel branches: `src/linux` `gtactive3wifi` = live-tested; `integ` =
 integration. Driver worktrees: `build/wt/{touch,power,cpu,wifi,audio,gpu,misc,...}`
 (branch `drv/<track>`). Previous agent reports: `build/team/prev-*.json`.
 
-## Boot chain to Duranium (in progress: critical path)
+## Boot chain to Duranium
+
+**2026-10-21 20:51: the full chain booted Duranium** (S-Boot -> uniLoader ->
+U-Boot -> systemd-boot -> UKI, postmarketOS kernel, verity /usr; the debug
+console on port 23 answered inside it). It then hung in the initrd on UFS
+DMA above 4 GiB (fixed in the kernel, image rebuild pending at the time of
+writing). Loop protection is in place and tested:
+- uniLoader: record stage 4 (jumped) on entry -> fallback Linux once; U-Boot
+  sets stage 7 in board_quiesce_devices() at the OS handover.
+- To leave a hung Duranium: `scripts/tab "poke 0x8ff1ff04c 4"` then
+  `scripts/tab "write /proc/sysrq-trigger b"` (console reboot calls sync(),
+  which hangs if the disk does). The next run boots the fallback Linux.
+- devd.sh: same image back in Download mode 3x in 3 min -> boot-good.img.
+
+(History below.)
 
 uniLoader **dual payload** (`build/wt/uniloader`, branch `drv/chainload`) +
 U-Boot (`build/wt/u-boot`, branch `drv/chainload`), packed by
