@@ -47,8 +47,12 @@ scan() {
 
 connect() {
 	echo "== connect"
-	t "cat /etc/wpa_supplicant.conf" >/dev/null 2>&1 ||
-		{ echo "no /etc/wpa_supplicant.conf: run scripts/wifi-push-creds first"; return 1; }
+	if ! t "ls /etc" | grep -qx wpa_supplicant.conf; then
+		[ -e "$P/build/secrets/wpa_supplicant.conf" ] ||
+			{ echo "no Wi-Fi network: run scripts/wifi-push-creds first"; return 1; }
+		flock "$P/build/tab.lock" "$P/scripts/tab-put" \
+			"$P/build/secrets/wpa_supplicant.conf" /etc/wpa_supplicant.conf >/dev/null
+	fi
 	t "run /sbin/wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211"
 	for i in $(seq 1 15); do
 		t "run /sbin/wpa_cli -i wlan0 status" | grep -q "wpa_state=COMPLETED" && break

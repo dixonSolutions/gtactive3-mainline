@@ -623,6 +623,27 @@ static void serve(int c)
 				snprintf(ob, sizeof(ob), "%08lx %s\n", a + 4 * k, b);
 				wr(c, ob);
 			}
+		} else if (!strncmp(line, "memcat ", 7)) {
+			/* memcat ADDR LEN: LEN raw bytes of physical memory (e.g. the framebuffer) */
+			static char mb[65536];
+			const char *e;
+			unsigned long a = parse_num(line + 7, &e);
+			unsigned long nn = parse_num(e, 0);
+			int fd = open("/dev/mem", O_RDONLY | O_SYNC);
+
+			if (fd < 0 || lseek(fd, a, SEEK_SET) == (off_t)-1) {
+				wr(c, "error\n");
+			} else {
+				while (nn) {
+					r = read(fd, mb, nn < sizeof(mb) ? nn : sizeof(mb));
+					if (r <= 0)
+						break;
+					write(c, mb, r);
+					nn -= r;
+				}
+			}
+			if (fd >= 0)
+				close(fd);
 		} else if (!strncmp(line, "poke ", 5)) {
 			const char *e;
 			unsigned long a = parse_num(line + 5, &e);
@@ -922,8 +943,9 @@ int main(void)
 	load_module("/lib/modules/sec-core.ko");
 	load_module("/lib/modules/sec-acpm.ko");
 	load_module("/lib/modules/s2mps11.ko");
-	load_module("/lib/modules/regmap-i2c.ko");
 	load_module("/lib/modules/max77705.ko");
+	/* USB-C/BC1.2 input detection: the charger's input supplier */
+	load_module("/lib/modules/max77705_usbc_psy.ko");
 	load_module("/lib/modules/max77705_charger.ko");
 	load_module("/lib/modules/simple-mfd-i2c.ko");
 	load_module("/lib/modules/max77705-hwmon.ko");

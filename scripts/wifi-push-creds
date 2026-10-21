@@ -9,6 +9,8 @@
 # scripts/wifi-test). On Duranium (gta3-console on port 23 as well) pass
 # --nm to write a NetworkManager keyfile to
 # /etc/NetworkManager/system-connections/ instead.
+# Both forms are also cached in build/secrets/ (0600, gitignored, never
+# printed) so later tests can push them again after a reflash.
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 NM=0
@@ -56,6 +58,9 @@ else
 	REMOTE="/etc/NetworkManager/system-connections/$SSID.nmconnection"
 fi
 unset PSK
+mkdir -p -m 700 "$P/build/secrets"
+if [ $NM = 0 ]; then cp "$T" "$P/build/secrets/wpa_supplicant.conf"
+else cp "$T" "$P/build/secrets/wifi.nmconnection"; fi
 flock "$P/build/tab.lock" "$P/scripts/tab-put" "$T" "$REMOTE" >/dev/null
 if [ $NM = 1 ]; then
 	# NetworkManager ignores keyfiles that others can read
