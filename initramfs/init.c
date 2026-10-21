@@ -21,6 +21,7 @@
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
 #include <linux/watchdog.h>
+#include <linux/fs.h>
 
 #define PMU_BASE	0x14060000UL
 #define PMU_INFORM2	0x0808
@@ -576,6 +577,37 @@ static void serve(int c)
 			unsigned long a = parse_num(line + 5, 0);
 			if (peek(a, &v)) wr(c, "error\n");
 			else { hex32(b, v); wr(c, b); wr(c, "\n"); }
+		} else if (!strncmp(line, "discard ", 8)) {
+			/*
+			 * discard DEV: UFS unmap of a whole partition. Only the
+			 * Android partitions the user approved wiping (metadata,
+			 * super, cache, userdata); never EFS/param/persistent/
+			 * bootloaders.
+			 */
+			static const char *const ok_devs[] = {
+				"/dev/sda24", "/dev/sda25", "/dev/sda28", "/dev/sda31",
+			};
+			unsigned long long range[2] = { 0, 0 };
+			char ob[96];
+			int k, allowed = 0, fd;
+
+			for (k = 0; k < 4; k++)
+				if (!strcmp(line + 8, ok_devs[k]))
+					allowed = 1;
+			if (!allowed) {
+				wr(c, "discard: not an approved partition\n");
+			} else if ((fd = open(line + 8, O_RDWR)) < 0) {
+				wr(c, "error\n");
+			} else {
+				if (ioctl(fd, BLKGETSIZE64, &range[1]) < 0 ||
+				    ioctl(fd, BLKDISCARD, range) < 0) {
+					wr(c, "discard failed\n");
+				} else {
+					snprintf(ob, sizeof(ob), "discarded %llu bytes\n", range[1]);
+					wr(c, ob);
+				}
+				close(fd);
+			}
 		} else if (!strcmp(line, "ulog")) {
 			ulog_print(c);
 		} else if (!strncmp(line, "dump ", 5)) {
