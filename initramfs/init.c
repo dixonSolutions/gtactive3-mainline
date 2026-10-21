@@ -835,6 +835,7 @@ static const char *keyname(int code)
 	}
 }
 
+#ifndef CONSOLE_STDIO
 int main(void)
 {
 	char udc[64] = "", path[128];
@@ -1028,3 +1029,16 @@ int main(void)
 	}
 	return 0;
 }
+#else
+/*
+ * The same debug console as a standalone program for the booted system
+ * (Duranium): systemd accepts the TCP connection (Accept=yes) and hands it
+ * over on stdin/stdout, so the host tools (scripts/tab, tab-get, tab-put)
+ * work unchanged.
+ */
+int main(void)
+{
+	serve(0);
+	return 0;
+}
+#endif /* CONSOLE_STDIO */
