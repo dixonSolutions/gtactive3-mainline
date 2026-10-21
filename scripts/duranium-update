@@ -110,6 +110,21 @@ VSZ=$(echo "$PARTS" | awk -v n="$TV" '$1 == n { print $5 }')
 [ "$ULEN" -le "$USZ" ] && [ "$VLEN" -le "$VSZ" ] || die "images larger than the target partitions"
 log "inactive slot: usr $TU, verity $TV (booted: $CU / $CV)"
 
+# The UKI of the version that lived in the inactive slot is about to point at
+# a partition being rewritten: retire it before writing (never the booted
+# version's UKI, which stays as the fallback).
+OLDV=$(echo "$PARTS" | awk -v n="$TU" '$1 == n { print $2 }' | sed -n 's/^duranium_\([0-9]*\)_usr$/\1/p')
+BOOTV=$(echo "$PARTS" | awk -v u="$CU" '$4 == u { print $2 }' | sed -n 's/^duranium_\([0-9]*\)_usr$/\1/p')
+if [ -n "$OLDV" ] && [ "$OLDV" != "$BOOTV" ] && [ "$OLDV" != "$V" ]; then
+	ESP0=$(echo "$PARTS" | awk '$3 == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" { print $1 }')
+	[ "$(echo "$ESP0" | wc -w)" = 1 ] || die "expected one ESP, got '$ESP0'"
+	log "retiring the $OLDV boot entry (its slot is rewritten now; booted: $BOOTV)"
+	trun retire "set -e
+E=/run/upd-esp; mkdir -p \$E; mountpoint -q \$E || mount -t vfat /dev/$ESP0 \$E
+rm -f \$E/EFI/Linux/${NAME}_${OLDV}.efi \$E/EFI/Linux/${NAME}_${OLDV}+*.efi
+sync; ls \$E/EFI/Linux; umount \$E"
+fi
+
 IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
 [ -n "$IFC" ] || die "tablet USB network not present"
 send() { # local remote len
