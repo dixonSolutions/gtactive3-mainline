@@ -1,7 +1,7 @@
 #!/bin/bash
 # Boot the current Duranium build on the tablet, unattended:
-#   1. (unless --no-install) write the image into sda31 over the bring-up
-#      console and verify it
+#   1. only with --wipe-user-data: write the image into sda31 over the
+#      bring-up console (this ERASES the user's Duranium data)
 #   2. clear uniLoader's record (stage 3), flash the chain image
 #      (uniLoader -> U-Boot -> systemd-boot -> UKI) through devd
 #   3. put boot-good.img back as what devd flashes, so any later Download
@@ -9,7 +9,7 @@
 #   4. wait for the Duranium debug console (TCP 23) and check in, which
 #      stops the dev image's dead-man reboot
 #
-#   scripts/duranium-boot [--no-install]
+#   scripts/duranium-boot [--wipe-user-data]
 # Needs the tablet in the bring-up Linux (console on TCP 23) at the start.
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,7 +23,10 @@ log() { echo "[$(date +%T)] $*"; }
 t "cat /proc/version" | grep -q borysthebear ||
 	{ echo "the tablet is not in the bring-up Linux" >&2; exit 1; }
 
-if [ "${1:-}" != "--no-install" ]; then
+# A reinstall rewrites the nested GPT: the first boot then creates a new
+# encrypted root and the user's GNOME account, settings and files are gone.
+# Never by default; only with the explicit flag.
+if [ "${1:-}" = "--wipe-user-data" ]; then
 	log "installing $(basename "$RAW")"
 	bash "$P/build/wt/duranium/contrib/samsung-gtactive3wifi/install-to-userdata.sh" "$RAW" |
 		grep -E "MB/s|Verify|ERROR"
