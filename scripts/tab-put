@@ -1,0 +1,19 @@
+#!/bin/bash
+# Upload a file to the tablet: tab-put LOCAL REMOTE
+P=$(cd "$(dirname "$0")/.." && pwd)
+LL=fe80::57:aff:fe00:1
+ifc=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1)
+[ -n "$ifc" ] || { echo "tablet USB network not present" >&2; exit 1; }
+python3 -I - "$LL%$ifc" "$1" "$2" <<'PY'
+import socket, sys, time, os
+s = socket.create_connection((sys.argv[1], 23), timeout=30)
+s.settimeout(2)
+try:
+    s.recv(4096)
+except socket.timeout:
+    pass
+data = open(sys.argv[2], "rb").read()
+s.sendall(f"put {sys.argv[3]} {len(data)}\n".encode() + data)
+s.settimeout(10)
+print(s.recv(4096).decode(errors="replace").splitlines()[0])
+PY

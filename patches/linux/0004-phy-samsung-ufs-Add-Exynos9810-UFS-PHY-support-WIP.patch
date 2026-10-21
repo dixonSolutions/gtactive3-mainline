@@ -1,0 +1,194 @@
+From c6e418e6af5d749c3cdd1705e500d87f2a88589b Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 14:44:18 +1100
+Subject: [PATCH 4/6] phy: samsung-ufs: Add Exynos9810 UFS PHY support (WIP)
+
+Add PMA tables for the Exynos9810 embedded combo PHY, taken from
+Samsung's ufs-cal-9810.c (byte offsets, 0x140 byte lane stride), the PMU
+isolation control at 0x724, a 200 us settle after init and the CDR AFC
+lock wait used after HS power mode changes.
+
+Work in progress: link startup does not succeed yet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/phy/samsung/Makefile             |   1 +
+ drivers/phy/samsung/phy-exynos9810-ufs.c | 117 +++++++++++++++++++++++
+ drivers/phy/samsung/phy-samsung-ufs.c    |   5 +
+ drivers/phy/samsung/phy-samsung-ufs.h    |   1 +
+ 4 files changed, 124 insertions(+)
+ create mode 100644 drivers/phy/samsung/phy-exynos9810-ufs.c
+
+diff --git a/drivers/phy/samsung/Makefile b/drivers/phy/samsung/Makefile
+index 342682638..401d1ddaf 100644
+--- a/drivers/phy/samsung/Makefile
++++ b/drivers/phy/samsung/Makefile
+@@ -6,6 +6,7 @@ obj-$(CONFIG_PHY_SAMSUNG_UFS)		+= phy-exynos-ufs.o
+ phy-exynos-ufs-y			+= phy-gs101-ufs.o
+ phy-exynos-ufs-y			+= phy-samsung-ufs.o
+ phy-exynos-ufs-y			+= phy-exynos7-ufs.o
++phy-exynos-ufs-y			+= phy-exynos9810-ufs.o
+ phy-exynos-ufs-y			+= phy-exynosautov9-ufs.o
+ phy-exynos-ufs-y			+= phy-exynosautov920-ufs.o
+ phy-exynos-ufs-y			+= phy-fsd-ufs.o
+diff --git a/drivers/phy/samsung/phy-exynos9810-ufs.c b/drivers/phy/samsung/phy-exynos9810-ufs.c
+new file mode 100644
+index 000000000..813c0d0be
+--- /dev/null
++++ b/drivers/phy/samsung/phy-exynos9810-ufs.c
+@@ -0,0 +1,117 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * UFS PHY driver data for the Samsung Exynos9810 SoC
++ *
++ * Values are taken from Samsung's ufs-cal-9810.c calibration tables, whose
++ * PMA register addresses are byte offsets with a 0x140 byte lane stride.
++ */
++
++#include <linux/delay.h>
++#include <linux/io.h>
++
++#include "phy-samsung-ufs.h"
++
++#define EXYNOS9810_EMBEDDED_COMBO_PHY_CTRL	0x724
++#define EXYNOS9810_EMBEDDED_COMBO_PHY_CTRL_MASK	0x1
++#define EXYNOS9810_EMBEDDED_COMBO_PHY_CTRL_EN	BIT(0)
++
++/* PMA registers are 32-bit wide: offsets below are in units of registers */
++#define EXYNOS9810_TRSV_LANE_OFFSET		0x50	/* 0x140 bytes */
++#define E9810_COMN(o, v)	PHY_COMN_REG_CFG((o) >> 2, v, PWR_MODE_ANY)
++#define E9810_TRSV(o, v, d)	\
++	PHY_TRSV_REG_CFG_OFFSET((o) >> 2, v, d, EXYNOS9810_TRSV_LANE_OFFSET)
++
++#define EXYNOS9810_TRSV_CDR_AFC		0x1fc
++#define EXYNOS9810_TRSV_CDR_AFC_DONE	BIT(6)
++#define EXYNOS9810_TRSV_LANE_CTRL	0x0f0
++
++static const struct samsung_ufs_phy_cfg exynos9810_pre_init_cfg[] = {
++	E9810_COMN(0x08c, 0x80),
++	E9810_COMN(0x074, 0x10),
++	E9810_TRSV(0x110, 0xb5, PWR_MODE_ANY),
++	E9810_TRSV(0x134, 0x43, PWR_MODE_ANY),
++	E9810_TRSV(0x16c, 0x20, PWR_MODE_ANY),
++	E9810_TRSV(0x178, 0xc0, PWR_MODE_ANY),
++	E9810_TRSV(0x0e0, 0x12, PWR_MODE_ANY),
++	E9810_TRSV(0x164, 0x58, PWR_MODE_ANY),
++	E9810_TRSV(0x1b0, 0x18, PWR_MODE_ANY),
++	E9810_COMN(0x08c, 0xc0),
++	E9810_COMN(0x08c, 0x00),
++	END_UFS_PHY_CFG
++};
++
++/* HS series A/B tuning, HS-G3 x2 (the only mode the board runs in) */
++static const struct samsung_ufs_phy_cfg exynos9810_pre_pwr_hs_cfg[] = {
++	E9810_TRSV(0x0c8, 0xbc, PWR_MODE_HS_ANY),
++	E9810_TRSV(0x0f0, 0x7f, PWR_MODE_HS_ANY),
++	E9810_TRSV(0x120, 0xc0, PWR_MODE_HS_ANY),
++	E9810_TRSV(0x128, 0x00, PWR_MODE_HS_G3_ANY),
++	E9810_TRSV(0x134, 0x63, PWR_MODE_HS_G3_ANY),
++	END_UFS_PHY_CFG
++};
++
++static const struct samsung_ufs_phy_cfg exynos9810_post_pwr_hs_cfg[] = {
++	END_UFS_PHY_CFG
++};
++
++static const struct samsung_ufs_phy_cfg *exynos9810_ufs_phy_cfgs[CFG_TAG_MAX] = {
++	[CFG_PRE_INIT]		= exynos9810_pre_init_cfg,
++	[CFG_PRE_PWR_HS]	= exynos9810_pre_pwr_hs_cfg,
++	[CFG_POST_PWR_HS]	= exynos9810_post_pwr_hs_cfg,
++};
++
++static const char * const exynos9810_ufs_phy_clks[] = {
++	"ref_clk",
++};
++
++/* Samsung CAL: 200 us settle after the PMA init sequence */
++static int exynos9810_ufs_phy_wait_for_cal(struct phy *phy, u8 lane)
++{
++	struct samsung_ufs_phy *ufs_phy = get_samsung_ufs_phy(phy);
++	void __iomem *p = ufs_phy->reg_pma;
++
++	if (!lane) {
++		udelay(200);
++		dev_info(ufs_phy->dev,
++			 "pma after init: 00=%02x 04=%02x 74=%02x 78=%02x 8c=%02x l0[110]=%02x l1[110]=%02x l0[1fc]=%02x\n",
++			 readl(p), readl(p + 4), readl(p + 0x74), readl(p + 0x78), readl(p + 0x8c),
++			 readl(p + 0x110), readl(p + 0x110 + 0x140), readl(p + 0x1fc));
++	}
++	return 0;
++}
++
++/*
++ * Samsung CAL PHY_CDR_AFC_WAIT: poll the AFC done bit, kicking the lane
++ * control register between polls.
++ */
++static int exynos9810_ufs_phy_wait_for_cdr(struct phy *phy, u8 lane)
++{
++	struct samsung_ufs_phy *ufs_phy = get_samsung_ufs_phy(phy);
++	void __iomem *trsv = ufs_phy->reg_pma + lane * (EXYNOS9810_TRSV_LANE_OFFSET << 2);
++	int i;
++
++	for (i = 0; i < 100; i++) {
++		usleep_range(40, 50);
++		if (readl(trsv + EXYNOS9810_TRSV_CDR_AFC) & EXYNOS9810_TRSV_CDR_AFC_DONE)
++			return 0;
++		udelay(1);
++		writel(0x7f, trsv + EXYNOS9810_TRSV_LANE_CTRL);
++		writel(0xff, trsv + EXYNOS9810_TRSV_LANE_CTRL);
++	}
++
++	dev_err(ufs_phy->dev, "failed to get CDR AFC lock on lane %u\n", lane);
++	return -ETIMEDOUT;
++}
++
++const struct samsung_ufs_phy_drvdata exynos9810_ufs_phy = {
++	.cfgs = exynos9810_ufs_phy_cfgs,
++	.isol = {
++		.offset = EXYNOS9810_EMBEDDED_COMBO_PHY_CTRL,
++		.mask = EXYNOS9810_EMBEDDED_COMBO_PHY_CTRL_MASK,
++		.en = EXYNOS9810_EMBEDDED_COMBO_PHY_CTRL_EN,
++	},
++	.clk_list = exynos9810_ufs_phy_clks,
++	.num_clks = ARRAY_SIZE(exynos9810_ufs_phy_clks),
++	.wait_for_cal = exynos9810_ufs_phy_wait_for_cal,
++	.wait_for_cdr = exynos9810_ufs_phy_wait_for_cdr,
++};
+diff --git a/drivers/phy/samsung/phy-samsung-ufs.c b/drivers/phy/samsung/phy-samsung-ufs.c
+index ee665f26c..ad5a66162 100644
+--- a/drivers/phy/samsung/phy-samsung-ufs.c
++++ b/drivers/phy/samsung/phy-samsung-ufs.c
+@@ -184,6 +184,8 @@ static int samsung_ufs_phy_power_on(struct phy *phy)
+ 		return ret;
+ 	}
+ 
++	dev_info(ss_phy->dev, "power_on: state %d lanes %d\n",
++		ss_phy->ufs_phy_state, ss_phy->lane_cnt);
+ 	if (ss_phy->ufs_phy_state == CFG_PRE_INIT) {
+ 		ret = samsung_ufs_phy_calibrate(phy);
+ 		if (ret)
+@@ -360,6 +362,9 @@ static const struct of_device_id samsung_ufs_phy_match[] = {
+ 	}, {
+ 		.compatible = "samsung,exynos7-ufs-phy",
+ 		.data = &exynos7_ufs_phy,
++	}, {
++		.compatible = "samsung,exynos9810-ufs-phy",
++		.data = &exynos9810_ufs_phy,
+ 	}, {
+ 		.compatible = "samsung,exynosautov9-ufs-phy",
+ 		.data = &exynosautov9_ufs_phy,
+diff --git a/drivers/phy/samsung/phy-samsung-ufs.h b/drivers/phy/samsung/phy-samsung-ufs.h
+index f2c2e744e..ae03f621e 100644
+--- a/drivers/phy/samsung/phy-samsung-ufs.h
++++ b/drivers/phy/samsung/phy-samsung-ufs.h
+@@ -155,6 +155,7 @@ void samsung_ufs_phy_config(struct samsung_ufs_phy *phy,
+ 			    const struct samsung_ufs_phy_cfg *cfg, u8 lane);
+ 
+ extern const struct samsung_ufs_phy_drvdata exynos7_ufs_phy;
++extern const struct samsung_ufs_phy_drvdata exynos9810_ufs_phy;
+ extern const struct samsung_ufs_phy_drvdata exynosautov9_ufs_phy;
+ extern const struct samsung_ufs_phy_drvdata exynosautov920_ufs_phy;
+ extern const struct samsung_ufs_phy_drvdata fsd_ufs_phy;
+-- 
+2.56.0
+

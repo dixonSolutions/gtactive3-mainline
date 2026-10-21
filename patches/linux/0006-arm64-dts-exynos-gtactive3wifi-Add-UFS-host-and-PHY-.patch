@@ -1,0 +1,71 @@
+From 5811eeec2851309e0f74444432a9e7e271ad4078 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 14:44:18 +1100
+Subject: [PATCH 6/6] arm64: dts: exynos: gtactive3wifi: Add UFS host and PHY
+ nodes
+
+UFS clocks are described as fixed clocks with the rates the bootloader
+programs (PLL_SHARED4 based) until an Exynos9810 clock driver exists.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 46 +++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 34d4d96d6..71cef428b 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -270,3 +270,49 @@ hsi2c_40: i2c@14360000 {
+ 		#size-cells = <0>;
+ 	};
+ };
++
++/ {
++	/*
++	 * UFS clocks as programmed by the bootloader (no clock driver yet):
++	 * PLL_SHARED4 = 26 MHz * 205 / 8 = 666.25 MHz;
++	 * FSYS0 bus = PLL_SHARED4 / 2, UFS_EMBD (UniPro) = PLL_SHARED4 / 2 / 2.
++	 */
++	ufs_core_clk: clock-ufs-core {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <333125000>;
++	};
++
++	ufs_unipro_clk: clock-ufs-unipro {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <166562500>;
++	};
++};
++
++&soc {
++	ufs_phy: phy@11124000 {
++		compatible = "samsung,exynos9810-ufs-phy";
++		reg = <0x11124000 0x800>;
++		reg-names = "phy-pma";
++		samsung,pmu-syscon = <&pmu_system_controller>;
++		clocks = <&oscclk>;
++		clock-names = "ref_clk";
++		#phy-cells = <0>;
++	};
++
++	ufs: ufs@11120000 {
++		compatible = "samsung,exynos9810-ufs";
++		reg = <0x11120000 0x200>,
++		      <0x11121100 0x200>,
++		      <0x11110000 0x8000>,
++		      <0x11130000 0x100>;
++		reg-names = "hci", "vs_hci", "unipro", "ufsp";
++		interrupts = <GIC_SPI 242 IRQ_TYPE_LEVEL_HIGH>;
++		clocks = <&ufs_core_clk>, <&ufs_unipro_clk>;
++		clock-names = "core_clk", "sclk_unipro_main";
++		freq-table-hz = <0 0>, <0 0>;
++		phys = <&ufs_phy>;
++		phy-names = "ufs-phy";
++	};
++};
+-- 
+2.56.0
+

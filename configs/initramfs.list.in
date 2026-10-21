@@ -10,3 +10,7 @@ file /lib/modules/phy-exynos5-usbdrd.ko @P@/build/initramfs/modules/phy-exynos5-
 file /lib/modules/dwc3.ko @P@/build/initramfs/modules/dwc3.ko 0644 0 0
 file /lib/modules/dwc3-exynos.ko @P@/build/initramfs/modules/dwc3-exynos.ko 0644 0 0
 file /lib/modules/i2c-exynos5.ko @P@/build/initramfs/modules/i2c-exynos5.ko 0644 0 0
+file /lib/modules/ufshcd-core.ko @P@/build/initramfs/modules/ufshcd-core.ko 0644 0 0
+file /lib/modules/ufshcd-pltfrm.ko @P@/build/initramfs/modules/ufshcd-pltfrm.ko 0644 0 0
+file /lib/modules/ufs-exynos.ko @P@/build/initramfs/modules/ufs-exynos.ko 0644 0 0
+file /lib/modules/phy-exynos-ufs.ko @P@/build/initramfs/modules/phy-exynos-ufs.ko 0644 0 0

@@ -521,12 +521,13 @@ static int i2c_xfer(int addr, unsigned char *wbuf, int wlen, unsigned char *rbuf
 
 static void serve(int c)
 {
+	static char fbuf[64];
 	char line[256], b[12];
 	int n = 0, r;
 	unsigned int v;
 
-	wr(c, "SM-T570 mainline bring-up console. Commands: dmesg, peek ADDR, "
-	      "poke ADDR VAL, cat PATH, write PATH VALUE, i2cw ADDR B.., i2cr ADDR REG N, reboot [download|recovery|normal]\n> ");
+	wr(c, "SM-T570 mainline bring-up console. Commands: dmesg, peek ADDR, dump ADDR N, "
+	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, reboot [download|recovery|normal]\n> ");
 	for (;;) {
 		r = read(c, line + n, 1);
 		if (r <= 0) return;
@@ -541,6 +542,19 @@ static void serve(int c)
 			unsigned long a = parse_num(line + 5, 0);
 			if (peek(a, &v)) wr(c, "error\n");
 			else { hex32(b, v); wr(c, b); wr(c, "\n"); }
+		} else if (!strncmp(line, "dump ", 5)) {
+			/* dump ADDR COUNT: COUNT 32-bit registers */
+			const char *e;
+			unsigned long a = parse_num(line + 5, &e);
+			unsigned long nn = parse_num(e, 0), k;
+			char ob[48];
+
+			for (k = 0; k < nn && k < 1024; k++) {
+				if (peek(a + 4 * k, &v)) { wr(c, "error\n"); break; }
+				hex32(b, v);
+				snprintf(ob, sizeof(ob), "%08lx %s\n", a + 4 * k, b);
+				wr(c, ob);
+			}
 		} else if (!strncmp(line, "poke ", 5)) {
 			const char *e;
 			unsigned long a = parse_num(line + 5, &e);
@@ -548,8 +562,13 @@ static void serve(int c)
 			wr(c, poke(a, val) ? "error\n" : "ok\n");
 		} else if (!strncmp(line, "cat ", 4)) {
 			static char fb[8192];
-			r = readfile(line + 4, fb, sizeof(fb));
-			if (r < 0) wr(c, "error\n"); else write(c, fb, r);
+			int fd = open(line + 4, O_RDONLY);
+			if (fd < 0) wr(c, "error\n");
+			else {
+				while ((r = read(fd, fb, sizeof(fb))) > 0)
+					write(c, fb, r);
+				close(fd);
+			}
 		} else if (!strncmp(line, "i2cw ", 5) || !strncmp(line, "i2cr ", 5)) {
 			/* i2cw ADDR B0 B1 ...  |  i2cr ADDR REG N */
 			unsigned char wb[40], rb[64];
@@ -568,6 +587,57 @@ static void serve(int c)
 			else {
 				for (k = 0; k < nr; k++) { hex32(b, rb[k]); wr(c, b + 8); wr(c, k + 1 < nr ? " " : "\n"); }
 			}
+		} else if (!strncmp(line, "put ", 4)) {
+			/* put PATH LEN, then LEN raw bytes: upload a file into the initramfs */
+			static char pb[16384];
+			char *sp = strchr(line + 4, ' ');
+			long len, got = 0;
+			int fd;
+
+			if (!sp) { wr(c, "usage: put PATH LEN\n"); goto prompt; }
+			*sp++ = 0;
+			len = parse_num(sp, 0);
+			fd = open(line + 4, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			while (got < len) {
+				int want = len - got > (long)sizeof(pb) ? (int)sizeof(pb) : (int)(len - got);
+				int k = read(c, pb, want);
+				if (k <= 0) break;
+				if (fd >= 0) write(fd, pb, k);
+				got += k;
+			}
+			if (fd >= 0) close(fd);
+			snprintf(fbuf, sizeof(fbuf), fd < 0 ? "error\n" : "ok %ld\n", got);
+			wr(c, fbuf);
+		} else if (!strncmp(line, "insmod ", 7)) {
+			/* insmod PATH [module parameters] */
+			char *args = strchr(line + 7, ' ');
+			int fd, rr;
+
+			if (args) *args++ = 0;
+			fd = open(line + 7, O_RDONLY);
+			rr = fd < 0 ? -2 : __nolibc_syscall3(__NR_finit_module, fd, args ? args : "", 0);
+			if (fd >= 0) close(fd);
+			snprintf(fbuf, sizeof(fbuf), "%s\n", rr == 0 ? "ok" : rr == -17 ? "already loaded" : "FAILED");
+			wr(c, fbuf);
+			if (rr && rr != -17) { snprintf(fbuf, sizeof(fbuf), "errno %d\n", -rr); wr(c, fbuf); }
+		} else if (!strncmp(line, "rmmod ", 6)) {
+			int rr = __nolibc_syscall2(__NR_delete_module, line + 6, 0x800 /* O_NONBLOCK */);
+			snprintf(fbuf, sizeof(fbuf), rr ? "FAILED errno %d\n" : "ok\n", -rr);
+			wr(c, fbuf);
+		} else if (!strncmp(line, "ls ", 3)) {
+			char db[4096];
+			int fd = open(line + 3, O_RDONLY | O_DIRECTORY), nn;
+			if (fd < 0) { wr(c, "error\n"); }
+			else {
+				while ((nn = __nolibc_syscall3(__NR_getdents64, fd, db, sizeof(db))) > 0) {
+					for (int off = 0; off < nn;) {
+						struct linux_dirent64 *d = (struct linux_dirent64 *)(db + off);
+						if (d->d_name[0] != '.') { wr(c, d->d_name); wr(c, "\n"); }
+						off += d->d_reclen;
+					}
+				}
+				close(fd);
+			}
 		} else if (!strncmp(line, "write ", 6)) {
 			char *val = strchr(line + 6, ' ');
 			if (!val) { wr(c, "usage: write PATH VALUE\n"); }
@@ -580,6 +650,7 @@ static void serve(int c)
 		} else if (line[0]) {
 			wr(c, "unknown command\n");
 		}
+prompt:
 		wr(c, "> ");
 	}
 }

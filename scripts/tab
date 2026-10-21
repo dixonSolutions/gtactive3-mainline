@@ -19,22 +19,19 @@ if [ "${1:-}" = wait ]; then
 fi
 ifc=$(iface) || { echo "tablet USB network not present" >&2; exit 1; }
 python3 -I - "$LL%$ifc" "$*" <<'PY'
-import socket, sys, time
+import socket, sys
 s = socket.create_connection((sys.argv[1], 23), timeout=10)
-s.settimeout(2)
-def drain():
-    out = b""
-    try:
-        while True:
-            d = s.recv(65536)
-            if not d: break
-            out += d
-    except socket.timeout:
-        pass
-    return out.decode(errors="replace")
-drain()
+s.settimeout(30)
+def until_prompt():
+    buf = b""
+    while not buf.endswith(b"> "):
+        d = s.recv(65536)
+        if not d:
+            break
+        buf += d
+    return buf.decode(errors="replace")
+until_prompt()
 s.sendall((sys.argv[2] + "\n").encode())
-time.sleep(0.3)
-r = drain()
+r = until_prompt()
 sys.stdout.write(r[:-2] if r.endswith("> ") else r)
 PY
