@@ -4,6 +4,8 @@
 # with the debug console's "memcat" and writes a PNG.
 #
 #   scripts/tab-shot [OUT.png]   (default build/shots/shot-<time>.png)
+# BASE=0x... reads another buffer; BASE=live reads whatever IDMA_G0 scans
+# out right now (IDMA_IN_BASE_ADDR_Y, 0x16071040), e.g. under the KMS driver.
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$P/build/shots/shot-$(date +%Y%m%d-%H%M%S).png}
@@ -11,10 +13,14 @@ mkdir -p "$(dirname "$OUT")"
 LL=fe80::57:aff:fe00:1
 ifc=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
 [ -n "$ifc" ] || { echo "tablet USB network not present" >&2; exit 1; }
-flock "$P/build/tab.lock" python3 -I - "$LL%$ifc" "$OUT" <<'PY'
+BASE=${BASE:-0xca000000}
+if [ "$BASE" = live ]; then
+	BASE=$(flock "$P/build/tab.lock" "$P/scripts/tab" "peek 0x16071040" | tr -d '\r\n')
+fi
+flock "$P/build/tab.lock" python3 -I - "$LL%$ifc" "$OUT" "$BASE" <<'PY'
 import socket, struct, sys, zlib
 addr, out = sys.argv[1], sys.argv[2]
-W, H, BASE = 1200, 1920, 0xca000000
+W, H, BASE = 1200, 1920, int(sys.argv[3], 0)
 n = W * H * 4
 s = socket.create_connection((addr, 23), timeout=30)
 s.settimeout(30)
