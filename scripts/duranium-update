@@ -28,6 +28,22 @@ t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
 tput_() { flock "$P/build/tab.lock" "$P/scripts/tab-put" "$@" >/dev/null; }
 # run a small shell script on the tablet (the console limits each run to 60 s)
 trun() { printf '%s\n' "$2" > "$W/$1.sh"; tput_ "$W/$1.sh" "/run/upd-$1.sh"; t "run /bin/sh /run/upd-$1.sh"; }
+# a longer job (hashing a partition): run it as a transient unit, poll
+tbg() {
+	printf '%s\n' "rm -f /run/upd-$1.out; ( $2 ) > /run/upd-$1.part 2>&1; mv /run/upd-$1.part /run/upd-$1.out" > "$W/$1.sh"
+	tput_ "$W/$1.sh" "/run/upd-$1.sh"
+	# its own unit: the console's per-connection service kills whatever is
+	# left in its cgroup when the connection closes
+	printf '%s\n' "systemctl reset-failed gta3-upd-$1 2>/dev/null; systemd-run --quiet --collect --unit=gta3-upd-$1 /bin/sh /run/upd-$1.sh" > "$W/$1-go.sh"
+	tput_ "$W/$1-go.sh" "/run/upd-$1-go.sh"
+	t "run /bin/sh /run/upd-$1-go.sh" >/dev/null
+	local i
+	for i in $(seq 1 120); do
+		sleep 2
+		t "cat /run/upd-$1.out" 2>/dev/null | grep -E '^[0-9a-f]{64} ' && return 0
+	done
+	return 1
+}
 log() { echo "[$(date +%T)] $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 uuid() { local x=$1; echo "${x:0:8}-${x:8:4}-${x:12:4}-${x:16:4}-${x:20:12}"; }
@@ -94,7 +110,8 @@ VSZ=$(echo "$PARTS" | awk -v n="$TV" '$1 == n { print $5 }')
 [ "$ULEN" -le "$USZ" ] && [ "$VLEN" -le "$VSZ" ] || die "images larger than the target partitions"
 log "inactive slot: usr $TU, verity $TV (booted: $CU / $CV)"
 
-IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1)
+IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
+[ -n "$IFC" ] || die "tablet USB network not present"
 send() { # local remote len
 	flock "$P/build/tab.lock" python3 -I - "$LL%$IFC" "$1" "$2" "$3" <<'PY'
 import socket, sys, time
@@ -123,25 +140,37 @@ sys.exit(0 if line == f"ok {n}" else 1)
 PY
 }
 
+if [ "${SKIP_WRITE:-0}" = 1 ]; then log "SKIP_WRITE=1: checking the data already written"; else
 log "writing usr -> /dev/$TU"
 send "$USR" "/dev/$TU" "$ULEN"
 log "writing verity -> /dev/$TV"
 send "$VTY" "/dev/$TV" "$VLEN"
+fi
 log "writing UKI -> /run/new.efi"
 send "$UKI" /run/new.efi "$(stat -c %s "$UKI")"
 
 log "checking the written data on the tablet"
-WU=$(head -c "$ULEN" "$USR" | sha256sum | cut -d' ' -f1)
-WV=$(head -c "$VLEN" "$VTY" | sha256sum | cut -d' ' -f1)
-WK=$(sha256sum "$UKI" | cut -d' ' -f1)
-G=$(trun h1 "sync; echo 3 > /proc/sys/vm/drop_caches; head -c $ULEN /dev/$TU | sha256sum")
-echo "$G" | grep -q "^$WU " || die "usr hash mismatch on the tablet: $G"
-G=$(trun h2 "head -c $VLEN /dev/$TV | sha256sum; sha256sum /run/new.efi")
-echo "$G" | grep -q "^$WV " || die "verity hash mismatch on the tablet: $G"
-echo "$G" | grep -q "^$WK " || die "UKI hash mismatch on the tablet: $G"
+# in 256 MiB pieces: every console request must answer within 30 s
+chk() { # local remote len label
+	local off=0 n=0 step=$((256 << 20)) want got
+	while [ "$off" -lt "$3" ]; do
+		local c=$(( $3 - off < step ? $3 - off : step ))
+		want=$(python3 -I -c 'import hashlib, sys; f = open(sys.argv[1], "rb"); f.seek(int(sys.argv[2])); print(hashlib.sha256(f.read(int(sys.argv[3]))).hexdigest())' "$1" "$off" "$c")
+		got=$(trun "c$n" "dd if=$2 bs=1M skip=$((off >> 20)) count=$(( (c + 1048575) >> 20 )) 2>/dev/null | head -c $c | sha256sum" | grep -oE '^[0-9a-f]{64}' || true)
+		[ "$want" = "$got" ] || die "$4 mismatch at offset $off: want $want, got '${got}'"
+		off=$((off + c)); n=$((n + 1))
+	done
+	log "  $4: $n pieces match"
+}
+trun sync "sync; echo 3 > /proc/sys/vm/drop_caches" >/dev/null
+chk "$USR" "/dev/$TU" "$ULEN" usr
+chk "$VTY" "/dev/$TV" "$VLEN" verity
+chk "$UKI" /run/new.efi "$(stat -c %s "$UKI")" UKI
 log "hashes match"
 
 NU=$(uuid "${H:0:32}"); NV=$(uuid "${H:32:32}")
+ESP=$(echo "$PARTS" | awk '$3 == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" { print $1 }')
+[ "$(echo "$ESP" | wc -w)" = 1 ] || die "expected one ESP, got '$ESP'"
 iu=${TU#loop0p}; iv=${TV#loop0p}
 R=$(trun apply "set -e
 D=/dev/loop0
@@ -152,13 +181,18 @@ sfdisk -q --part-uuid \$D $iv $NV 2>&1 | grep -v Re-reading || true
 [ \"\$(sfdisk --part-uuid \$D $iu | tr A-F a-f)\" = $NU ] || { echo 'usr uuid not set'; exit 1; }
 [ \"\$(sfdisk --part-uuid \$D $iv | tr A-F a-f)\" = $NV ] || { echo 'verity uuid not set'; exit 1; }
 echo \"labels: \$(sfdisk --part-label \$D $iu) \$(sfdisk --part-label \$D $iv)\"
-mkdir -p /boot/EFI/Linux
-cp /run/new.efi /boot/EFI/Linux/${NAME}_${V}+2-0.efi.tmp
+# the console runs in its own mount namespace: mount the ESP here
+E=/run/upd-esp
+mkdir -p \$E
+mountpoint -q \$E || mount -t vfat /dev/$ESP \$E
+ls \$E/EFI/Linux/*.efi >/dev/null || { echo 'ESP has no UKIs: wrong partition?'; umount \$E; exit 1; }
+cp /run/new.efi \$E/EFI/Linux/${NAME}_${V}+2-0.efi.tmp
 sync
-mv /boot/EFI/Linux/${NAME}_${V}+2-0.efi.tmp /boot/EFI/Linux/${NAME}_${V}+2-0.efi
+mv \$E/EFI/Linux/${NAME}_${V}+2-0.efi.tmp \$E/EFI/Linux/${NAME}_${V}+2-0.efi
+sync
+ls -l \$E/EFI/Linux
+umount \$E
 rm -f /run/new.efi
-sync
-ls -l /boot/EFI/Linux
 echo 'update applied'")
 echo "$R"
 echo "$R" | grep -q "update applied" || die "apply failed; the booted version is unchanged"
