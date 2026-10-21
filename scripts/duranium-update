@@ -1,0 +1,165 @@
+#!/bin/bash
+# A/B update of a running Duranium on the tablet, over the USB debug console,
+# without touching the user's data:
+#
+#   1. find the inactive usr + usr-verity pair in the nested GPT (the pair
+#      the booted usrhash= does not name); refuse anything else
+#   2. stream the new usr (only the dm-verity data area) and hash tree into
+#      it, check both by sha256 on the tablet
+#   3. name the partitions duranium_<version>_usr/_vty and give them the
+#      UUIDs the new UKI's usrhash= expects (what systemd-sysupdate does)
+#   4. copy the new UKI into the ESP with boot counting (+2-0): if it does
+#      not boot twice, systemd-boot goes back to the current version, which
+#      stays installed
+#
+# pmOS_root (the encrypted root: user account, settings, files) is never
+# opened, written or resized.
+#
+#   scripts/duranium-update [VERSION]   default: newest build in mkosi.output
+#   then reboot the tablet ("tab reboot" or from GNOME)
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+OUT=$P/build/wt/duranium/mkosi.output/samsung-gtactive3wifi_gnome_edge
+NAME=samsung-gtactive3wifi_gnome_edge
+LL=fe80::57:aff:fe00:1
+W=$P/build/.upd
+mkdir -p "$W"
+t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
+tput_() { flock "$P/build/tab.lock" "$P/scripts/tab-put" "$@" >/dev/null; }
+# run a small shell script on the tablet (the console limits each run to 60 s)
+trun() { printf '%s\n' "$2" > "$W/$1.sh"; tput_ "$W/$1.sh" "/run/upd-$1.sh"; t "run /bin/sh /run/upd-$1.sh"; }
+log() { echo "[$(date +%T)] $*"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+uuid() { local x=$1; echo "${x:0:8}-${x:8:4}-${x:12:4}-${x:16:4}-${x:20:12}"; }
+
+V=${1:-$(ls "$OUT" | sed -n "s/^${NAME}_\([0-9]*\)\.efi$/\1/p" | sort -n | tail -1)}
+UKI=$OUT/${NAME}_$V.efi
+[ -f "$UKI" ] || die "no UKI $UKI"
+H=$(grep -ao 'usrhash=[0-9a-f]\{64\}' "$UKI" | head -1 | cut -d= -f2)
+[ -n "$H" ] || die "no usrhash= in $UKI"
+USR=$OUT/${NAME}_$V.usr-arm64.${H:0:32}.raw
+VTY=$OUT/${NAME}_$V.usr-arm64-verity.${H:32:32}.raw
+[ -f "$USR" ] && [ -f "$VTY" ] || die "usr/verity images for usrhash $H not found"
+
+t "cat /proc/version" | grep -q postmarketOS || die "the tablet is not in a booted Duranium"
+CUR=$(t "cat /proc/cmdline" | grep -o 'usrhash=[0-9a-f]\{64\}' | cut -d= -f2)
+[ -n "$CUR" ] || die "no usrhash on the running kernel command line"
+[ "$CUR" != "$H" ] || die "version $V is already the booted one"
+
+# Bytes to send: the dm-verity data area of usr (the rest of the partition is
+# never read) and the hash tree up to its last allocated block.
+read -r ULEN VLEN < <(python3 -I - "$USR" "$VTY" <<'PY'
+import os, struct, sys
+usr, vty = sys.argv[1], sys.argv[2]
+h = open(vty, "rb").read(512)
+assert h[:8] == b"verity\0\0", "no verity superblock"
+dbs, hbs, nb = struct.unpack("<IIQ", h[64:80])
+fd = os.open(vty, os.O_RDONLY)
+end, off, size = 0, 0, os.fstat(fd).st_size
+while off < size:
+    try:
+        d = os.lseek(fd, off, os.SEEK_DATA)
+    except OSError:
+        break
+    off = os.lseek(fd, d, os.SEEK_HOLE)
+    end = off
+print(nb * dbs, -(-end // 4096) * 4096)
+PY
+)
+log "update to $V: usr $((ULEN >> 20)) MiB, verity $((VLEN >> 20)) MiB, UKI $(( $(stat -c %s "$UKI") >> 20 )) MiB"
+
+# Pick the target slot on the tablet.
+PARTS=$(trun probe 'lsblk -bPno NAME,PARTLABEL,PARTTYPE,PARTUUID,SIZE /dev/loop0' | python3 -I -c '
+import re, sys
+for l in sys.stdin:
+    d = dict(re.findall(r"(\w+)=\"([^\"]*)\"", l))
+    if d.get("NAME", "").startswith("loop0p"):
+        print(d["NAME"], d["PARTLABEL"] or "-", d["PARTTYPE"].lower(), d["PARTUUID"].lower(), d["SIZE"])
+')
+echo "$PARTS"
+CU=$(uuid "${CUR:0:32}"); CV=$(uuid "${CUR:32:32}")
+echo "$PARTS" | awk '{print $4}' | grep -qx "$CU" || die "booted usr partition $CU not found"
+echo "$PARTS" | awk '{print $4}' | grep -qx "$CV" || die "booted verity partition $CV not found"
+# GPT types: usr arm64 b0e01050-..., usr-verity arm64 6e11a4e7-...
+pick() { echo "$PARTS" | awk -v ty="$1" -v cur="$2" '$3 == ty && $4 != cur { print $1 }'; }
+TU=$(pick b0e01050-ee5f-4390-949a-9101b17104e9 "$CU")
+TV=$(pick 6e11a4e7-fbca-4ded-b9e9-e1a512bb664e "$CV")
+[ "$(echo "$TU" | wc -w)" = 1 ] && [ "$(echo "$TV" | wc -w)" = 1 ] ||
+	die "expected exactly one inactive usr and one inactive verity partition (got '$TU' '$TV')"
+for n in $TU $TV; do
+	echo "$PARTS" | grep -q "^$n .*pmOS_root" && die "refusing: $n is the root partition"
+done
+USZ=$(echo "$PARTS" | awk -v n="$TU" '$1 == n { print $5 }')
+VSZ=$(echo "$PARTS" | awk -v n="$TV" '$1 == n { print $5 }')
+[ "$ULEN" -le "$USZ" ] && [ "$VLEN" -le "$VSZ" ] || die "images larger than the target partitions"
+log "inactive slot: usr $TU, verity $TV (booted: $CU / $CV)"
+
+IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1)
+send() { # local remote len
+	flock "$P/build/tab.lock" python3 -I - "$LL%$IFC" "$1" "$2" "$3" <<'PY'
+import socket, sys, time
+addr, local, remote, n = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+s = socket.create_connection((addr, 23), timeout=30)
+buf = b""
+while not buf.endswith(b"> "):
+    buf += s.recv(4096)
+s.sendall(f"put {remote} {n}\n".encode())
+t0, sent = time.time(), 0
+with open(local, "rb") as f:
+    while sent < n:
+        c = f.read(min(1 << 20, n - sent))
+        s.sendall(c)
+        sent += len(c)
+s.settimeout(300)
+r = b""
+while b"\n" not in r:
+    d = s.recv(4096)
+    if not d:
+        break
+    r += d
+line = r.split(b"\n")[0].decode(errors="replace").strip()
+print(f"  {remote}: {line} ({sent / (time.time() - t0) / 1e6:.1f} MB/s)")
+sys.exit(0 if line == f"ok {n}" else 1)
+PY
+}
+
+log "writing usr -> /dev/$TU"
+send "$USR" "/dev/$TU" "$ULEN"
+log "writing verity -> /dev/$TV"
+send "$VTY" "/dev/$TV" "$VLEN"
+log "writing UKI -> /run/new.efi"
+send "$UKI" /run/new.efi "$(stat -c %s "$UKI")"
+
+log "checking the written data on the tablet"
+WU=$(head -c "$ULEN" "$USR" | sha256sum | cut -d' ' -f1)
+WV=$(head -c "$VLEN" "$VTY" | sha256sum | cut -d' ' -f1)
+WK=$(sha256sum "$UKI" | cut -d' ' -f1)
+G=$(trun h1 "sync; echo 3 > /proc/sys/vm/drop_caches; head -c $ULEN /dev/$TU | sha256sum")
+echo "$G" | grep -q "^$WU " || die "usr hash mismatch on the tablet: $G"
+G=$(trun h2 "head -c $VLEN /dev/$TV | sha256sum; sha256sum /run/new.efi")
+echo "$G" | grep -q "^$WV " || die "verity hash mismatch on the tablet: $G"
+echo "$G" | grep -q "^$WK " || die "UKI hash mismatch on the tablet: $G"
+log "hashes match"
+
+NU=$(uuid "${H:0:32}"); NV=$(uuid "${H:32:32}")
+iu=${TU#loop0p}; iv=${TV#loop0p}
+R=$(trun apply "set -e
+D=/dev/loop0
+sfdisk -q --part-label \$D $iu duranium_${V}_usr 2>&1 | grep -v Re-reading || true
+sfdisk -q --part-uuid \$D $iu $NU 2>&1 | grep -v Re-reading || true
+sfdisk -q --part-label \$D $iv duranium_${V}_vty 2>&1 | grep -v Re-reading || true
+sfdisk -q --part-uuid \$D $iv $NV 2>&1 | grep -v Re-reading || true
+[ \"\$(sfdisk --part-uuid \$D $iu | tr A-F a-f)\" = $NU ] || { echo 'usr uuid not set'; exit 1; }
+[ \"\$(sfdisk --part-uuid \$D $iv | tr A-F a-f)\" = $NV ] || { echo 'verity uuid not set'; exit 1; }
+echo \"labels: \$(sfdisk --part-label \$D $iu) \$(sfdisk --part-label \$D $iv)\"
+mkdir -p /boot/EFI/Linux
+cp /run/new.efi /boot/EFI/Linux/${NAME}_${V}+2-0.efi.tmp
+sync
+mv /boot/EFI/Linux/${NAME}_${V}+2-0.efi.tmp /boot/EFI/Linux/${NAME}_${V}+2-0.efi
+rm -f /run/new.efi
+sync
+ls -l /boot/EFI/Linux
+echo 'update applied'")
+echo "$R"
+echo "$R" | grep -q "update applied" || die "apply failed; the booted version is unchanged"
+log "done: reboot to start $V (the current version stays as the fallback)"
