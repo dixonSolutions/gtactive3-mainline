@@ -10,6 +10,10 @@ S=$(mktemp -d)
 trap 'rm -rf "$S"' EXIT
 t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
 
+# check in, so the dev image's dead-man reboot (15 min) stands down
+echo alive > "$S/alive"
+flock "$P/build/tab.lock" "$P/scripts/tab-put" "$S/alive" /run/gtactive3wifi-host-alive >/dev/null || true
+
 cat > "$S/check.sh" <<'EOF'
 echo "== kernel: $(cat /proc/version | cut -d' ' -f1-3), up $(cut -d' ' -f1 /proc/uptime) s"
 echo "== systemd: $(systemctl is-system-running 2>&1)"

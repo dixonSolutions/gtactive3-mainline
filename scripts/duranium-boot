@@ -1,0 +1,52 @@
+#!/bin/bash
+# Boot the current Duranium build on the tablet, unattended:
+#   1. (unless --no-install) write the image into sda31 over the bring-up
+#      console and verify it
+#   2. clear uniLoader's record (stage 3), flash the chain image
+#      (uniLoader -> U-Boot -> systemd-boot -> UKI) through devd
+#   3. put boot-good.img back as what devd flashes, so any later Download
+#      mode (dead-man, crash, user) returns to the bring-up Linux
+#   4. wait for the Duranium debug console (TCP 23) and check in, which
+#      stops the dev image's dead-man reboot
+#
+#   scripts/duranium-boot [--no-install]
+# Needs the tablet in the bring-up Linux (console on TCP 23) at the start.
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+IMGDIR=$P/build/wt/duranium/mkosi.output/samsung-gtactive3wifi_gnome_edge
+RAW=$(ls -t "$IMGDIR"/samsung-gtactive3wifi_gnome_edge_*.raw | grep -vE "usr|esp|ext" | head -1)
+CHAIN=$P/build/images/boot-chain.img
+GOOD=$P/build/images/boot-good.img
+t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
+log() { echo "[$(date +%T)] $*"; }
+
+t "cat /proc/version" | grep -q borysthebear ||
+	{ echo "the tablet is not in the bring-up Linux" >&2; exit 1; }
+
+if [ "${1:-}" != "--no-install" ]; then
+	log "installing $(basename "$RAW")"
+	bash "$P/build/wt/duranium/contrib/samsung-gtactive3wifi/install-to-userdata.sh" "$RAW" |
+		grep -E "MB/s|Verify|ERROR"
+fi
+
+log "flashing the chain ($(sha256sum "$CHAIN" | cut -c1-12))"
+t "poke 0x8ff1ff04c 3" >/dev/null
+cp "$CHAIN" "$P/build/images/boot-mainline.img"
+n=$(grep -c "flash done" "$P/logs/devd.log")
+t "reboot download" >/dev/null || true
+until [ "$(grep -c "flash done" "$P/logs/devd.log")" -gt "$n" ]; do sleep 2; done
+cp "$GOOD" "$P/build/images/boot-mainline.img"
+log "flashed; devd now holds boot-good.img again"
+
+log "waiting for the Duranium console"
+for i in $(seq 1 90); do
+	if t "cat /proc/version" 2>/dev/null | grep -q postmarketOS; then
+		echo alive > "$P/build/.alive"
+		flock "$P/build/tab.lock" "$P/scripts/tab-put" "$P/build/.alive" /run/gtactive3wifi-host-alive >/dev/null
+		log "Duranium is up and checked in ($(t "cat /proc/uptime" | cut -d' ' -f1) s)"
+		exit 0
+	fi
+	sleep 5
+done
+log "no Duranium console after 7.5 min (fallback Linux? $(t "cat /proc/version" 2>/dev/null | cut -c1-40))"
+exit 1
