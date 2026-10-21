@@ -1,0 +1,76 @@
+From 227c6643a4f1e293b0b1c1a80182d7803243f777 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:43:47 +1100
+Subject: [PATCH 113/119] power: supply: max77705: Follow the supplier's input
+ current limit
+
+The charger has no way to know what the attached source can deliver.
+Its input current limit stays at the bootloader or reset value unless
+userspace writes it.
+
+Implement external_power_changed: when a supplier (from
+power-supplies, e.g. the MAX77705 USB-C block) reports an input
+current limit, program CHGIN_ILIM with it, and do the same once at
+probe for a supplier that is already registered. Boards without a
+supplier keep the current behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/max77705_charger.c | 27 +++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/drivers/power/supply/max77705_charger.c b/drivers/power/supply/max77705_charger.c
+index cfb9570d4..83d60d716 100644
+--- a/drivers/power/supply/max77705_charger.c
++++ b/drivers/power/supply/max77705_charger.c
+@@ -501,6 +501,29 @@ static int max77705_property_is_writeable(struct power_supply *psy,
+ 	}
+ }
+ 
++/*
++ * A supplier such as the MAX77705 USB-C block knows what the attached source
++ * allows; follow its input current limit. Without a supplier, or when it
++ * reports nothing, the current limit is left alone.
++ */
++static void max77705_external_power_changed(struct power_supply *psy)
++{
++	struct max77705_charger_data *chg = power_supply_get_drvdata(psy);
++	union power_supply_propval val;
++	int ret;
++
++	ret = power_supply_get_property_from_supplier(psy,
++			POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT, &val);
++	if (ret || val.intval <= 0)
++		return;
++
++	ret = max77705_set_input_current(chg, val.intval);
++	if (ret)
++		dev_err(chg->dev, "cannot set the input current limit: %d\n", ret);
++	else
++		dev_dbg(chg->dev, "input current limit %d uA\n", val.intval);
++}
++
+ static const struct power_supply_desc max77705_charger_psy_desc = {
+ 	.name = "max77705-charger",
+ 	.type = POWER_SUPPLY_TYPE_USB,
+@@ -509,6 +532,7 @@ static const struct power_supply_desc max77705_charger_psy_desc = {
+ 	.num_properties = ARRAY_SIZE(max77705_charger_props),
+ 	.get_property = max77705_chg_get_property,
+ 	.set_property = max77705_set_property,
++	.external_power_changed = max77705_external_power_changed,
+ };
+ 
+ static void max77705_chgin_isr_work(struct work_struct *work)
+@@ -701,6 +725,9 @@ static int max77705_charger_probe(struct i2c_client *i2c)
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "failed to initialize charger IC\n");
+ 
++	/* pick up the input current limit of a supplier that is already there */
++	max77705_external_power_changed(chg->psy_chg);
++
+ 	ret = devm_request_threaded_irq(dev, regmap_irq_get_virq(irq_data, MAX77705_CHGIN_I),
+ 					NULL, max77705_chgin_irq,
+ 					IRQF_TRIGGER_NONE,
+-- 
+2.56.0
+

@@ -1,0 +1,90 @@
+From bb024c7de7dac7b960302bd81a6347f8c7e5ef77 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 17:34:53 +1100
+Subject: [PATCH 073/119] tty: serial: samsung: Release Exynos9810 USI reset
+ before port setup
+
+s3c24xx_serial_init_port() masks and clears the UART interrupts before it
+calls s3c24xx_serial_resetport(). On the Exynos9810 UART_BT the USI
+wrapper holds the IP in reset at that point (USI_CON 0x108400c4 reads
+0x1), so the earlier writes may not stick. Release the reset in a helper
+that runs right after the clocks are enabled, before any other register
+write, and again on resume. Use the vendor sequence (samsung.c:1557-1573):
+assert, release, then set USI_OPTION.CLKREQ_ON.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/tty/serial/samsung_tty.c | 36 +++++++++++++++++++++-----------
+ 1 file changed, 24 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/tty/serial/samsung_tty.c b/drivers/tty/serial/samsung_tty.c
+index 5b7bf40b6..3d70a3e05 100644
+--- a/drivers/tty/serial/samsung_tty.c
++++ b/drivers/tty/serial/samsung_tty.c
+@@ -1745,6 +1745,27 @@ static void s3c24xx_serial_init_port_default(int index)
+ 	port->line = index;
+ }
+ 
++/*
++ * UARTs with an embedded USI v2 wrapper but no SW_CONF mux (so no exynos-usi
++ * parent) come out of reset with USI_CON.RESET set, which holds the port in
++ * reset. Pulse the reset, then let the IP request its clock (CLKREQ_ON) as
++ * the vendor driver does. This must run before any other UART register is
++ * programmed, since the reset clears them.
++ */
++static void s3c24xx_serial_usi_init(struct uart_port *port)
++{
++	const struct s3c24xx_uart_info *info = s3c24xx_port_to_info(port);
++
++	if (!info->has_usi_con)
++		return;
++
++	wr_regl(port, EXYNOS_UART_USI_CON, 1);
++	udelay(1);
++	wr_regl(port, EXYNOS_UART_USI_CON, 0);
++	udelay(1);
++	wr_regl(port, EXYNOS_UART_USI_OPTION, EXYNOS_UART_USI_OPTION_CLKREQ_ON);
++}
++
+ /* s3c24xx_serial_resetport
+  *
+  * reset the fifos and other the settings.
+@@ -1756,18 +1777,6 @@ static void s3c24xx_serial_resetport(struct uart_port *port,
+ 	const struct s3c24xx_uart_info *info = s3c24xx_port_to_info(port);
+ 	u32 ucon = rd_regl(port, S3C2410_UCON);
+ 
+-	/*
+-	 * UARTs with an embedded USI v2 wrapper but no SW_CONF mux (so no
+-	 * exynos-usi parent) come out of reset with USI_CON.RESET set, which
+-	 * holds the port in reset. Release it and request the clock.
+-	 */
+-	if (info->has_usi_con) {
+-		wr_regl(port, EXYNOS_UART_USI_CON, 0);
+-		udelay(1);
+-		wr_regl(port, EXYNOS_UART_USI_OPTION,
+-			EXYNOS_UART_USI_OPTION_CLKREQ_ON);
+-	}
+-
+ 	ucon &= (info->clksel_mask | info->ucon_mask);
+ 	wr_regl(port, S3C2410_UCON, ucon | cfg->ucon);
+ 
+@@ -1903,6 +1912,8 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
+ 	if (ret)
+ 		pr_warn("uart: failed to enable baudclk\n");
+ 
++	s3c24xx_serial_usi_init(port);
++
+ 	/* Keep all interrupts masked and cleared */
+ 	switch (ourport->info->type) {
+ 	case TYPE_S3C6400:
+@@ -2097,6 +2108,7 @@ static int s3c24xx_serial_resume(struct device *dev)
+ 		clk_prepare_enable(ourport->clk);
+ 		if (!IS_ERR(ourport->baudclk))
+ 			clk_prepare_enable(ourport->baudclk);
++		s3c24xx_serial_usi_init(port);
+ 		s3c24xx_serial_resetport(port, s3c24xx_port_to_cfg(port));
+ 		if (!IS_ERR(ourport->baudclk))
+ 			clk_disable_unprepare(ourport->baudclk);
+-- 
+2.56.0
+

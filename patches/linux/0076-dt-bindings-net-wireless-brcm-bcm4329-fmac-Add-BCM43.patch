@@ -1,0 +1,29 @@
+From ad33f60a98923a5aa5482c254b1b04e2468c1858 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:22:35 +1100
+Subject: [PATCH 076/119] dt-bindings: net: wireless: brcm,bcm4329-fmac: Add
+ BCM4375 PCIe ID
+
+Add the PCI ID of the BCM4375 dual-band 802.11ax function (0x4475), used
+in the Samsung Galaxy Tab Active3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/net/wireless/brcm,bcm4329-fmac.yaml      | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/net/wireless/brcm,bcm4329-fmac.yaml b/Documentation/devicetree/bindings/net/wireless/brcm,bcm4329-fmac.yaml
+index 81fd3e374..666088279 100644
+--- a/Documentation/devicetree/bindings/net/wireless/brcm,bcm4329-fmac.yaml
++++ b/Documentation/devicetree/bindings/net/wireless/brcm,bcm4329-fmac.yaml
+@@ -51,6 +51,7 @@ properties:
+           - brcm,bcm4329-fmac
+           - pci14e4,43dc  # BCM4355
+           - pci14e4,4464  # BCM4364
++          - pci14e4,4475  # BCM4375
+           - pci14e4,4488  # BCM4377
+           - pci14e4,4425  # BCM4378
+           - pci14e4,4433  # BCM4387
+-- 
+2.56.0
+

@@ -1,0 +1,252 @@
+From e8c63f61b7fed08603f026eb9a115e00bfad75aa Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:21:32 +1100
+Subject: [PATCH 041/119] Input: wacom_w9000 - Add W9019 support
+
+The W9019 firmware on the Galaxy Tab Active3 does not answer the 0x2a
+query command. A plain 29-byte read returns one coordinate packet, a
+reserved byte and the 15-byte query block (header 0x0f, max x/y,
+max pressure, firmware version, MPU id, boot loader version, max tilt
+x/y, max hover height). Coordinate packets are 14 bytes with the hover
+height in byte 7 and signed tilt in bytes 8 and 9.
+
+Add variant flags for the command-less query at an offset and for tilt,
+report ABS_TILT_X/Y (transformed like the position for inverted and
+swapped axes) and use the queried hover-height range for ABS_DISTANCE.
+
+Protocol taken from Samsung's GPL wacom_i2c.c for the gtactive3
+(wacom_i2c_query(), wacom_i2c_coord(), COM_QUERY_POS = 14).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/wacom_w9000.c | 112 +++++++++++++++++++++---
+ 1 file changed, 100 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/input/touchscreen/wacom_w9000.c b/drivers/input/touchscreen/wacom_w9000.c
+index 4a2629a54..0cd56191b 100644
+--- a/drivers/input/touchscreen/wacom_w9000.c
++++ b/drivers/input/touchscreen/wacom_w9000.c
+@@ -22,8 +22,9 @@
+ #define CMD_QUERY_RETRIES	8
+ 
+ /* Message length */
+-#define CMD_QUERY_NUM_MAX	9
+-#define MSG_COORD_NUM_MAX	12
++#define CMD_QUERY_NUM_MAX	15
++#define QUERY_BUF_MAX		29
++#define MSG_COORD_NUM_MAX	14
+ 
+ /* Commands */
+ #define CMD_QUERY		0x2a
+@@ -31,6 +32,14 @@
+ struct wacom_w9000_variant {
+ 	const u8 cmd_query_num;
+ 	const u8 msg_coord_num;
++	/*
++	 * Newer firmware (W9019) answers a plain read without a command byte
++	 * with one coordinate packet followed by the query block.
++	 */
++	const bool query_without_cmd;
++	const u8 query_offset;
++	/* Query bytes 11-13 carry the tilt and hover-height ranges */
++	const bool has_tilt;
+ 	const char *name;
+ };
+ 
+@@ -42,6 +51,9 @@ struct wacom_w9000_data {
+ 
+ 	struct touchscreen_properties prop;
+ 	u16 max_pressure;
++	u8 max_distance;
++	u8 max_tilt_x;
++	u8 max_tilt_y;
+ 
+ 	struct regulator *regulator;
+ 
+@@ -81,18 +93,35 @@ static int wacom_w9000_read(struct i2c_client *client, u8 command, u8 len, u8 *d
+ 	return 0;
+ }
+ 
+-static int wacom_w9000_query(struct wacom_w9000_data *wacom_data)
++static int wacom_w9000_query_read(struct wacom_w9000_data *wacom_data,
++				  u8 *buf, u8 len)
+ {
+ 	struct i2c_client *client = wacom_data->client;
++	int res;
++
++	if (!wacom_data->variant->query_without_cmd)
++		return wacom_w9000_read(client, CMD_QUERY, len, buf);
++
++	res = i2c_master_recv(client, buf, len);
++	if (res != len)
++		return res < 0 ? res : -EIO;
++
++	return 0;
++}
++
++static int wacom_w9000_query(struct wacom_w9000_data *wacom_data)
++{
++	const struct wacom_w9000_variant *variant = wacom_data->variant;
+ 	struct device *dev = &wacom_data->client->dev;
+-	u8 data[CMD_QUERY_NUM_MAX];
++	u8 buf[QUERY_BUF_MAX];
++	u8 *data = buf + variant->query_offset;
+ 	int retry;
+ 	int error;
+ 
+ 	for (retry = 0; retry < CMD_QUERY_RETRIES; retry++) {
+-		error = wacom_w9000_read(client, CMD_QUERY,
+-					 wacom_data->variant->cmd_query_num,
+-					 data);
++		error = wacom_w9000_query_read(wacom_data, buf,
++					       variant->query_offset +
++					       variant->cmd_query_num);
+ 		if (!error && data[0] == 0x0f)
+ 			break;
+ 	}
+@@ -103,13 +132,23 @@ static int wacom_w9000_query(struct wacom_w9000_data *wacom_data)
+ 	if (data[0] != 0x0f)
+ 		return -EIO;
+ 
+-	dev_dbg(dev, "query: %*ph, %d\n",
+-		wacom_data->variant->cmd_query_num, data, retry);
++	dev_dbg(dev, "query: %*ph, %d\n", variant->cmd_query_num, data, retry);
+ 
+ 	wacom_data->prop.max_x = get_unaligned_be16(&data[1]);
+ 	wacom_data->prop.max_y = get_unaligned_be16(&data[3]);
+ 	wacom_data->max_pressure = get_unaligned_be16(&data[5]);
+ 	wacom_data->fw_version = get_unaligned_be16(&data[7]);
++	wacom_data->max_distance = 255;
++
++	if (variant->has_tilt) {
++		/* data[9]: MPU id, data[10]: boot loader version */
++		wacom_data->max_tilt_x = data[11];
++		wacom_data->max_tilt_y = data[12];
++		if (data[13])
++			wacom_data->max_distance = data[13];
++		dev_dbg(dev, "mpu:%#x bl:%#x tilt:%d/%d height:%d\n",
++			data[9], data[10], data[11], data[12], data[13]);
++	}
+ 
+ 	dev_dbg(dev, "max_x:%d, max_y:%d, max_pressure:%d, fw:%#x\n",
+ 		wacom_data->prop.max_x, wacom_data->prop.max_y,
+@@ -157,6 +196,7 @@ static void wacom_w9000_coord(struct wacom_w9000_data *wacom_data)
+ 	bool touch, rubber, side_button;
+ 	u16 x, y, pressure;
+ 	u8 distance = 0;
++	int tilt_x, tilt_y;
+ 	int error;
+ 
+ 	error = i2c_master_recv(client, data, wacom_data->variant->msg_coord_num);
+@@ -199,6 +239,22 @@ static void wacom_w9000_coord(struct wacom_w9000_data *wacom_data)
+ 		if (wacom_data->variant->msg_coord_num > 7)
+ 			input_report_abs(wacom_data->input_dev, ABS_DISTANCE, distance);
+ 
++		if (wacom_data->variant->has_tilt) {
++			tilt_x = (s8)data[8];
++			tilt_y = (s8)data[9];
++
++			/* Same transformation as touchscreen_report_pos() */
++			if (wacom_data->prop.invert_x)
++				tilt_x = -tilt_x;
++			if (wacom_data->prop.invert_y)
++				tilt_y = -tilt_y;
++			if (wacom_data->prop.swap_x_y)
++				swap(tilt_x, tilt_y);
++
++			input_report_abs(wacom_data->input_dev, ABS_TILT_X, tilt_x);
++			input_report_abs(wacom_data->input_dev, ABS_TILT_Y, tilt_y);
++		}
++
+ 		input_report_key(wacom_data->input_dev, BTN_STYLUS, side_button);
+ 		input_report_key(wacom_data->input_dev, BTN_TOUCH, touch);
+ 		input_report_key(wacom_data->input_dev, BTN_TOOL_PEN, !rubber);
+@@ -208,7 +264,8 @@ static void wacom_w9000_coord(struct wacom_w9000_data *wacom_data)
+ 		input_report_abs(wacom_data->input_dev, ABS_PRESSURE, 0);
+ 
+ 		if (wacom_data->variant->msg_coord_num > 7)
+-			input_report_abs(wacom_data->input_dev, ABS_DISTANCE, 255);
++			input_report_abs(wacom_data->input_dev, ABS_DISTANCE,
++					 wacom_data->max_distance);
+ 
+ 		input_report_key(wacom_data->input_dev, BTN_STYLUS, 0);
+ 		input_report_key(wacom_data->input_dev, BTN_TOUCH, 0);
+@@ -267,13 +324,17 @@ static int wacom_w9000_probe(struct i2c_client *client)
+ 	}
+ 
+ 	if (wacom_data->variant->cmd_query_num > CMD_QUERY_NUM_MAX ||
++	    wacom_data->variant->query_offset +
++	    wacom_data->variant->cmd_query_num > QUERY_BUF_MAX ||
+ 	    wacom_data->variant->msg_coord_num > MSG_COORD_NUM_MAX) {
+ 		dev_err(dev, "Length of message for %s exceeds the maximum\n",
+ 			wacom_data->variant->name);
+ 		return -EINVAL;
+ 	}
+ 
+-	if (wacom_data->variant->msg_coord_num < 7) {
++	if (wacom_data->variant->msg_coord_num < 7 ||
++	    (wacom_data->variant->has_tilt &&
++	     wacom_data->variant->msg_coord_num < 10)) {
+ 		dev_err(dev, "Length of coordinates message for %s too short\n",
+ 			wacom_data->variant->name);
+ 		return -EINVAL;
+@@ -343,10 +404,21 @@ static int wacom_w9000_probe(struct i2c_client *client)
+ 	input_set_abs_params(input_dev, ABS_PRESSURE, 0, wacom_data->max_pressure, 0, 0);
+ 
+ 	if (wacom_data->variant->msg_coord_num > 7)
+-		input_set_abs_params(input_dev, ABS_DISTANCE, 0, 255, 0, 0);
++		input_set_abs_params(input_dev, ABS_DISTANCE, 0,
++				     wacom_data->max_distance, 0, 0);
+ 
+ 	touchscreen_parse_properties(input_dev, false, &wacom_data->prop);
+ 
++	if (wacom_data->variant->has_tilt) {
++		u8 tx = wacom_data->max_tilt_x, ty = wacom_data->max_tilt_y;
++
++		if (wacom_data->prop.swap_x_y)
++			swap(tx, ty);
++
++		input_set_abs_params(input_dev, ABS_TILT_X, -tx, tx, 0, 0);
++		input_set_abs_params(input_dev, ABS_TILT_Y, -ty, ty, 0, 0);
++	}
++
+ 	dev_info(dev, "%s size X%uY%u\n", wacom_data->variant->name,
+ 		 wacom_data->prop.max_x, wacom_data->prop.max_y);
+ 
+@@ -412,10 +484,25 @@ static const struct wacom_w9000_variant w9007a_v1 = {
+ 	.name = "Wacom W9007A V1 Digitizer",
+ };
+ 
++/*
++ * W9019 (Samsung Galaxy Tab Active3): 15-byte query block returned after a
++ * 13-byte coordinate packet and a reserved byte, 14-byte coordinate packets
++ * with hover height (byte 7) and signed tilt (bytes 8 and 9).
++ */
++static const struct wacom_w9000_variant w9019 = {
++	.cmd_query_num	= 15,
++	.msg_coord_num	= 14,
++	.query_without_cmd = true,
++	.query_offset	= 14,
++	.has_tilt	= true,
++	.name = "Wacom W9019 Digitizer",
++};
++
+ static const struct of_device_id wacom_w9000_of_match[] = {
+ 	{ .compatible = "wacom,w9002", .data = &w9002 },
+ 	{ .compatible = "wacom,w9007a-lt03", .data = &w9007a_lt03, },
+ 	{ .compatible = "wacom,w9007a-v1", .data = &w9007a_v1, },
++	{ .compatible = "wacom,w9019", .data = &w9019, },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, wacom_w9000_of_match);
+@@ -424,6 +511,7 @@ static const struct i2c_device_id wacom_w9000_id[] = {
+ 	{ .name = "w9002", .driver_data = (kernel_ulong_t)&w9002 },
+ 	{ .name = "w9007a-lt03", .driver_data = (kernel_ulong_t)&w9007a_lt03 },
+ 	{ .name = "w9007a-v1", .driver_data = (kernel_ulong_t)&w9007a_v1 },
++	{ .name = "w9019", .driver_data = (kernel_ulong_t)&w9019 },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(i2c, wacom_w9000_id);
+-- 
+2.56.0
+

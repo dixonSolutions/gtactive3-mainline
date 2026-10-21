@@ -1,0 +1,46 @@
+From c61b9fe45fd44a1698c4789a0bfa125e94633b64 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:06:05 +1100
+Subject: [PATCH 082/119] pmdomain: samsung: Allow keeping a domain on during
+ bring-up (WIP)
+
+Not for upstream. A "samsung,bringup-keep-on" property marks a domain
+that the bootloader left fully on as GENPD_FLAG_ALWAYS_ON, so a consumer
+(the Exynos9810 GPU) can be brought up with CONFIG_PM=y before the
+domain's power-off/power-on sequence has been tested on the hardware.
+Drop the property (and later this patch) to let the domain power off.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pmdomain/samsung/exynos-pm-domains.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/drivers/pmdomain/samsung/exynos-pm-domains.c b/drivers/pmdomain/samsung/exynos-pm-domains.c
+index 77e4629f6..014b9c7ab 100644
+--- a/drivers/pmdomain/samsung/exynos-pm-domains.c
++++ b/drivers/pmdomain/samsung/exynos-pm-domains.c
+@@ -275,6 +275,21 @@ static int exynos_pd_probe(struct platform_device *pdev)
+ 
+ 	on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
+ 
++	/*
++	 * Bring-up aid (not a binding): keep a domain that the bootloader
++	 * left on powered for good, so its consumers can be tested before
++	 * its power-off/power-on sequence is trusted.
++	 */
++	if (of_property_read_bool(np, "samsung,bringup-keep-on")) {
++		if (on == pd->local_pwr_cfg) {
++			pd->pd.flags |= GENPD_FLAG_ALWAYS_ON;
++			dev_info(dev, "%s: kept on (bring-up)\n", pd->pd.name);
++		} else {
++			dev_warn(dev, "%s: keep-on requested but status is 0x%x\n",
++				 pd->pd.name, readl_relaxed(pd->base + 0x4));
++		}
++	}
++
+ 	pm_genpd_init(&pd->pd, NULL, !on);
+ 	ret = of_genpd_add_provider_simple(np, &pd->pd);
+ 
+-- 
+2.56.0
+

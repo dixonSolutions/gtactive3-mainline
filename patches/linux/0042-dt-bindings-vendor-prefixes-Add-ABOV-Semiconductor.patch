@@ -1,0 +1,29 @@
+From 7a425b0372721daee819763c3acd05c0097a6042 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:21:32 +1100
+Subject: [PATCH 042/119] dt-bindings: vendor-prefixes: Add ABOV Semiconductor
+
+ABOV Semiconductor makes the A96T3x6 microcontrollers that Samsung uses
+as capacitive grip sensors.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Documentation/devicetree/bindings/vendor-prefixes.yaml | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/vendor-prefixes.yaml b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+index ba2002969..d6ac7f8b0 100644
+--- a/Documentation/devicetree/bindings/vendor-prefixes.yaml
++++ b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+@@ -36,6 +36,8 @@ patternProperties:
+     description: ABB
+   "^abilis,.*":
+     description: Abilis Systems
++  "^abov,.*":
++    description: ABOV Semiconductor Co., Ltd.
+   "^abracon,.*":
+     description: Abracon Corporation
+   "^abt,.*":
+-- 
+2.56.0
+

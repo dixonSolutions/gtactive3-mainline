@@ -1,0 +1,53 @@
+From a11bc5219f568ce3d136ebec3bd8b6a24cae156f Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:21:57 +1100
+Subject: [PATCH 098/119] arm64: dts: exynos: exynos9810: Feed CMU_CHUB from
+ CMU_TOP
+
+CMU_TOP is described now, so take the CHUB bus clock from it instead of
+the fixed-clock stand-in. The stand-in also registered a clock named
+"dout_cmu_chub_bus", which collides with the CMU_TOP divider of the same
+name and made its registration fail.
+
+The rate does not change: CMU_TOP reports PLL_SHARED2 / 2 / 2 = 200 MHz,
+the value the stand-in hard-coded.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 13 +------------
+ 1 file changed, 1 insertion(+), 12 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 44857ca9a..23394682c 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -157,17 +157,6 @@ oscclk: osc-clock {
+ 		clock-output-names = "oscclk";
+ 	};
+ 
+-	/*
+-	 * Stand-in for the CMU_TOP CHUB bus output until CMU_TOP is supported:
+-	 * PLL_SHARED2 (800 MHz) / 2 / 2, as programmed by the bootloader.
+-	 */
+-	clk_cmu_chub_bus: clock-cmu-chub-bus {
+-		compatible = "fixed-clock";
+-		#clock-cells = <0>;
+-		clock-frequency = <200000000>;
+-		clock-output-names = "dout_cmu_chub_bus";
+-	};
+-
+ 	pmu-a55 {
+ 		compatible = "arm,cortex-a55-pmu";
+ 		interrupts = <GIC_SPI 144 IRQ_TYPE_LEVEL_HIGH>,
+@@ -505,7 +494,7 @@ cmu_chub: clock-controller@13a00000 {
+ 			reg = <0x13a00000 0x8000>;
+ 			#clock-cells = <1>;
+ 
+-			clocks = <&oscclk>, <&clk_cmu_chub_bus>;
++			clocks = <&oscclk>, <&cmu_top CLK_DOUT_CMU_CHUB_BUS>;
+ 			clock-names = "oscclk", "bus";
+ 		};
+ 
+-- 
+2.56.0
+

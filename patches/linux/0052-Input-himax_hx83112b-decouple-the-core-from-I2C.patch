@@ -1,0 +1,198 @@
+From ccbb823683158ab6c56a2a37cfb6513891858f27 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:06:45 +1100
+Subject: [PATCH 052/119] Input: himax_hx83112b - decouple the core from I2C
+
+Keep a struct device pointer and the interrupt number in the driver data
+instead of the I2C client, and move the bus independent part of probe
+into himax_probe_common(). This prepares for Himax TDDI controllers that
+are connected over SPI but use the same register interface.
+
+No functional change intended.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/himax_hx83112b.c | 73 +++++++++++++---------
+ 1 file changed, 42 insertions(+), 31 deletions(-)
+
+diff --git a/drivers/input/touchscreen/himax_hx83112b.c b/drivers/input/touchscreen/himax_hx83112b.c
+index 0aa67dfac..79fc1c492 100644
+--- a/drivers/input/touchscreen/himax_hx83112b.c
++++ b/drivers/input/touchscreen/himax_hx83112b.c
+@@ -70,8 +70,9 @@ struct himax_ts_data {
+ 	const struct himax_chip *chip;
+ 	struct gpio_desc *gpiod_rst;
+ 	struct input_dev *input_dev;
+-	struct i2c_client *client;
++	struct device *dev;
+ 	struct regmap *regmap;
++	int irq;
+ 	struct touchscreen_properties props;
+ };
+ 
+@@ -167,12 +168,12 @@ static int himax_check_product_id(struct himax_ts_data *ts)
+ 	if (error)
+ 		return error;
+ 
+-	dev_dbg(&ts->client->dev, "Product id: %x\n", product_id);
++	dev_dbg(ts->dev, "Product id: %x\n", product_id);
+ 
+ 	if (product_id == ts->chip->id)
+ 		return 0;
+ 
+-	dev_err(&ts->client->dev, "Unknown product id: %x\n",
++	dev_err(ts->dev, "Unknown product id: %x\n",
+ 		product_id);
+ 	return -EINVAL;
+ }
+@@ -181,9 +182,9 @@ static int himax_input_register(struct himax_ts_data *ts)
+ {
+ 	int error;
+ 
+-	ts->input_dev = devm_input_allocate_device(&ts->client->dev);
++	ts->input_dev = devm_input_allocate_device(ts->dev);
+ 	if (!ts->input_dev) {
+-		dev_err(&ts->client->dev, "Failed to allocate input device\n");
++		dev_err(ts->dev, "Failed to allocate input device\n");
+ 		return -ENOMEM;
+ 	}
+ 
+@@ -199,14 +200,14 @@ static int himax_input_register(struct himax_ts_data *ts)
+ 	error = input_mt_init_slots(ts->input_dev, HIMAX_MAX_POINTS,
+ 				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
+ 	if (error) {
+-		dev_err(&ts->client->dev,
++		dev_err(ts->dev,
+ 			"Failed to initialize MT slots: %d\n", error);
+ 		return error;
+ 	}
+ 
+ 	error = input_register_device(ts->input_dev);
+ 	if (error) {
+-		dev_err(&ts->client->dev,
++		dev_err(ts->dev,
+ 			"Failed to register input device: %d\n", error);
+ 		return error;
+ 	}
+@@ -268,7 +269,7 @@ static bool himax_verify_checksum(struct himax_ts_data *ts,
+ 		checksum += data[i];
+ 
+ 	if ((checksum & 0x00ff) != 0) {
+-		dev_err(&ts->client->dev, "Wrong event checksum: %04x\n",
++		dev_err(ts->dev, "Wrong event checksum: %04x\n",
+ 			checksum);
+ 		return false;
+ 	}
+@@ -296,7 +297,7 @@ static int himax_handle_input(struct himax_ts_data *ts)
+ 
+ 	error = ts->chip->read_events(ts, &event, sizeof(event));
+ 	if (error) {
+-		dev_err(&ts->client->dev, "Failed to read input event: %d\n",
++		dev_err(ts->dev, "Failed to read input event: %d\n",
+ 			error);
+ 		return error;
+ 	}
+@@ -323,31 +324,21 @@ static irqreturn_t himax_irq_handler(int irq, void *dev_id)
+ 	return IRQ_HANDLED;
+ }
+ 
+-static int himax_probe(struct i2c_client *client)
++static int himax_probe_common(struct device *dev, struct regmap *regmap,
++			      int irq, const struct himax_chip *chip)
+ {
+ 	int error;
+-	struct device *dev = &client->dev;
+ 	struct himax_ts_data *ts;
+ 
+-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
+-		dev_err(dev, "I2C check functionality failed\n");
+-		return -ENXIO;
+-	}
+-
+ 	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
+ 	if (!ts)
+ 		return -ENOMEM;
+ 
+-	i2c_set_clientdata(client, ts);
+-	ts->client = client;
+-	ts->chip = i2c_get_match_data(client);
+-
+-	ts->regmap = devm_regmap_init_i2c(client, &himax_regmap_config);
+-	error = PTR_ERR_OR_ZERO(ts->regmap);
+-	if (error) {
+-		dev_err(dev, "Failed to initialize regmap: %d\n", error);
+-		return error;
+-	}
++	dev_set_drvdata(dev, ts);
++	ts->dev = dev;
++	ts->chip = chip;
++	ts->regmap = regmap;
++	ts->irq = irq;
+ 
+ 	ts->gpiod_rst = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+ 	error = PTR_ERR_OR_ZERO(ts->gpiod_rst);
+@@ -368,20 +359,40 @@ static int himax_probe(struct i2c_client *client)
+ 	if (error)
+ 		return error;
+ 
+-	error = devm_request_threaded_irq(dev, client->irq, NULL,
++	error = devm_request_threaded_irq(dev, ts->irq, NULL,
+ 					  himax_irq_handler, IRQF_ONESHOT,
+-					  client->name, ts);
++					  dev_name(dev), ts);
+ 	if (error)
+ 		return error;
+ 
+ 	return 0;
+ }
+ 
++static int himax_i2c_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct regmap *regmap;
++
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
++		dev_err(dev, "I2C check functionality failed\n");
++		return -ENXIO;
++	}
++
++	regmap = devm_regmap_init_i2c(client, &himax_regmap_config);
++	if (IS_ERR(regmap)) {
++		dev_err(dev, "Failed to initialize regmap: %pe\n", regmap);
++		return PTR_ERR(regmap);
++	}
++
++	return himax_probe_common(dev, regmap, client->irq,
++				  i2c_get_match_data(client));
++}
++
+ static int himax_suspend(struct device *dev)
+ {
+ 	struct himax_ts_data *ts = dev_get_drvdata(dev);
+ 
+-	disable_irq(ts->client->irq);
++	disable_irq(ts->irq);
+ 	return 0;
+ }
+ 
+@@ -389,7 +400,7 @@ static int himax_resume(struct device *dev)
+ {
+ 	struct himax_ts_data *ts = dev_get_drvdata(dev);
+ 
+-	enable_irq(ts->client->irq);
++	enable_irq(ts->irq);
+ 	return 0;
+ }
+ 
+@@ -422,7 +433,7 @@ MODULE_DEVICE_TABLE(of, himax_of_match);
+ #endif
+ 
+ static struct i2c_driver himax_ts_driver = {
+-	.probe = himax_probe,
++	.probe = himax_i2c_probe,
+ 	.id_table = himax_ts_id,
+ 	.driver = {
+ 		.name = "Himax-hx83112b-TS",
+-- 
+2.56.0
+

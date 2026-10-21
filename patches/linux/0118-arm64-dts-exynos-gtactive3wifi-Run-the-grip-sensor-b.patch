@@ -1,0 +1,36 @@
+From b7fbde7429b1ea6ff012e3cfa53289d1e6f1593b Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 20:48:35 +1100
+Subject: [PATCH 118/119] arm64: dts: exynos: gtactive3wifi: Run the grip
+ sensor bus at 100 kHz
+
+The stock 10 kHz is below what the HSI2C divider reaches from its 200 MHz
+clock, so the bus failed to probe.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 577c6c539..49a95d5c5 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -1067,8 +1067,12 @@ digitizer@56 {
+ };
+ 
+ &hsi2c_34 {
+-	/* stock: 10 kHz */
+-	clock-frequency = <10000>;
++	/*
++	 * Stock runs it at 10 kHz, which the 200 MHz USI clock cannot be
++	 * divided down to ("FS clock set-up failed"); the A96T3x6 is fine
++	 * at 100 kHz.
++	 */
++	clock-frequency = <100000>;
+ 
+ 	/* ABOV A96T3x6 Wi-Fi antenna grip sensor */
+ 	proximity@20 {
+-- 
+2.56.0
+

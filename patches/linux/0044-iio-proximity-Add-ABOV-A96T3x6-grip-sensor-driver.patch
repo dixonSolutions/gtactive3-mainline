@@ -1,0 +1,394 @@
+From 6f852b7cc6251b1ea8b3cc935e24030fcd6a127b Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:21:33 +1100
+Subject: [PATCH 044/119] iio: proximity: Add ABOV A96T3x6 grip sensor driver
+
+The A96T3x6 is an ABOV MCU with a factory-flashed capacitive sensing
+firmware, used by Samsung as a two-channel grip (SAR) sensor next to
+the Wi-Fi antennas of the Galaxy Tab Active3.
+
+Expose both channels as IIO proximity channels (raw = difference to
+baseline, registers 0x3a/0x3c) and push threshold events from the
+interrupt (status register 0x07: channel 0 in bits 5:4, channel 1 in
+bits 1:0, 2 = near, 1 = far). Sensing is switched on (0x20 in register
+0x24) at probe and off (0x10) on unbind. The firmware is not touched.
+
+Register map from Samsung's GPL a96t3x6_wifi.c/.h (2-channel variant).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/iio/proximity/Kconfig   |  11 ++
+ drivers/iio/proximity/Makefile  |   1 +
+ drivers/iio/proximity/a96t3x6.c | 326 ++++++++++++++++++++++++++++++++
+ 3 files changed, 338 insertions(+)
+ create mode 100644 drivers/iio/proximity/a96t3x6.c
+
+diff --git a/drivers/iio/proximity/Kconfig b/drivers/iio/proximity/Kconfig
+index bb77fad2a..2b9a8e4e6 100644
+--- a/drivers/iio/proximity/Kconfig
++++ b/drivers/iio/proximity/Kconfig
+@@ -21,6 +21,17 @@ endmenu
+ 
+ menu "Proximity and distance sensors"
+ 
++config A96T3X6
++	tristate "ABOV A96T3x6 capacitive grip sensor"
++	depends on I2C
++	help
++	  Say Y here to build a driver for the ABOV A96T3x6 two-channel
++	  capacitive grip (SAR proximity) sensor found in Samsung tablets
++	  such as the Galaxy Tab Active3.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called a96t3x6.
++
+ config CROS_EC_MKBP_PROXIMITY
+ 	tristate "ChromeOS EC MKBP Proximity sensor"
+ 	depends on CROS_EC
+diff --git a/drivers/iio/proximity/Makefile b/drivers/iio/proximity/Makefile
+index 4352833dd..f2d6ddd6c 100644
+--- a/drivers/iio/proximity/Makefile
++++ b/drivers/iio/proximity/Makefile
+@@ -4,6 +4,7 @@
+ #
+ 
+ # When adding new entries keep the list in alphabetical order
++obj-$(CONFIG_A96T3X6)		+= a96t3x6.o
+ obj-$(CONFIG_AS3935)		+= as3935.o
+ obj-$(CONFIG_CROS_EC_MKBP_PROXIMITY) += cros_ec_mkbp_proximity.o
+ obj-$(CONFIG_D3323AA)		+= d3323aa.o
+diff --git a/drivers/iio/proximity/a96t3x6.c b/drivers/iio/proximity/a96t3x6.c
+new file mode 100644
+index 000000000..1aa561e08
+--- /dev/null
++++ b/drivers/iio/proximity/a96t3x6.c
+@@ -0,0 +1,326 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ABOV A96T3x6 capacitive grip (SAR proximity) sensor
++ *
++ * The A96T3x6 is an ABOV 8051 MCU running a capacitive-sensing firmware that
++ * is flashed in the factory. Samsung uses it as a two-channel "grip" sensor
++ * next to the Wi-Fi antennas for SAR power back-off. The register map below is
++ * taken from Samsung's GPL a96t3x6_wifi.c (2-channel variant) for the Galaxy
++ * Tab Active3; this driver only uses the documented user registers and does
++ * not touch the firmware.
++ */
++
++#include <linux/bits.h>
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/regulator/consumer.h>
++#include <linux/unaligned.h>
++
++#include <linux/iio/events.h>
++#include <linux/iio/iio.h>
++
++#define A96T3X6_REG_FW_VER		0x01
++#define A96T3X6_REG_BTNSTATUS		0x07
++#define A96T3X6_REG_VENDORID		0x12
++#define A96T3X6_REG_MODEL_NO		0x14
++#define A96T3X6_REG_SAR_ENABLE		0x24
++#define A96T3X6_REG_SAR_RAWDATA(ch)	(0x32 + 2 * (ch))
++#define A96T3X6_REG_SAR_BASELINE(ch)	(0x36 + 2 * (ch))
++#define A96T3X6_REG_SAR_DIFFDATA(ch)	(0x3a + 2 * (ch))
++
++#define A96T3X6_SAR_ON			0x20
++#define A96T3X6_SAR_OFF			0x10
++
++/* BTNSTATUS: channel 0 in bits 5:4, channel 1 in bits 1:0; 1 = far, 2 = near */
++#define A96T3X6_STATUS_SHIFT(ch)	((ch) ? 0 : 4)
++#define A96T3X6_STATUS_FAR		1
++#define A96T3X6_STATUS_NEAR		2
++
++#define A96T3X6_NUM_CHANNELS		2
++/* Samsung driver: 150 ms after power-up before the firmware answers */
++#define A96T3X6_POWERUP_DELAY_US	150000
++
++struct a96t3x6 {
++	struct i2c_client *client;
++	/* Serialises register access and the event enable state */
++	struct mutex lock;
++	unsigned long events_enabled;
++	bool near[A96T3X6_NUM_CHANNELS];
++};
++
++static int a96t3x6_read(struct a96t3x6 *data, u8 reg, u8 *buf, u16 len)
++{
++	struct i2c_client *client = data->client;
++	struct i2c_msg msg[] = {
++		{ .addr = client->addr, .len = 1, .buf = &reg },
++		{ .addr = client->addr, .flags = I2C_M_RD, .len = len, .buf = buf },
++	};
++	int ret;
++
++	/* The vendor driver uses two separate messages (STOP in between) */
++	ret = i2c_transfer(client->adapter, &msg[0], 1);
++	if (ret == 1)
++		ret = i2c_transfer(client->adapter, &msg[1], 1);
++
++	if (ret < 0)
++		return ret;
++
++	return ret == 1 ? 0 : -EIO;
++}
++
++static int a96t3x6_write(struct a96t3x6 *data, u8 reg, u8 val)
++{
++	return i2c_smbus_write_byte_data(data->client, reg, val);
++}
++
++static int a96t3x6_read_u16(struct a96t3x6 *data, u8 reg, int *val)
++{
++	u8 buf[2];
++	int ret;
++
++	ret = a96t3x6_read(data, reg, buf, sizeof(buf));
++	if (ret)
++		return ret;
++
++	*val = get_unaligned_be16(buf);
++
++	return 0;
++}
++
++static const struct iio_event_spec a96t3x6_events[] = {
++	{
++		.type = IIO_EV_TYPE_THRESH,
++		.dir = IIO_EV_DIR_RISING,
++	}, {
++		.type = IIO_EV_TYPE_THRESH,
++		.dir = IIO_EV_DIR_FALLING,
++	}, {
++		.type = IIO_EV_TYPE_THRESH,
++		.dir = IIO_EV_DIR_EITHER,
++		.mask_separate = BIT(IIO_EV_INFO_ENABLE),
++	},
++};
++
++#define A96T3X6_CHANNEL(idx)					\
++	{							\
++		.type = IIO_PROXIMITY,				\
++		.indexed = 1,					\
++		.channel = idx,					\
++		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),	\
++		.event_spec = a96t3x6_events,			\
++		.num_event_specs = ARRAY_SIZE(a96t3x6_events),	\
++	}
++
++static const struct iio_chan_spec a96t3x6_channels[] = {
++	A96T3X6_CHANNEL(0),
++	A96T3X6_CHANNEL(1),
++};
++
++static int a96t3x6_read_raw(struct iio_dev *indio_dev,
++			    const struct iio_chan_spec *chan,
++			    int *val, int *val2, long mask)
++{
++	struct a96t3x6 *data = iio_priv(indio_dev);
++	int ret;
++
++	if (mask != IIO_CHAN_INFO_RAW)
++		return -EINVAL;
++
++	/* Raw value: capacitance difference to the tracked baseline */
++	guard(mutex)(&data->lock);
++	ret = a96t3x6_read_u16(data, A96T3X6_REG_SAR_DIFFDATA(chan->channel), val);
++	if (ret)
++		return ret;
++
++	return IIO_VAL_INT;
++}
++
++static int a96t3x6_set_sensing(struct a96t3x6 *data, bool on)
++{
++	return a96t3x6_write(data, A96T3X6_REG_SAR_ENABLE,
++			     on ? A96T3X6_SAR_ON : A96T3X6_SAR_OFF);
++}
++
++static void a96t3x6_sensing_off(void *priv)
++{
++	a96t3x6_set_sensing(priv, false);
++}
++
++static int a96t3x6_read_event_config(struct iio_dev *indio_dev,
++				     const struct iio_chan_spec *chan,
++				     enum iio_event_type type,
++				     enum iio_event_direction dir)
++{
++	struct a96t3x6 *data = iio_priv(indio_dev);
++
++	return test_bit(chan->channel, &data->events_enabled);
++}
++
++static int a96t3x6_write_event_config(struct iio_dev *indio_dev,
++				      const struct iio_chan_spec *chan,
++				      enum iio_event_type type,
++				      enum iio_event_direction dir, bool state)
++{
++	struct a96t3x6 *data = iio_priv(indio_dev);
++	unsigned long old;
++
++	guard(mutex)(&data->lock);
++
++	old = data->events_enabled;
++	assign_bit(chan->channel, &data->events_enabled, state);
++
++	/* The interrupt is shared by both channels */
++	if (!old && data->events_enabled)
++		enable_irq(data->client->irq);
++	else if (old && !data->events_enabled)
++		/* nosync: the IRQ thread takes data->lock */
++		disable_irq_nosync(data->client->irq);
++
++	return 0;
++}
++
++static const struct iio_info a96t3x6_info = {
++	.read_raw = a96t3x6_read_raw,
++	.read_event_config = a96t3x6_read_event_config,
++	.write_event_config = a96t3x6_write_event_config,
++};
++
++static irqreturn_t a96t3x6_irq_thread(int irq, void *private)
++{
++	struct iio_dev *indio_dev = private;
++	struct a96t3x6 *data = iio_priv(indio_dev);
++	s64 timestamp = iio_get_time_ns(indio_dev);
++	enum iio_event_direction dir;
++	unsigned int ch, state;
++	u8 status;
++	int ret;
++
++	guard(mutex)(&data->lock);
++
++	ret = a96t3x6_read(data, A96T3X6_REG_BTNSTATUS, &status, 1);
++	if (ret) {
++		dev_err_ratelimited(&data->client->dev,
++				    "failed to read status: %d\n", ret);
++		return IRQ_HANDLED;
++	}
++
++	for (ch = 0; ch < A96T3X6_NUM_CHANNELS; ch++) {
++		bool near;
++
++		if (!test_bit(ch, &data->events_enabled))
++			continue;
++
++		state = (status >> A96T3X6_STATUS_SHIFT(ch)) & 0x3;
++		if (state != A96T3X6_STATUS_NEAR && state != A96T3X6_STATUS_FAR)
++			continue;
++
++		near = state == A96T3X6_STATUS_NEAR;
++		if (near == data->near[ch])
++			continue;
++		data->near[ch] = near;
++
++		/* Same convention as sx9310: near = falling, far = rising */
++		dir = near ? IIO_EV_DIR_FALLING : IIO_EV_DIR_RISING;
++		iio_push_event(indio_dev,
++			       IIO_UNMOD_EVENT_CODE(IIO_PROXIMITY, ch,
++						    IIO_EV_TYPE_THRESH, dir),
++			       timestamp);
++	}
++
++	return IRQ_HANDLED;
++}
++
++static int a96t3x6_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct iio_dev *indio_dev;
++	struct a96t3x6 *data;
++	u8 id[3];
++	int ret;
++
++	indio_dev = devm_iio_device_alloc(dev, sizeof(*data));
++	if (!indio_dev)
++		return -ENOMEM;
++
++	data = iio_priv(indio_dev);
++	data->client = client;
++	ret = devm_mutex_init(dev, &data->lock);
++	if (ret)
++		return ret;
++
++	ret = devm_regulator_get_enable(dev, "vdd");
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to enable vdd\n");
++
++	fsleep(A96T3X6_POWERUP_DELAY_US);
++
++	ret = a96t3x6_read(data, A96T3X6_REG_FW_VER, &id[0], 1);
++	if (!ret)
++		ret = a96t3x6_read(data, A96T3X6_REG_VENDORID, &id[1], 1);
++	if (!ret)
++		ret = a96t3x6_read(data, A96T3X6_REG_MODEL_NO, &id[2], 1);
++	if (ret)
++		return dev_err_probe(dev, ret, "no response from sensor\n");
++
++	/* A chip without firmware ACKs but reads back zeroes everywhere */
++	if (!id[0] && !id[1] && !id[2])
++		return dev_err_probe(dev, -ENODEV, "sensor has no firmware\n");
++
++	dev_info(dev, "fw %#04x vendor %#04x model %#04x\n", id[0], id[1], id[2]);
++
++	/* Keep sensing on so that the raw values are always current */
++	ret = a96t3x6_set_sensing(data, true);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to start sensing\n");
++
++	ret = devm_add_action_or_reset(dev, a96t3x6_sensing_off, data);
++	if (ret)
++		return ret;
++
++	indio_dev->name = "a96t3x6";
++	indio_dev->info = &a96t3x6_info;
++	indio_dev->modes = INDIO_DIRECT_MODE;
++	indio_dev->channels = a96t3x6_channels;
++	indio_dev->num_channels = ARRAY_SIZE(a96t3x6_channels);
++
++	if (!client->irq)
++		return dev_err_probe(dev, -EINVAL, "no interrupt\n");
++
++	ret = devm_request_threaded_irq(dev, client->irq, NULL,
++					a96t3x6_irq_thread,
++					IRQF_ONESHOT | IRQF_NO_AUTOEN,
++					"a96t3x6", indio_dev);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to request irq\n");
++
++	return devm_iio_device_register(dev, indio_dev);
++}
++
++static const struct of_device_id a96t3x6_of_match[] = {
++	{ .compatible = "abov,a96t3x6" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, a96t3x6_of_match);
++
++static const struct i2c_device_id a96t3x6_id[] = {
++	{ "a96t3x6" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, a96t3x6_id);
++
++static struct i2c_driver a96t3x6_driver = {
++	.driver = {
++		.name = "a96t3x6",
++		.of_match_table = a96t3x6_of_match,
++	},
++	.probe = a96t3x6_probe,
++	.id_table = a96t3x6_id,
++};
++module_i2c_driver(a96t3x6_driver);
++
++MODULE_DESCRIPTION("ABOV A96T3x6 capacitive grip sensor");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

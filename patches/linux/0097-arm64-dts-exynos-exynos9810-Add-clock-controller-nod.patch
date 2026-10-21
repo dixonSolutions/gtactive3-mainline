@@ -1,0 +1,172 @@
+From 2b52abbdae2c1b3f49659e9b4323cc4e5c917586 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:21:57 +1100
+Subject: [PATCH 097/119] arm64: dts: exynos: exynos9810: Add clock controller
+ nodes
+
+Add the CMU_TOP, CMU_APM, CMU_CMGP, CMU_PERIC0, CMU_PERIC1, CMU_PERIS,
+CMU_FSYS0, CMU_DPU and CMU_G3D nodes. The addresses come from the
+SFR_BLOCK table of Samsung's CMUCAL data; the stock device tree's single
+"samsung,exynos9810-clock" node at 0x15a80000 is a leftover from
+Exynos8895 and is not used by the downstream driver.
+
+No consumer is switched over yet, the fixed-clock placeholders stay in
+place until each driver has been tested with the real clocks.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 89 ++++++++++++++++++++++
+ 1 file changed, 89 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index ece5a36fe..44857ca9a 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -222,6 +222,15 @@ chipid@10000000 {
+ 			reg = <0x10000000 0x100>;
+ 		};
+ 
++		cmu_peris: clock-controller@10020000 {
++			compatible = "samsung,exynos9810-cmu-peris";
++			reg = <0x10020000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_PERIS_BUS>;
++			clock-names = "oscclk", "bus";
++		};
++
+ 		/*
+ 		 * TODO: the bus clock is the CMU_PERIS WDT_CLUSTERx PCLK gate;
+ 		 * use oscclk until there is a clock driver (the bootloader
+@@ -278,6 +287,16 @@ gic: interrupt-controller@10101000 {
+ 			#size-cells = <1>;
+ 		};
+ 
++		cmu_peric0: clock-controller@10400000 {
++			compatible = "samsung,exynos9810-cmu-peric0";
++			reg = <0x10400000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_PERIC0_BUS>,
++				 <&cmu_top CLK_DOUT_CMU_PERIC0_IP>;
++			clock-names = "oscclk", "bus", "ip";
++		};
++
+ 		sysreg_peric0: syscon@10410000 {
+ 			compatible = "samsung,exynos9810-peric0-sysreg", "syscon";
+ 			reg = <0x10410000 0x10000>;
+@@ -312,6 +331,16 @@ hsi2c_7: i2c@10480000 {
+ 			};
+ 		};
+ 
++		cmu_peric1: clock-controller@10800000 {
++			compatible = "samsung,exynos9810-cmu-peric1";
++			reg = <0x10800000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_PERIC1_BUS>,
++				 <&cmu_top CLK_DOUT_CMU_PERIC1_IP>;
++			clock-names = "oscclk", "bus", "ip";
++		};
++
+ 		sysreg_peric1: syscon@10810000 {
+ 			compatible = "samsung,exynos9810-peric1-sysreg", "syscon";
+ 			reg = <0x10810000 0x10000>;
+@@ -440,6 +469,20 @@ hsi2c_23: i2c@10910000 {
+ 			};
+ 		};
+ 
++		cmu_fsys0: clock-controller@11000000 {
++			compatible = "samsung,exynos9810-cmu-fsys0";
++			reg = <0x11000000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_FSYS0_BUS>,
++				 <&cmu_top CLK_DOUT_CMU_FSYS0_DPGTC>,
++				 <&cmu_top CLK_DOUT_CMU_FSYS0_UFS_EMBD>,
++				 <&cmu_top CLK_DOUT_CMU_FSYS0_USB30DRD>,
++				 <&cmu_top CLK_DOUT_CMU_FSYS0_USBDP_DEBUG>;
++			clock-names = "oscclk", "bus", "dpgtc", "ufs_embd",
++				      "usb30drd", "usbdp_debug";
++		};
++
+ 		pinctrl_fsys0: pinctrl@11050000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x11050000 0x1000>;
+@@ -509,6 +552,15 @@ spi_21: spi@13ae0000 {
+ 			};
+ 		};
+ 
++		cmu_apm: clock-controller@14000000 {
++			compatible = "samsung,exynos9810-cmu-apm";
++			reg = <0x14000000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_APM_BUS>;
++			clock-names = "oscclk", "bus";
++		};
++
+ 		pinctrl_alive: pinctrl@14050000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x14050000 0x1000>;
+@@ -535,6 +587,16 @@ pd_g3d: power-domain@14064040 {
+ 			status = "disabled";
+ 		};
+ 
++		cmu_cmgp: clock-controller@14200000 {
++			compatible = "samsung,exynos9810-cmu-cmgp";
++			reg = <0x14200000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_CMGP_BUS>,
++				 <&cmu_apm CLK_DOUT_CMU_APM_DLL_CMGP>;
++			clock-names = "oscclk", "bus", "apm_dll";
++		};
++
+ 		sysreg_cmgp: syscon@14210000 {
+ 			compatible = "samsung,exynos9810-cmgp-sysreg", "syscon";
+ 			reg = <0x14210000 0x10000>;
+@@ -608,6 +670,25 @@ hsi2c_40: i2c@14360000 {
+ 			};
+ 		};
+ 
++		cmu_dpu: clock-controller@16000000 {
++			compatible = "samsung,exynos9810-cmu-dpu";
++			reg = <0x16000000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_MOUT_CMU_DPU_BUS_OUT>;
++			clock-names = "oscclk", "bus";
++		};
++
++		cmu_g3d: clock-controller@17400000 {
++			compatible = "samsung,exynos9810-cmu-g3d";
++			reg = <0x17400000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_HPM>,
++				 <&cmu_top CLK_DOUT_CMU_G3D_SWITCH>;
++			clock-names = "oscclk", "hpm", "switch";
++		};
++
+ 		gpu: gpu@17500000 {
+ 			compatible = "samsung,exynos9810-mali", "arm,mali-bifrost";
+ 			reg = <0x17500000 0x5000>;
+@@ -623,6 +704,14 @@ pinctrl_aud: pinctrl@17c60000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x17c60000 0x1000>;
+ 		};
++
++		cmu_top: clock-controller@1a240000 {
++			compatible = "samsung,exynos9810-cmu-top";
++			reg = <0x1a240000 0x8000>;
++			#clock-cells = <1>;
++			clocks = <&oscclk>;
++			clock-names = "oscclk";
++		};
+ 	};
+ 
+ 	/*
+-- 
+2.56.0
+

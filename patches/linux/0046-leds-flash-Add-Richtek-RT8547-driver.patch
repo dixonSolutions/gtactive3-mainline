@@ -1,0 +1,426 @@
+From 58ec98472ba7ca4b5413160a51afcc76d3dab741 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:21:33 +1100
+Subject: [PATCH 046/119] leds: flash: Add Richtek RT8547 driver
+
+The RT8547 drives the rear camera flash LED of the Galaxy Tab Active3.
+FLEN switches the output and a single-wire CTRL line programs the
+torch/strobe mode, the torch current (25-400 mA), the flash current
+(100-1600 mA) and the flash timer (64-2080 ms).
+
+Register it as a flash LED class device: brightness programs torch
+mode, strobe programs flash mode and releases FLEN from a timer after
+the flash timeout. The bus timings, device address 0x99 and the
+one-time LVP-disable write to register 7 follow Samsung's GPL
+leds-rt8547.c.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/leds/flash/Kconfig       |  11 +
+ drivers/leds/flash/Makefile      |   1 +
+ drivers/leds/flash/leds-rt8547.c | 359 +++++++++++++++++++++++++++++++
+ 3 files changed, 371 insertions(+)
+ create mode 100644 drivers/leds/flash/leds-rt8547.c
+
+diff --git a/drivers/leds/flash/Kconfig b/drivers/leds/flash/Kconfig
+index 9b6dd3f1f..f1d26f073 100644
+--- a/drivers/leds/flash/Kconfig
++++ b/drivers/leds/flash/Kconfig
+@@ -114,6 +114,17 @@ config LEDS_RT8515
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called leds-rt8515.
+ 
++config LEDS_RT8547
++	tristate "LED support for Richtek RT8547 flash/torch LED"
++	depends on GPIOLIB
++	help
++	  This option enables support for the Richtek RT8547 flash and
++	  torch LED driver, programmed over a single-wire GPIO bus, found
++	  on the Samsung Galaxy Tab Active3.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called leds-rt8547.
++
+ config LEDS_S2M_FLASH
+ 	tristate "Samsung S2M series PMICs flash/torch LED support"
+ 	depends on LEDS_CLASS
+diff --git a/drivers/leds/flash/Makefile b/drivers/leds/flash/Makefile
+index 44e6c1b4b..3cf76975c 100644
+--- a/drivers/leds/flash/Makefile
++++ b/drivers/leds/flash/Makefile
+@@ -10,6 +10,7 @@ obj-$(CONFIG_LEDS_MAX77693)	+= leds-max77693.o
+ obj-$(CONFIG_LEDS_QCOM_FLASH)	+= leds-qcom-flash.o
+ obj-$(CONFIG_LEDS_RT4505)	+= leds-rt4505.o
+ obj-$(CONFIG_LEDS_RT8515)	+= leds-rt8515.o
++obj-$(CONFIG_LEDS_RT8547)	+= leds-rt8547.o
+ obj-$(CONFIG_LEDS_S2M_FLASH)	+= leds-s2m-flash.o
+ obj-$(CONFIG_LEDS_SGM3140)	+= leds-sgm3140.o
+ obj-$(CONFIG_LEDS_SY7802)	+= leds-sy7802.o
+diff --git a/drivers/leds/flash/leds-rt8547.c b/drivers/leds/flash/leds-rt8547.c
+new file mode 100644
+index 000000000..87ded953b
+--- /dev/null
++++ b/drivers/leds/flash/leds-rt8547.c
+@@ -0,0 +1,359 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * LED driver for the Richtek RT8547 flash/torch LED driver
++ *
++ * The RT8547 is a 1.6 A boost flash LED driver with two control lines:
++ * FLEN turns the output on and CTRL is a single-wire bus that programs the
++ * mode and currents. The bus protocol and register values come from
++ * Samsung's GPL driver (leds-rt8547.c, Galaxy Tab Active3 kernel):
++ *
++ *  - idle high, start of data: CTRL high for T_SOD
++ *  - each bit: CTRL low then high; a "1" is short-low/long-high, a "0" is
++ *    long-low/short-high
++ *  - frame: 8-bit device address 0x99, 3-bit register, 8-bit data, MSB first
++ *  - end of data: CTRL low for T_SHORT, then high for T_EOD
++ *
++ * Pulling both lines low turns the LED off.
++ */
++
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/gpio/consumer.h>
++#include <linux/led-class-flash.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/spinlock.h>
++#include <linux/timer.h>
++
++#define RT8547_DEV_ADDR			0x99
++
++#define RT8547_REG_LVP			0x1
++#define RT8547_REG_FLASH_CURRENT	0x2
++#define RT8547_REG_MODE_CURRENT		0x3
++#define RT8547_REG_FLASH_TIMEOUT	0x4
++#define RT8547_REG_HIDDEN		0x7
++
++/* REG_FLASH_CURRENT: [7:5] min. current for the timer, [4:0] flash current */
++#define RT8547_TIMEOUT_CURRENT_400MA	(0x7 << 5)
++/* REG_MODE_CURRENT: [4] torch select, [3:0] torch current */
++#define RT8547_MODE_TORCH		BIT(4)
++#define RT8547_MODE_STROBE		0x00
++/* REG_HIDDEN value used by Samsung to disable low-voltage protection */
++#define RT8547_HIDDEN_LVP_DISABLE	0x27
++
++/* Torch: 25 mA steps from 25 mA to 400 mA */
++#define RT8547_TORCH_STEP_UA		25000
++#define RT8547_TORCH_MAX_UA		400000
++/* Flash: 50 mA steps from 100 mA to 1600 mA */
++#define RT8547_FLASH_MIN_UA		100000
++#define RT8547_FLASH_STEP_UA		50000
++#define RT8547_FLASH_MAX_UA		1600000
++/* Flash timer: 32 ms steps from 64 ms */
++#define RT8547_TIMEOUT_MIN_US		64000
++#define RT8547_TIMEOUT_STEP_US		32000
++#define RT8547_TIMEOUT_MAX_US		(RT8547_TIMEOUT_MIN_US + 0x3f * RT8547_TIMEOUT_STEP_US)
++#define RT8547_TIMEOUT_DEFAULT_US	512000
++
++/* Single-wire timings in microseconds */
++#define RT8547_T_SHORT			4
++#define RT8547_T_LONG			60
++#define RT8547_T_SOD			10
++#define RT8547_T_EOD			10
++
++struct rt8547 {
++	struct led_classdev_flash fled;
++	struct device *dev;
++	/* Serialises LED state changes */
++	struct mutex lock;
++	/* Keeps the bit timing intact */
++	spinlock_t bus_lock;
++	struct gpio_desc *flen;
++	struct gpio_desc *ctrl;
++	struct timer_list powerdown_timer;
++	u32 torch_max_ua;
++	u32 flash_max_ua;
++};
++
++static struct rt8547 *to_rt8547(struct led_classdev_flash *fled)
++{
++	return container_of(fled, struct rt8547, fled);
++}
++
++static void rt8547_send_bits(struct rt8547 *rt, u8 data, int len)
++{
++	int i;
++
++	for (i = len - 1; i >= 0; i--) {
++		bool one = data & BIT(i);
++
++		gpiod_set_value(rt->ctrl, 0);
++		udelay(one ? RT8547_T_SHORT : RT8547_T_LONG);
++		gpiod_set_value(rt->ctrl, 1);
++		udelay(one ? RT8547_T_LONG : RT8547_T_SHORT);
++	}
++}
++
++/* Called with bus_lock held */
++static void rt8547_write(struct rt8547 *rt, u8 reg, u8 val)
++{
++	gpiod_set_value(rt->ctrl, 1);
++	udelay(RT8547_T_SOD);
++
++	rt8547_send_bits(rt, RT8547_DEV_ADDR, 8);
++	rt8547_send_bits(rt, reg, 3);
++	rt8547_send_bits(rt, val, 8);
++
++	gpiod_set_value(rt->ctrl, 0);
++	udelay(RT8547_T_SHORT);
++	gpiod_set_value(rt->ctrl, 1);
++	udelay(RT8547_T_EOD);
++}
++
++static void rt8547_off(struct rt8547 *rt)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&rt->bus_lock, flags);
++	gpiod_set_value(rt->ctrl, 0);
++	gpiod_set_value(rt->flen, 0);
++	spin_unlock_irqrestore(&rt->bus_lock, flags);
++}
++
++static int rt8547_brightness_set(struct led_classdev *led,
++				 enum led_brightness brightness)
++{
++	struct led_classdev_flash *fled = lcdev_to_flcdev(led);
++	struct rt8547 *rt = to_rt8547(fled);
++	unsigned long flags;
++
++	guard(mutex)(&rt->lock);
++
++	timer_delete_sync(&rt->powerdown_timer);
++
++	if (brightness == LED_OFF) {
++		rt8547_off(rt);
++		return 0;
++	}
++
++	/* brightness 1..max_brightness maps to 25 mA..torch_max_ua */
++	spin_lock_irqsave(&rt->bus_lock, flags);
++	rt8547_write(rt, RT8547_REG_MODE_CURRENT,
++		     RT8547_MODE_TORCH | (brightness - 1));
++	rt8547_write(rt, RT8547_REG_FLASH_CURRENT, RT8547_TIMEOUT_CURRENT_400MA);
++	gpiod_set_value(rt->flen, 1);
++	spin_unlock_irqrestore(&rt->bus_lock, flags);
++
++	return 0;
++}
++
++static int rt8547_flash_brightness_set(struct led_classdev_flash *fled,
++				       u32 brightness)
++{
++	/* Stored by the led-class-flash core and used on the next strobe */
++	return 0;
++}
++
++static int rt8547_flash_timeout_set(struct led_classdev_flash *fled,
++				    u32 timeout)
++{
++	/* Stored by the led-class-flash core and used on the next strobe */
++	return 0;
++}
++
++static int rt8547_flash_strobe_set(struct led_classdev_flash *fled, bool state)
++{
++	struct rt8547 *rt = to_rt8547(fled);
++	u32 timeout_us = fled->timeout.val;
++	u32 flash_ua = fled->brightness.val;
++	unsigned long flags;
++	u8 flash, timer;
++
++	guard(mutex)(&rt->lock);
++
++	timer_delete_sync(&rt->powerdown_timer);
++
++	if (!state) {
++		rt8547_off(rt);
++		return 0;
++	}
++
++	flash = (flash_ua - RT8547_FLASH_MIN_UA) / RT8547_FLASH_STEP_UA;
++	timer = (timeout_us - RT8547_TIMEOUT_MIN_US) / RT8547_TIMEOUT_STEP_US;
++
++	spin_lock_irqsave(&rt->bus_lock, flags);
++	rt8547_write(rt, RT8547_REG_MODE_CURRENT, RT8547_MODE_STROBE);
++	rt8547_write(rt, RT8547_REG_FLASH_TIMEOUT, timer);
++	rt8547_write(rt, RT8547_REG_FLASH_CURRENT,
++		     RT8547_TIMEOUT_CURRENT_400MA | flash);
++	gpiod_set_value(rt->flen, 1);
++	spin_unlock_irqrestore(&rt->bus_lock, flags);
++
++	/* The chip has its own timer; this one only releases FLEN */
++	mod_timer(&rt->powerdown_timer, jiffies + usecs_to_jiffies(timeout_us));
++
++	fled->led_cdev.brightness = LED_OFF;
++
++	return 0;
++}
++
++static int rt8547_flash_strobe_get(struct led_classdev_flash *fled, bool *state)
++{
++	struct rt8547 *rt = to_rt8547(fled);
++
++	*state = timer_pending(&rt->powerdown_timer);
++
++	return 0;
++}
++
++static const struct led_flash_ops rt8547_flash_ops = {
++	.flash_brightness_set = rt8547_flash_brightness_set,
++	.strobe_set = rt8547_flash_strobe_set,
++	.strobe_get = rt8547_flash_strobe_get,
++	.timeout_set = rt8547_flash_timeout_set,
++};
++
++static void rt8547_powerdown_timer(struct timer_list *t)
++{
++	struct rt8547 *rt = timer_container_of(rt, t, powerdown_timer);
++
++	rt8547_off(rt);
++}
++
++static void rt8547_init_settings(struct rt8547 *rt, u32 max_timeout_us)
++{
++	struct led_classdev_flash *fled = &rt->fled;
++	struct led_flash_setting *s;
++
++	s = &fled->brightness;
++	s->min = RT8547_FLASH_MIN_UA;
++	s->max = rt->flash_max_ua;
++	s->step = RT8547_FLASH_STEP_UA;
++	s->val = s->max;
++
++	s = &fled->timeout;
++	s->min = RT8547_TIMEOUT_MIN_US;
++	s->max = max_timeout_us;
++	s->step = RT8547_TIMEOUT_STEP_US;
++	s->val = min(max_timeout_us, RT8547_TIMEOUT_DEFAULT_US);
++}
++
++static int rt8547_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct led_init_data init_data = {};
++	struct led_classdev_flash *fled;
++	struct fwnode_handle *child;
++	struct led_classdev *led;
++	unsigned long flags;
++	struct rt8547 *rt;
++	u32 max_timeout_us;
++	int ret;
++
++	rt = devm_kzalloc(dev, sizeof(*rt), GFP_KERNEL);
++	if (!rt)
++		return -ENOMEM;
++
++	rt->dev = dev;
++	fled = &rt->fled;
++	led = &fled->led_cdev;
++
++	rt->flen = devm_gpiod_get(dev, "flen", GPIOD_OUT_LOW);
++	if (IS_ERR(rt->flen))
++		return dev_err_probe(dev, PTR_ERR(rt->flen),
++				     "cannot get FLEN GPIO\n");
++
++	rt->ctrl = devm_gpiod_get(dev, "ctrl", GPIOD_OUT_LOW);
++	if (IS_ERR(rt->ctrl))
++		return dev_err_probe(dev, PTR_ERR(rt->ctrl),
++				     "cannot get CTRL GPIO\n");
++
++	/* The single-wire bus is bit-banged with interrupts disabled */
++	if (gpiod_cansleep(rt->ctrl) || gpiod_cansleep(rt->flen))
++		return dev_err_probe(dev, -EINVAL,
++				     "FLEN and CTRL must not sleep\n");
++
++	child = device_get_next_child_node(dev, NULL);
++	if (!child)
++		return dev_err_probe(dev, -EINVAL, "no LED child node\n");
++
++	init_data.fwnode = child;
++
++	if (fwnode_property_read_u32(child, "led-max-microamp", &rt->torch_max_ua))
++		rt->torch_max_ua = RT8547_TORCH_STEP_UA;
++	rt->torch_max_ua = clamp(rt->torch_max_ua, RT8547_TORCH_STEP_UA,
++				 RT8547_TORCH_MAX_UA);
++
++	if (fwnode_property_read_u32(child, "flash-max-microamp", &rt->flash_max_ua))
++		rt->flash_max_ua = RT8547_FLASH_MIN_UA;
++	rt->flash_max_ua = clamp(rt->flash_max_ua, RT8547_FLASH_MIN_UA,
++				 RT8547_FLASH_MAX_UA);
++
++	if (fwnode_property_read_u32(child, "flash-max-timeout-us", &max_timeout_us))
++		max_timeout_us = RT8547_TIMEOUT_DEFAULT_US;
++	max_timeout_us = clamp(max_timeout_us, RT8547_TIMEOUT_MIN_US,
++			       RT8547_TIMEOUT_MAX_US);
++
++	ret = devm_mutex_init(dev, &rt->lock);
++	if (ret) {
++		fwnode_handle_put(child);
++		return ret;
++	}
++	spin_lock_init(&rt->bus_lock);
++	timer_setup(&rt->powerdown_timer, rt8547_powerdown_timer, 0);
++	rt8547_init_settings(rt, max_timeout_us);
++
++	/* Same one-time setup as the Samsung driver, then off */
++	spin_lock_irqsave(&rt->bus_lock, flags);
++	rt8547_write(rt, RT8547_REG_HIDDEN, RT8547_HIDDEN_LVP_DISABLE);
++	udelay(300);
++	gpiod_set_value(rt->ctrl, 0);
++	gpiod_set_value(rt->flen, 0);
++	spin_unlock_irqrestore(&rt->bus_lock, flags);
++
++	fled->ops = &rt8547_flash_ops;
++	led->max_brightness = rt->torch_max_ua / RT8547_TORCH_STEP_UA;
++	led->brightness_set_blocking = rt8547_brightness_set;
++	led->flags |= LED_CORE_SUSPENDRESUME | LED_DEV_CAP_FLASH;
++
++	platform_set_drvdata(pdev, rt);
++
++	ret = devm_led_classdev_flash_register_ext(dev, fled, &init_data);
++	fwnode_handle_put(child);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot register LED\n");
++
++	dev_info(dev, "torch max %u uA, flash max %u uA, timeout %u us\n",
++		 rt->torch_max_ua, rt->flash_max_ua, max_timeout_us);
++
++	return 0;
++}
++
++static void rt8547_remove(struct platform_device *pdev)
++{
++	struct rt8547 *rt = platform_get_drvdata(pdev);
++
++	timer_delete_sync(&rt->powerdown_timer);
++	rt8547_off(rt);
++}
++
++static const struct of_device_id rt8547_match[] = {
++	{ .compatible = "richtek,rt8547" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, rt8547_match);
++
++static struct platform_driver rt8547_driver = {
++	.driver = {
++		.name = "rt8547",
++		.of_match_table = rt8547_match,
++	},
++	.probe = rt8547_probe,
++	.remove = rt8547_remove,
++};
++module_platform_driver(rt8547_driver);
++
++MODULE_DESCRIPTION("Richtek RT8547 flash LED driver");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

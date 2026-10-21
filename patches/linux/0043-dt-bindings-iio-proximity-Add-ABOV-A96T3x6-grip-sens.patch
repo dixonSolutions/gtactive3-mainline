@@ -1,0 +1,76 @@
+From 6b5c7b001daa00c41559fab51bbfc9e8d8227f10 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:21:33 +1100
+Subject: [PATCH 043/119] dt-bindings: iio: proximity: Add ABOV A96T3x6 grip
+ sensor
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../bindings/iio/proximity/abov,a96t3x6.yaml  | 55 +++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/iio/proximity/abov,a96t3x6.yaml
+
+diff --git a/Documentation/devicetree/bindings/iio/proximity/abov,a96t3x6.yaml b/Documentation/devicetree/bindings/iio/proximity/abov,a96t3x6.yaml
+new file mode 100644
+index 000000000..604e8c633
+--- /dev/null
++++ b/Documentation/devicetree/bindings/iio/proximity/abov,a96t3x6.yaml
+@@ -0,0 +1,55 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/iio/proximity/abov,a96t3x6.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ABOV A96T3x6 capacitive grip sensor
++
++maintainers:
++  - dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
++
++description: |
++  The A96T3x6 is an ABOV microcontroller running a capacitive sensing
++  firmware. Samsung uses it as a two-channel grip (SAR proximity) sensor
++  beside the antennas. Each channel reports the capacitance difference to
++  its baseline and raises the interrupt line when it crosses the threshold
++  programmed in the firmware.
++
++properties:
++  compatible:
++    const: abov,a96t3x6
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    maxItems: 1
++
++  vdd-supply:
++    description: Sensor supply (3.0 V on the Galaxy Tab Active3).
++
++required:
++  - compatible
++  - reg
++  - interrupts
++  - vdd-supply
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/interrupt-controller/irq.h>
++
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        proximity@20 {
++            compatible = "abov,a96t3x6";
++            reg = <0x20>;
++            interrupt-parent = <&gpa1>;
++            interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
++            vdd-supply = <&vdd_grip>;
++        };
++    };
+-- 
+2.56.0
+

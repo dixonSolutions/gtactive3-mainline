@@ -1,0 +1,118 @@
+From 2e07bd6ea0e279c81cd34bdcec7257036530eedb Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:22:27 +1100
+Subject: [PATCH 047/119] arm64: dts: exynos: gtactive3wifi: Add hall sensor,
+ vibrator and flash LED
+
+All three hang off plain GPIOs (stock T570XXSFEYI1 dtbo-4):
+- cover hall sensor on gpa0-2 ("hall" node, active low per Samsung's
+  hall.c), as an SW_LID switch in gpio-keys
+- coin DC vibration motor enabled by gpg3-6 ("dc_vibrator",
+  dc_vib,gpio_en; the vendor driver drives it high to vibrate)
+- RT8547 rear camera flash, FLEN gpg3-5, CTRL gpg0-7 ("leds_rt8547"),
+  limited to the stock flash (1000 mA) and movie (150 mA) currents
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 57 ++++++++++++++++++-
+ 1 file changed, 56 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 55806182f..6accc4bb3 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -16,6 +16,7 @@
+ #include <dt-bindings/gpio/gpio.h>
+ #include <dt-bindings/input/input.h>
+ #include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/leds/common.h>
+ 
+ / {
+ 	model = "Samsung Galaxy Tab Active3 (SM-T570)";
+@@ -81,7 +82,7 @@ gpio-keys {
+ 		compatible = "gpio-keys";
+ 
+ 		pinctrl-0 = <&key_power &key_voldown &key_volup &key_home &key_hot
+-			     &key_back &key_recent>;
++			     &key_back &key_recent &hall_irq>;
+ 		pinctrl-names = "default";
+ 
+ 		power-key {
+@@ -129,6 +130,47 @@ recent-key {
+ 			linux,code = <KEY_APPSELECT>;
+ 			gpios = <&gpg3 1 GPIO_ACTIVE_LOW>;
+ 		};
++
++		/*
++		 * Book cover hall sensor, low while the cover is closed
++		 * (stock "hall" node: hall,gpio_flip_cover = gpa0-2; Samsung
++		 * hall.c reports !gpio_get_value() as the closed state).
++		 */
++		hall-sensor {
++			label = "Cover";
++			linux,input-type = <EV_SW>;
++			linux,code = <SW_LID>;
++			gpios = <&gpa0 2 GPIO_ACTIVE_LOW>;
++			debounce-interval = <15>;
++			wakeup-source;
++		};
++	};
++
++	/* Coin DC motor, switched by the motor LDO enable (stock dc_vibrator) */
++	vibrator {
++		compatible = "gpio-vibrator";
++		enable-gpios = <&gpg3 6 GPIO_ACTIVE_HIGH>;
++		pinctrl-0 = <&mot_ldo_en>;
++		pinctrl-names = "default";
++	};
++
++	/*
++	 * Rear camera flash: RT8547, FLEN = gpg3-5, CTRL = gpg0-7 (stock
++	 * leds_rt8547: flash_en/flash_control). Stock currents: flash 1000 mA,
++	 * movie (torch) 150 mA.
++	 */
++	led-controller {
++		compatible = "richtek,rt8547";
++		flen-gpios = <&gpg3 5 GPIO_ACTIVE_HIGH>;
++		ctrl-gpios = <&gpg0 7 GPIO_ACTIVE_HIGH>;
++
++		led {
++			function = LED_FUNCTION_FLASH;
++			color = <LED_COLOR_ID_WHITE>;
++			flash-max-timeout-us = <512000>;
++			flash-max-microamp = <1000000>;
++			led-max-microamp = <150000>;
++		};
+ 	};
+ 
+ 	memory@80000000 {
+@@ -206,6 +248,13 @@ key_hot: key-hot-pins {
+ 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+ 	};
+ 
++	hall_irq: hall-irq-pins {
++		samsung,pins = "gpa0-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
+ 	max77705_irq: max77705-irq-pins {
+ 		samsung,pins = "gpa1-6";
+ 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+@@ -228,6 +277,12 @@ key_recent: key-recent-pins {
+ 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+ 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+ 	};
++
++	mot_ldo_en: mot-ldo-en-pins {
++		samsung,pins = "gpg3-6";
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
+ };
+ 
+ &pmu_system_controller {
+-- 
+2.56.0
+

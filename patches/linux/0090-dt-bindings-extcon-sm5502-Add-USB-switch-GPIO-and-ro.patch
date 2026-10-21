@@ -1,0 +1,47 @@
+From e38a75c83a7be9b5ad22b1e093814f59c4cf021e Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:32:13 +1100
+Subject: [PATCH 090/119] dt-bindings: extcon: sm5502: Add USB switch GPIO and
+ role switch port
+
+On Samsung tablets the SM5504 serves the pogo connector only. A dock is
+identified by its ID resistor (34k or 49.9k), and the board then routes
+the USB data lines of the host controller to the pogo pins with a GPIO
+controlled switch and puts the controller into host mode.
+
+Describe the switch GPIO and an OF graph port to the USB role switch.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../bindings/extcon/siliconmitus,sm5502-muic.yaml | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/extcon/siliconmitus,sm5502-muic.yaml b/Documentation/devicetree/bindings/extcon/siliconmitus,sm5502-muic.yaml
+index 7ef2d9bef..8a626beb1 100644
+--- a/Documentation/devicetree/bindings/extcon/siliconmitus,sm5502-muic.yaml
++++ b/Documentation/devicetree/bindings/extcon/siliconmitus,sm5502-muic.yaml
+@@ -34,6 +34,21 @@ properties:
+   interrupts:
+     maxItems: 1
+ 
++  usb-switch-gpios:
++    maxItems: 1
++    description:
++      GPIO of an external switch that routes the USB data lines of the host
++      controller to the connector served by this MUIC instead of the main
++      USB port. It is asserted while a dock (ID resistor 34k or 49.9k on the
++      SM5504) is attached, as on the pogo connector of Samsung tablets.
++
++  port:
++    $ref: /schemas/graph.yaml#/properties/port
++    description:
++      Link to the USB controller's role switch. While a dock is attached the
++      controller is put into host mode, afterwards its previous role is
++      restored.
++
+ required:
+   - compatible
+   - reg
+-- 
+2.56.0
+

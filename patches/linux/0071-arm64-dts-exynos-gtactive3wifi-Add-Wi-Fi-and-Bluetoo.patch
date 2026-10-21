@@ -1,0 +1,203 @@
+From 415529d9ffe26153148cb78064c2a01eab62d57f Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:47:20 +1100
+Subject: [PATCH 071/119] arm64: dts: exynos: gtactive3wifi: Add Wi-Fi and
+ Bluetooth
+
+Wi-Fi is a BCM4375 on PCIe channel 0 (stock pcie0@116A0000, enabled by
+DTBO fragment@73 with WLAN_REG_ON gpg0-5 and PERST# gpf2-2, CLKREQ#
+gpf2-0). Bluetooth sits on UART_BT (stock serial_1, uart@10840000,
+SPI 422, gpq0-0..3) with BT_REG_ON gpm43-0, BT_WAKE gpg2-0 and
+BT_HOST_WAKE gpa2-3 (stock "samsung,bcm43xx" node).
+
+With no clock driver the UART_BT input clock is described as the 200 MHz
+that CMU readback gives. PCIe DMA is limited to 32 bits since the vendor
+kernel only ever ran this path through the SysMMU.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 171 ++++++++++++++++++
+ 1 file changed, 171 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index d3e7b3cb9..588545911 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -834,3 +834,174 @@ &usi_chub01 {
+ 	/* SPI21: touchscreen */
+ 	status = "okay";
+ };
++
++/*
++ * Wi-Fi: Broadcom BCM4375 (stock CONFIG_BCM4375=y) on PCIe channel 0
++ * (stock pcie0@116A0000, enabled by DTBO fragment@73; channel 1 is unused).
++ * Bluetooth: same combo chip on UART_BT (stock serial_1, uart@10840000).
++ * No clock driver yet: the bootloader leaves all CMU_FSYS1 PCIe gates and the
++ * UART_BT gates enabled with their Q-channels held on.
++ */
++/ {
++	/*
++	 * UART_BT IPCLK as left by the bootloader: PLL_SHARED2 (M=400, P=13,
++	 * S=0 from 26 MHz) = 800 MHz, /2 (DIV_PLL_SHARED2_DIV2), /2
++	 * (CLKCMU_PERIC1_IP), /1 (DIV_CLK_PERIC1_UART_BT) = 200 MHz, which
++	 * matches the 200 MHz the vendor CAL tables program.
++	 */
++	clk_uart_bt: clock-uart-bt {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <200000000>;
++	};
++
++	/* WLAN_REG_ON (stock "samsung,brcm-wlan" gpios[0] = gpg0-5) */
++	wlan_reg_on: regulator-wlan-reg-on {
++		compatible = "regulator-fixed";
++		regulator-name = "wlan_reg_on";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&gpg0 5 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		pinctrl-0 = <&wlan_en>;
++		pinctrl-names = "default";
++	};
++};
++
++&pinctrl_alive {
++	/* stock uart1-bus / uart1-bus-rxd: RXD gpq0-0, TXD 1, RTS 2, CTS 3 */
++	uart1_bus: uart1-bus-pins {
++		samsung,pins = "gpq0-3", "gpq0-2", "gpq0-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	uart1_rxd: uart1-rxd-pins {
++		samsung,pins = "gpq0-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++	};
++
++	/* WLAN_HOST_WAKE: unused by brcmfmac over PCIe, keep it from floating */
++	wlan_host_wake: wlan-host-wake-pins {
++		samsung,pins = "gpa0-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	bt_host_wake: bt-host-wake-pins {
++		samsung,pins = "gpa2-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++};
++
++&pinctrl_cmgp {
++	bt_en: bt-en-pins {
++		samsung,pins = "gpm43-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++};
++
++&pinctrl_peric0 {
++	wlan_en: wlan-en-pins {
++		samsung,pins = "gpg0-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	bt_dev_wake: bt-dev-wake-pins {
++		samsung,pins = "gpg2-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++};
++
++&pinctrl_fsys1 {
++	pcie0_clkreq: pcie0-clkreq-pins {
++		samsung,pins = "gpf2-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++	};
++
++	pcie0_perst: pcie0-perst-pins {
++		samsung,pins = "gpf2-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++};
++
++&soc {
++	syscon_fsys1: syscon@11410000 {
++		compatible = "samsung,exynos9810-fsys1-sysreg", "syscon";
++		reg = <0x11410000 0x1200>;
++	};
++
++	pcie_0: pcie@11700000 {
++		compatible = "samsung,exynos9810-pcie";
++		reg = <0x11700000 0x1000>,
++		      <0x116a0000 0x1000>,
++		      <0x116c0000 0x20000>,
++		      <0x127fe000 0x2000>;
++		reg-names = "dbi", "elbi", "phy", "config";
++		interrupts = <GIC_SPI 253 IRQ_TYPE_LEVEL_HIGH>;
++		#address-cells = <3>;
++		#size-cells = <2>;
++		device_type = "pci";
++		bus-range = <0x00 0xff>;
++		ranges = <0x82000000 0x0 0x11800000 0x11800000 0x0 0xff0000>;
++		/*
++		 * Without the PCIe SysMMU the bus master path is only known to
++		 * work below 4 GiB (the vendor kernel always used the SysMMU
++		 * with 32-bit IOVAs); bounce anything above.
++		 */
++		dma-ranges = <0x02000000 0x0 0x0 0x0 0x1 0x0>;
++		num-lanes = <1>;
++		max-link-speed = <2>;
++		#interrupt-cells = <1>;
++		interrupt-map-mask = <0 0 0 0>;
++		interrupt-map = <0 0 0 0 &gic GIC_SPI 253 IRQ_TYPE_LEVEL_HIGH>;
++		reset-gpios = <&gpf2 2 GPIO_ACTIVE_LOW>;
++		vpcie3v3-supply = <&wlan_reg_on>;
++		samsung,pmu-syscon = <&pmu_system_controller>;
++		samsung,fsys-sysreg = <&syscon_fsys1>;
++		pinctrl-0 = <&pcie0_clkreq &pcie0_perst &wlan_host_wake>;
++		pinctrl-names = "default";
++
++		pcie@0,0 {
++			device_type = "pci";
++			reg = <0x0 0x0 0x0 0x0 0x0>;
++			bus-range = <0x01 0xff>;
++			#address-cells = <3>;
++			#size-cells = <2>;
++			ranges;
++
++			wifi@0,0 {
++				compatible = "pci14e4,4475";
++				reg = <0x10000 0x0 0x0 0x0 0x0>;
++			};
++		};
++	};
++
++	serial_1: serial@10840000 {
++		compatible = "samsung,exynos9810-uart";
++		reg = <0x10840000 0x100>;
++		interrupts = <GIC_SPI 422 IRQ_TYPE_LEVEL_HIGH>;
++		clocks = <&clk_uart_bt>, <&clk_uart_bt>;
++		clock-names = "uart", "clk_uart_baud0";
++		samsung,uart-fifosize = <256>;
++		pinctrl-0 = <&uart1_bus &uart1_rxd>;
++		pinctrl-names = "default";
++
++		bluetooth {
++			compatible = "brcm,bcm4375-bt";
++			shutdown-gpios = <&gpm43 0 GPIO_ACTIVE_HIGH>;
++			device-wakeup-gpios = <&gpg2 0 GPIO_ACTIVE_HIGH>;
++			host-wakeup-gpios = <&gpa2 3 GPIO_ACTIVE_HIGH>;
++			max-speed = <3000000>;
++			pinctrl-0 = <&bt_en &bt_dev_wake &bt_host_wake>;
++			pinctrl-names = "default";
++		};
++	};
++};
+-- 
+2.56.0
+

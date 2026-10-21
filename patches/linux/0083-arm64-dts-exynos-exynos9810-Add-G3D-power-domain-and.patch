@@ -1,0 +1,58 @@
+From 337305ade25f91be7f17165062782c39798b1343 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:06:18 +1100
+Subject: [PATCH 083/119] arm64: dts: exynos: exynos9810: Add G3D power domain
+ and Mali GPU
+
+Mali-G72 MP18 at 0x17500000 with job/mmu/gpu interrupts SPI 282/281/283,
+in the embedded G3D power domain (PMU + 0x4040, D-TZPC 0x17410204),
+from the stock SM-T570 device tree (mali@17500000 and
+pd-embedded_g3d@14064040). Both stay disabled: there is no CMU_G3D
+clock driver yet, so boards supply the GPU clock.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 3657b018a..f5d2901da 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -511,6 +511,15 @@ pmu_system_controller: system-controller@14060000 {
+ 			reg = <0x14060000 0x10000>;
+ 		};
+ 
++		pd_g3d: power-domain@14064040 {
++			compatible = "samsung,exynos9810-g3d-pd";
++			reg = <0x14064040 0x20>, <0x17400000 0x200>;
++			#power-domain-cells = <0>;
++			label = "g3d";
++			samsung,dtzpc = <0x17410204>;
++			status = "disabled";
++		};
++
+ 		sysreg_cmgp: syscon@14210000 {
+ 			compatible = "samsung,exynos9810-cmgp-sysreg", "syscon";
+ 			reg = <0x14210000 0x10000>;
+@@ -584,6 +593,17 @@ hsi2c_40: i2c@14360000 {
+ 			};
+ 		};
+ 
++		gpu: gpu@17500000 {
++			compatible = "samsung,exynos9810-mali", "arm,mali-bifrost";
++			reg = <0x17500000 0x5000>;
++			interrupts = <GIC_SPI 282 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 281 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 283 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "job", "mmu", "gpu";
++			power-domains = <&pd_g3d>;
++			status = "disabled";
++		};
++
+ 		pinctrl_aud: pinctrl@17c60000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x17c60000 0x1000>;
+-- 
+2.56.0
+

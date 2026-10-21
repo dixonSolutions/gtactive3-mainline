@@ -1,0 +1,56 @@
+From cc8f42b763c8af74254dd9dccf5bc9aa15df8c37 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 17:16:19 +1100
+Subject: [PATCH 085/119] pmdomain: samsung: Don't register a keep-on domain
+ that is off (WIP)
+
+Not for upstream, fixup for the bring-up keep-on property. When the
+bootloader did not leave the domain fully on, the domain used to be
+registered as a normal genpd, so the first consumer would run the
+untested power-on sequence (CMU_G3D writes, PMU, D-TZPC SMC) that
+keep-on is supposed to keep out of the bring-up. Fail the probe instead;
+the consumers then stay deferred and nothing touches the hardware.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pmdomain/samsung/exynos-pm-domains.c | 21 +++++++++++++-------
+ 1 file changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/pmdomain/samsung/exynos-pm-domains.c b/drivers/pmdomain/samsung/exynos-pm-domains.c
+index 014b9c7ab..7823132fd 100644
+--- a/drivers/pmdomain/samsung/exynos-pm-domains.c
++++ b/drivers/pmdomain/samsung/exynos-pm-domains.c
+@@ -278,16 +278,23 @@ static int exynos_pd_probe(struct platform_device *pdev)
+ 	/*
+ 	 * Bring-up aid (not a binding): keep a domain that the bootloader
+ 	 * left on powered for good, so its consumers can be tested before
+-	 * its power-off/power-on sequence is trusted.
++	 * its power-off/power-on sequence is trusted. If the domain is not
++	 * fully on, don't register it at all: falling back to a normal domain
++	 * would run exactly the untested power-on sequence (CMU writes, PMU,
++	 * D-TZPC SMC) that keep-on is meant to avoid. Consumers then simply
++	 * stay deferred.
+ 	 */
+ 	if (of_property_read_bool(np, "samsung,bringup-keep-on")) {
+-		if (on == pd->local_pwr_cfg) {
+-			pd->pd.flags |= GENPD_FLAG_ALWAYS_ON;
+-			dev_info(dev, "%s: kept on (bring-up)\n", pd->pd.name);
+-		} else {
+-			dev_warn(dev, "%s: keep-on requested but status is 0x%x\n",
+-				 pd->pd.name, readl_relaxed(pd->base + 0x4));
++		if (on != pd->local_pwr_cfg) {
++			dev_err(dev, "%s: keep-on requested but status is 0x%x, not registering\n",
++				pd->pd.name, readl_relaxed(pd->base + 0x4));
++			if (pd->cmu)
++				iounmap(pd->cmu);
++			iounmap(pd->base);
++			return -ENODEV;
+ 		}
++		pd->pd.flags |= GENPD_FLAG_ALWAYS_ON;
++		dev_info(dev, "%s: kept on (bring-up)\n", pd->pd.name);
+ 	}
+ 
+ 	pm_genpd_init(&pd->pd, NULL, !on);
+-- 
+2.56.0
+

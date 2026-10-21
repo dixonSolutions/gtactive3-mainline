@@ -1,0 +1,100 @@
+From cc426ddc502aa55500b3c05b0857565ebe28c455 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:21:33 +1100
+Subject: [PATCH 045/119] dt-bindings: leds: Add Richtek RT8547 flash LED
+ driver
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../bindings/leds/richtek,rt8547.yaml         | 79 +++++++++++++++++++
+ 1 file changed, 79 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/leds/richtek,rt8547.yaml
+
+diff --git a/Documentation/devicetree/bindings/leds/richtek,rt8547.yaml b/Documentation/devicetree/bindings/leds/richtek,rt8547.yaml
+new file mode 100644
+index 000000000..2bc7b76c7
+--- /dev/null
++++ b/Documentation/devicetree/bindings/leds/richtek,rt8547.yaml
+@@ -0,0 +1,79 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/leds/richtek,rt8547.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Richtek RT8547 1.6A flash LED driver
++
++maintainers:
++  - dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
++
++description: |
++  The Richtek RT8547 is a boost LED driver for one white flash LED. FLEN
++  switches the output on; the mode (torch or flash) and the currents are
++  programmed over the single-wire CTRL line. Torch current is 25 mA to
++  400 mA in 25 mA steps, flash current 100 mA to 1600 mA in 50 mA steps and
++  the flash timer 64 ms to 2080 ms in 32 ms steps.
++
++properties:
++  compatible:
++    const: richtek,rt8547
++
++  flen-gpios:
++    maxItems: 1
++    description: Connection to the FLEN (flash enable) pin.
++
++  ctrl-gpios:
++    maxItems: 1
++    description: Connection to the CTRL (single-wire interface) pin.
++
++  led:
++    type: object
++    $ref: common.yaml#
++    properties:
++      function: true
++      color: true
++
++      flash-max-timeout-us:
++        minimum: 64000
++        maximum: 2080000
++
++      flash-max-microamp:
++        minimum: 100000
++        maximum: 1600000
++
++      led-max-microamp:
++        minimum: 25000
++        maximum: 400000
++
++    additionalProperties: false
++
++required:
++  - compatible
++  - flen-gpios
++  - ctrl-gpios
++  - led
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/gpio/gpio.h>
++    #include <dt-bindings/leds/common.h>
++
++    led-controller {
++        compatible = "richtek,rt8547";
++        flen-gpios = <&gpg3 5 GPIO_ACTIVE_HIGH>;
++        ctrl-gpios = <&gpg0 7 GPIO_ACTIVE_HIGH>;
++
++        led {
++            function = LED_FUNCTION_FLASH;
++            color = <LED_COLOR_ID_WHITE>;
++            flash-max-timeout-us = <512000>;
++            flash-max-microamp = <1000000>;
++            led-max-microamp = <150000>;
++        };
++    };
++
++...
+-- 
+2.56.0
+

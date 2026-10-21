@@ -1,7 +1,7 @@
 From e39c36b35e338236e5f00aecea69a302c6c8c623 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:54:21 +1100
-Subject: [PATCH 24/64] dt-bindings: thermal: Add Samsung Exynos9810 TMU
+Subject: [PATCH 024/119] dt-bindings: thermal: Add Samsung Exynos9810 TMU
 
 The Exynos9810 TMU instances have up to 16 remote probes each, so the
 sensor specifier selects the probe. Its register layout differs from

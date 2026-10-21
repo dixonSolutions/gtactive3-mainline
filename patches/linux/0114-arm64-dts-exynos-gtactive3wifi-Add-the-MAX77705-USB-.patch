@@ -1,0 +1,59 @@
+From 23651a37c45c93ba808d8d74d16709c6450c6a6a Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:43:58 +1100
+Subject: [PATCH 114/119] arm64: dts: exynos: gtactive3wifi: Add the MAX77705
+ USB-C block
+
+Describe the MAX77705 USB-C block at 0x25 (USB-C interrupt = MAX77705
+source 3), and make it the charger's supplier, so the charger input
+current limit follows the detected source (BC1.2 / Type-C Rp). Same for
+the i2c-gpio variant.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi-i2cgpio.dtso     | 8 ++++++++
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts  | 9 +++++++++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-i2cgpio.dtso b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-i2cgpio.dtso
+index 3b1456e60..9c6dfc7eb 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-i2cgpio.dtso
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-i2cgpio.dtso
+@@ -54,6 +54,14 @@ gpio_max77705_charger: charger@69 {
+ 			interrupt-parent = <&gpio_max77705>;
+ 			interrupts = <0>;
+ 			monitored-battery = <&battery>;
++			power-supplies = <&gpio_max77705_usbc>;
++		};
++
++		gpio_max77705_usbc: usb-c@25 {
++			compatible = "maxim,max77705-usbc";
++			reg = <0x25>;
++			interrupt-parent = <&gpio_max77705>;
++			interrupts = <3>;
+ 		};
+ 
+ 		fuel-gauge@36 {
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 7506a5f3e..d6e9613a5 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -775,6 +775,15 @@ max77705_charger: charger@69 {
+ 		interrupt-parent = <&max77705>;
+ 		interrupts = <0>;
+ 		monitored-battery = <&battery>;
++		power-supplies = <&max77705_usbc>;
++	};
++
++	/* USB-C block: BC1.2 / Type-C Rp source detection */
++	max77705_usbc: usb-c@25 {
++		compatible = "maxim,max77705-usbc";
++		reg = <0x25>;
++		interrupt-parent = <&max77705>;
++		interrupts = <3>;
+ 	};
+ 
+ 	/* fg_resistor = 2 in the stock DT, i.e. a 5 mOhm sense resistor */
+-- 
+2.56.0
+

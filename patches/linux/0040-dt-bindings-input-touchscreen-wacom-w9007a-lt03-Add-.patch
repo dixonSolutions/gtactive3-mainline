@@ -1,0 +1,30 @@
+From 0ee09727a78ca61d51a68ee7376b921932d53b8b Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:21:32 +1100
+Subject: [PATCH 040/119] dt-bindings: input: touchscreen: wacom,w9007a-lt03:
+ Add W9019
+
+The W9019 is the EMR digitiser of the Samsung Galaxy Tab Active3
+(SM-T570). It speaks the same protocol family as the W9002/W9007A, with
+a longer query block and tilt/hover-height reporting.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/input/touchscreen/wacom,w9007a-lt03.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/input/touchscreen/wacom,w9007a-lt03.yaml b/Documentation/devicetree/bindings/input/touchscreen/wacom,w9007a-lt03.yaml
+index 6d1da6a43..ad09bcc5e 100644
+--- a/Documentation/devicetree/bindings/input/touchscreen/wacom,w9007a-lt03.yaml
++++ b/Documentation/devicetree/bindings/input/touchscreen/wacom,w9007a-lt03.yaml
+@@ -24,6 +24,7 @@ properties:
+       - wacom,w9002
+       - wacom,w9007a-lt03
+       - wacom,w9007a-v1
++      - wacom,w9019
+ 
+   reg:
+     maxItems: 1
+-- 
+2.56.0
+

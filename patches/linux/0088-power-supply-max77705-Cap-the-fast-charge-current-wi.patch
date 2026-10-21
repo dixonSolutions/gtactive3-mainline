@@ -1,0 +1,56 @@
+From 55193ec6edcaacf374dca15cf2a7657aa848e15d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:30:53 +1100
+Subject: [PATCH 088/119] power: supply: max77705: Cap the fast-charge current
+ without thermal supervision
+
+On the Galaxy Tab Active3 the battery NTC is read by the AP ADC (stock
+sec-battery thermal_source = ADC), and the MAX77705 fuel gauge runs
+with an externally supplied temperature (CONFIG.TEX). Until that path
+has a driver, nothing in the kernel stops charging a hot or cold
+cell, so programming the battery's 3.1 A limit would be unsafe.
+
+Add a cc_cap_ua module parameter, 1.5 A by default (0 = no cap), and
+clamp every CHG_CC write, both at probe and from sysfs, to it. The
+battery node keeps its real maximum. This is a local safety measure, to
+be dropped or set to 0 once battery temperature monitoring exists.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/max77705_charger.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/power/supply/max77705_charger.c b/drivers/power/supply/max77705_charger.c
+index b62127ba4..cfb9570d4 100644
+--- a/drivers/power/supply/max77705_charger.c
++++ b/drivers/power/supply/max77705_charger.c
+@@ -22,6 +22,16 @@
+ #define MAX77705_CHGIN_LIM_MIN_SEL	3
+ 
+ static const char *max77705_charger_model		= "max77705";
++
++/*
++ * Nothing in the kernel watches the battery temperature on boards where it
++ * comes from an AP-side NTC that has no driver yet. Until it does, keep the
++ * fast-charge current to a level that is safe without thermal supervision.
++ * 0 removes the cap.
++ */
++static unsigned int cc_cap_ua = 1500000;
++module_param(cc_cap_ua, uint, 0444);
++MODULE_PARM_DESC(cc_cap_ua, "Fast-charge current cap without battery temperature monitoring, uA (0 = none)");
+ static const char *max77705_charger_manufacturer	= "Maxim Integrated";
+ 
+ static const struct regmap_config max77705_chg_regmap_config = {
+@@ -160,6 +170,9 @@ static int max77705_set_charge_current(struct max77705_charger_data *chg, int uA
+ {
+ 	unsigned int regval;
+ 
++	if (cc_cap_ua && uA > (int)cc_cap_ua)
++		uA = cc_cap_ua;
++
+ 	regval = clamp_val(uA, MAX77705_CURRENT_CHG_MIN, MAX77705_CURRENT_CHG_MAX) /
+ 		 MAX77705_CURRENT_CHG_STEP;
+ 
+-- 
+2.56.0
+

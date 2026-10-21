@@ -1,0 +1,38 @@
+From 0f0a5b51451ff4c03204abf8a4164aec0cc523fe Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 20:20:12 +1100
+Subject: [PATCH 116/119] wifi: brcmfmac: pcie: Log the BCM4375 OTP module with
+ dev_info()
+
+brcmf_info() is brcmf_err() with DEBUG (CONFIG_BRCMDBG), and pcie.c
+redefines brcmf_err() to take the bus, so the build broke there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 2f0a143db..7c48910f7 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -2146,13 +2146,13 @@ static int brcmf_pcie_read_otp_4375(struct brcmf_pciedev_info *devinfo)
+ 	}
+ 
+ 	if (rev < 0) {
+-		brcmf_info("OTP: no module ID (CIS %*ph), using board defaults\n",
+-			   8, cis);
++		dev_info(&devinfo->pdev->dev, "OTP: no module ID (CIS %*ph), using board defaults\n",
++			 8, cis);
+ 		return 0;
+ 	}
+ 
+ 	devinfo->otp.valid = true;
+-	brcmf_info("OTP: module %s rev %s, board type 0x%02x\n",
++	dev_info(&devinfo->pdev->dev, "OTP: module %s rev %s, board type 0x%02x\n",
+ 		   devinfo->otp.vendor, devinfo->otp.version, boardtype);
+ 
+ 	return 0;
+-- 
+2.56.0
+

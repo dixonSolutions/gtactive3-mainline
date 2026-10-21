@@ -1,0 +1,51 @@
+From df7a82082c7607575cba3af5e1c78218d9cab68a Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:34:37 +1100
+Subject: [PATCH 09/13] exynos-mobile: gtactive3wifi: Show more of uniLoader's
+ boot record
+
+Print the stage, watchdog control, FDT addresses, bootloader version and
+the number of fallbacks picked at once (new fb_* fields in uniLoader's
+chain_info), so that the RAM log read after a reset tells how far the
+previous boots got.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ board/samsung/exynos-mobile/exynos-mobile.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/board/samsung/exynos-mobile/exynos-mobile.c b/board/samsung/exynos-mobile/exynos-mobile.c
+index b393d08f..fc3f7594 100644
+--- a/board/samsung/exynos-mobile/exynos-mobile.c
++++ b/board/samsung/exynos-mobile/exynos-mobile.c
+@@ -558,9 +558,11 @@ static void gtactive3_max77705_com_usb(void)
+ 
+ #if IS_ENABLED(CONFIG_EXYNOS_MOBILE_RAMLOG)
+ /*
+- * uniLoader's boot decision record (main/chainload.h in uniLoader), in the
+- * last 4 KiB of the RAM log area: magic, version, run, decision, reason,
+- * reset status, keys.
++ * uniLoader's boot decision record (struct chain_info, main/chainload.h in
++ * uniLoader), in the last 4 KiB of the RAM log area. 32-bit words: 0 magic,
++ * 2 run, 3 decision, 4 reason, 5 RST_STAT, 8 previous FDT, 16 FDT passed,
++ * 18 WTCON, 19 stage, 20-22 fallbacks picked at once (count, reason,
++ * RST_STAT), 24.. androidboot.bootloader.
+  */
+ static void exynos_show_uniloader_record(void)
+ {
+@@ -568,8 +570,10 @@ static void exynos_show_uniloader_record(void)
+ 
+ 	if (ci[0] != 0x48434c55)	/* "ULCH" */
+ 		return;
+-	log_info("uniLoader: run %u, %s, reason 0x%x, RST_STAT 0x%08x\n",
+-		 ci[2], ci[3] ? "fallback" : "chained", ci[4], ci[5]);
++	log_info("uniLoader: run %u, %s, stage %u, reason 0x%x, RST_STAT 0x%08x, WTCON 0x%x\n",
++		 ci[2], ci[3] ? "fallback" : "chained", ci[19], ci[4], ci[5], ci[18]);
++	log_info("uniLoader: FDT 0x%x -> 0x%x, bootloader %.32s, %u earlier fallbacks\n",
++		 ci[8], ci[16], (const char *)&ci[24], ci[20]);
+ }
+ #else
+ static void exynos_show_uniloader_record(void) {}
+-- 
+2.56.0
+

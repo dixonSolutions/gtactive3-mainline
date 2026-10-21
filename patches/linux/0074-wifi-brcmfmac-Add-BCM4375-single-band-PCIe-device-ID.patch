@@ -1,0 +1,45 @@
+From 6c365566882400b6e08d8c78dff13f68f23ccb77 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 17:34:53 +1100
+Subject: [PATCH 074/119] wifi: brcmfmac: Add BCM4375 single-band PCIe device
+ IDs
+
+bcmdhd_100_15 include/bcmdevs.h:299-301 lists 0x4476 (2.4 GHz) and
+0x4477 (5 GHz) next to the dual-band 0x4475. Match them as well, so that
+a board strapped to either variant still binds.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c       | 2 ++
+ drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 8f56b4795..877ab383c 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -2766,6 +2766,8 @@ static const struct pci_device_id brcmf_pcie_devid_table[] = {
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4387_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43752_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4375_DEVICE_ID, WCC_SEED),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_4375_2G_DEVICE_ID, WCC_SEED),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_4375_5G_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4375_RAW_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(CY_PCIE_54591_DEVICE_ID, CYW),
+ 	{ /* end: all zeroes */ }
+diff --git a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+index 084d4930f..8b657df90 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
++++ b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+@@ -98,6 +98,8 @@
+ #define BRCM_PCIE_43596_DEVICE_ID	0x4415
+ #define BRCM_PCIE_43752_DEVICE_ID	0x449d
+ #define BRCM_PCIE_4375_DEVICE_ID	0x4475
++#define BRCM_PCIE_4375_2G_DEVICE_ID	0x4476
++#define BRCM_PCIE_4375_5G_DEVICE_ID	0x4477
+ #define BRCM_PCIE_4375_RAW_DEVICE_ID	0x4375
+ #define BRCM_PCIE_4377_DEVICE_ID	0x4488
+ #define BRCM_PCIE_4378_DEVICE_ID	0x4425
+-- 
+2.56.0
+

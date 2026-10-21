@@ -1,7 +1,8 @@
 From c6e418e6af5d749c3cdd1705e500d87f2a88589b Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 14:44:18 +1100
-Subject: [PATCH 04/64] phy: samsung-ufs: Add Exynos9810 UFS PHY support (WIP)
+Subject: [PATCH 004/119] phy: samsung-ufs: Add Exynos9810 UFS PHY support
+ (WIP)
 
 Add PMA tables for the Exynos9810 embedded combo PHY, taken from
 Samsung's ufs-cal-9810.c (byte offsets, 0x140 byte lane stride), the PMU

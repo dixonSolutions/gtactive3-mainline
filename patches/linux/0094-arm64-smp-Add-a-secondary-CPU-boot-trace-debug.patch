@@ -1,0 +1,338 @@
+From b99578035e043faebbac7fa7aabca3bb8f423761 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:16:14 +1100
+Subject: [PATCH 094/119] arm64: smp: Add a secondary CPU boot trace (debug)
+
+On the Exynos9810 the Mongoose M3 cores never come up: PSCI CPU_ON
+succeeds, but the kernel only reports "failed in unknown state : 0x0",
+which cannot tell a core that never started from one that died anywhere
+between secondary_entry and secondary_start_kernel().
+
+Add CONFIG_ARM64_DEBUG_SECONDARY_BOOT. With it, a secondary CPU writes
+progress markers into the early boot status word:
+
+  0x10  entered secondary_entry (MMU off)
+  0x11  init_kernel_el done
+  0x12  __cpu_setup done, about to enable the MMU
+  0x00  __secondary_switched reached (MMU on, word cleared as usual)
+
+and the steps of secondary_start_kernel() into secondary_data.status:
+
+  0x20 entered, 0x21 mm switched, 0x22 idmap gone, 0x23 RCU,
+  0x24 capabilities ok, 0x25 cpu_postboot, 0x26 cpuinfo/topology,
+  0x27 CPU starting callbacks (GIC, timer) done, 0x28 IPIs
+
+With the MMU off, it also stores its MPIDR, MIDR, CurrentEL and the ID
+registers that decide whether it can run this kernel (ID_AA64PFR0,
+ISAR0, MMFR0, MMFR1) in one cache line, and each C step is mirrored
+into that line and cleaned to the PoC, so that the trace can be read
+even if the secondary's cluster is not coherent with the boot CPU's.
+The line is cleared before each CPU_ON. When a CPU fails to come
+online, __cpu_up() prints:
+
+  CPUn: boot trace: status ..., early ..., cstep ..., MPIDR ..., MIDR ..., ELn
+  CPUn: boot trace: PFR0 ..., ISAR0 ..., MMFR0 ..., MMFR1 ...
+
+The marker values keep the low byte away from CPU_KILL_ME,
+CPU_STUCK_IN_KERNEL and CPU_PANIC_KERNEL, so the existing handling is
+unchanged. Nothing changes with the option off. This is a porting aid,
+not meant for upstream.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/Kconfig.debug     | 15 ++++++++
+ arch/arm64/include/asm/smp.h | 13 +++++++
+ arch/arm64/kernel/head.S     | 37 ++++++++++++++++++
+ arch/arm64/kernel/smp.c      | 72 ++++++++++++++++++++++++++++++++++++
+ arch/arm64/mm/mmu.c          | 10 +++++
+ 5 files changed, 147 insertions(+)
+
+diff --git a/arch/arm64/Kconfig.debug b/arch/arm64/Kconfig.debug
+index 265c44610..27170a18e 100644
+--- a/arch/arm64/Kconfig.debug
++++ b/arch/arm64/Kconfig.debug
+@@ -16,6 +16,21 @@ config DEBUG_EFI
+ 	  the kernel that are only useful when using a debug build of the
+ 	  UEFI firmware
+ 
++config ARM64_DEBUG_SECONDARY_BOOT
++	bool "Trace secondary CPU bring-up"
++	depends on SMP
++	help
++	  Record how far a secondary CPU gets on its way into the kernel,
++	  in the early boot status word that is written with the MMU off,
++	  together with its MPIDR, MIDR, exception level and the ID
++	  registers that decide whether it can run this kernel (PFR0,
++	  ISAR0, MMFR0, MMFR1). The record is cleared before each CPU_ON.
++	  When a CPU fails to come online, the last step it reached is
++	  printed.
++
++	  This is a porting aid for SoCs whose secondary CPUs do not come
++	  up. If unsure, say N.
++
+ config ARM64_RELOC_TEST
+ 	depends on m
+ 	tristate "Relocation testing module"
+diff --git a/arch/arm64/include/asm/smp.h b/arch/arm64/include/asm/smp.h
+index 10ea4f543..91835cb8f 100644
+--- a/arch/arm64/include/asm/smp.h
++++ b/arch/arm64/include/asm/smp.h
+@@ -94,6 +94,19 @@ struct secondary_data {
+ 
+ extern struct secondary_data secondary_data;
+ extern long __early_cpu_boot_status;
++#ifdef CONFIG_ARM64_DEBUG_SECONDARY_BOOT
++/* Slots of __early_cpu_boot_trace, one cache line, see head.S */
++#define TRACE_MPIDR		0
++#define TRACE_MIDR		1
++#define TRACE_CURRENTEL		2
++#define TRACE_PFR0		3
++#define TRACE_ISAR0		4
++#define TRACE_MMFR0		5
++#define TRACE_MMFR1		6
++#define TRACE_CSTEP		7
++#define TRACE_NR		8
++extern u64 __early_cpu_boot_trace[TRACE_NR];
++#endif
+ extern void secondary_entry(void);
+ 
+ extern void arch_send_call_function_single_ipi(int cpu);
+diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
+index 87a822e5c..db3989a8e 100644
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -42,6 +42,20 @@
+ #error PAGE_OFFSET must be at least 2MB aligned
+ #endif
+ 
++/*
++ * secondary_trace - record secondary CPU boot progress with the MMU off
++ * (CONFIG_ARM64_DEBUG_SECONDARY_BOOT). Corrupts tmp1 and tmp2.
++ */
++	.macro	secondary_trace, status, tmp1, tmp2
++#ifdef CONFIG_ARM64_DEBUG_SECONDARY_BOOT
++	mov	\tmp2, #\status
++	adr_l	\tmp1, __early_cpu_boot_status
++	str	\tmp2, [\tmp1]
++	dmb	sy
++	dc	ivac, \tmp1
++#endif
++	.endm
++
+ /*
+  * Kernel startup entry point.
+  * ---------------------------
+@@ -353,6 +367,27 @@ SYM_FUNC_END(secondary_holding_pen)
+ 	 * be used where CPUs are brought online dynamically by the kernel.
+ 	 */
+ SYM_FUNC_START(secondary_entry)
++#ifdef CONFIG_ARM64_DEBUG_SECONDARY_BOOT
++	/* __early_cpu_boot_trace, slots as in asm/smp.h */
++	adr_l	x1, __early_cpu_boot_trace
++	mrs	x2, mpidr_el1
++	str	x2, [x1]
++	mrs	x2, midr_el1
++	str	x2, [x1, #8]
++	mrs	x2, CurrentEL
++	str	x2, [x1, #16]
++	mrs	x2, id_aa64pfr0_el1
++	str	x2, [x1, #24]
++	mrs	x2, id_aa64isar0_el1
++	str	x2, [x1, #32]
++	mrs	x2, id_aa64mmfr0_el1
++	str	x2, [x1, #40]
++	mrs	x2, id_aa64mmfr1_el1
++	str	x2, [x1, #48]
++	dmb	sy
++	dc	ivac, x1			// one 64-byte line
++#endif
++	secondary_trace 0x10, x1, x2		// entered, MMU off
+ 	mov	x0, xzr
+ 	bl	init_kernel_el			// w0=cpu_boot_mode
+ 	b	secondary_startup
+@@ -363,6 +398,7 @@ SYM_FUNC_START_LOCAL(secondary_startup)
+ 	 * Common entry point for secondary CPUs.
+ 	 */
+ 	mov	x20, x0				// preserve boot mode
++	secondary_trace 0x11, x1, x2		// init_kernel_el done
+ 
+ #ifdef CONFIG_ARM64_VA_BITS_52
+ alternative_if ARM64_HAS_VA52
+@@ -371,6 +407,7 @@ alternative_else_nop_endif
+ #endif
+ 
+ 	bl	__cpu_setup			// initialise processor
++	secondary_trace 0x12, x3, x4		// __cpu_setup done, x0 = SCTLR
+ 	adrp	x1, swapper_pg_dir
+ 	adrp	x2, idmap_pg_dir
+ 	bl	__enable_mmu
+diff --git a/arch/arm64/kernel/smp.c b/arch/arm64/kernel/smp.c
+index a61dc3016..64af14331 100644
+--- a/arch/arm64/kernel/smp.c
++++ b/arch/arm64/kernel/smp.c
+@@ -110,6 +110,66 @@ static int boot_secondary(unsigned int cpu, struct task_struct *idle)
+ 
+ static DECLARE_COMPLETION(cpu_running);
+ 
++#ifdef CONFIG_ARM64_DEBUG_SECONDARY_BOOT
++/*
++ * Progress markers, see CONFIG_ARM64_DEBUG_SECONDARY_BOOT. The C steps go
++ * to secondary_data.status as usual, and are also mirrored to the last
++ * slot of __early_cpu_boot_trace and cleaned to the PoC, so that they can
++ * be seen even if the secondary's cluster is not coherent with ours.
++ */
++static notrace void secondary_trace(int step)
++{
++	unsigned long p = (unsigned long)&__early_cpu_boot_trace[TRACE_CSTEP];
++
++	update_cpu_boot_status(0x20 + step);
++	WRITE_ONCE(__early_cpu_boot_trace[TRACE_CSTEP], 0x20 + step);
++	dcache_clean_poc(p, p + sizeof(u64));
++}
++
++/*
++ * Clear what the previous secondary left behind, so that a CPU that never
++ * enters the kernel reads back as MPIDR 0 instead of its predecessor's.
++ */
++static void secondary_trace_reset(void)
++{
++	unsigned long start = (unsigned long)__early_cpu_boot_trace;
++	unsigned long status = (unsigned long)&__early_cpu_boot_status;
++
++	memset(__early_cpu_boot_trace, 0, sizeof(__early_cpu_boot_trace));
++	WRITE_ONCE(__early_cpu_boot_status, 0);
++	dcache_clean_inval_poc(start, start + sizeof(__early_cpu_boot_trace));
++	dcache_clean_inval_poc(status, status + sizeof(long));
++}
++
++static void secondary_trace_report(unsigned int cpu)
++{
++	unsigned long start = (unsigned long)__early_cpu_boot_trace;
++	unsigned long status = (unsigned long)&__early_cpu_boot_status;
++	u64 *t = __early_cpu_boot_trace;
++
++	/*
++	 * The secondary wrote these with its MMU (and caches) off, or cleaned
++	 * them to the PoC. Our own copy is clean since secondary_trace_reset(),
++	 * so clean+invalidate only drops stale lines and never loses data.
++	 */
++	dcache_clean_inval_poc(start, start + sizeof(__early_cpu_boot_trace));
++	dcache_clean_inval_poc(status, status + sizeof(long));
++
++	pr_crit("CPU%u: boot trace: status %#lx, early %#lx, cstep %#llx, MPIDR %#llx, MIDR %#llx, EL%llu\n",
++		cpu, READ_ONCE(secondary_data.status),
++		READ_ONCE(__early_cpu_boot_status),
++		READ_ONCE(t[TRACE_CSTEP]), READ_ONCE(t[TRACE_MPIDR]),
++		READ_ONCE(t[TRACE_MIDR]), (READ_ONCE(t[TRACE_CURRENTEL]) >> 2) & 3);
++	pr_crit("CPU%u: boot trace: PFR0 %#llx, ISAR0 %#llx, MMFR0 %#llx, MMFR1 %#llx\n",
++		cpu, READ_ONCE(t[TRACE_PFR0]), READ_ONCE(t[TRACE_ISAR0]),
++		READ_ONCE(t[TRACE_MMFR0]), READ_ONCE(t[TRACE_MMFR1]));
++}
++#else
++static inline void secondary_trace(int step) { }
++static inline void secondary_trace_reset(void) { }
++static inline void secondary_trace_report(unsigned int cpu) { }
++#endif
++
+ int __cpu_up(unsigned int cpu, struct task_struct *idle)
+ {
+ 	int ret;
+@@ -121,6 +181,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
+ 	 */
+ 	secondary_data.task = idle;
+ 	update_cpu_boot_status(CPU_MMU_OFF);
++	secondary_trace_reset();
+ 
+ 	/* Now bring the CPU into our world */
+ 	ret = boot_secondary(cpu, idle);
+@@ -140,6 +201,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
+ 		return 0;
+ 
+ 	pr_crit("CPU%u: failed to come online\n", cpu);
++	secondary_trace_report(cpu);
+ 	secondary_data.task = NULL;
+ 	status = READ_ONCE(secondary_data.status);
+ 	if (status == CPU_MMU_OFF)
+@@ -201,24 +263,29 @@ asmlinkage notrace void secondary_start_kernel(void)
+ 	const struct cpu_operations *ops;
+ 	unsigned int cpu = smp_processor_id();
+ 
++	secondary_trace(0);
++
+ 	/*
+ 	 * All kernel threads share the same mm context; grab a
+ 	 * reference and switch to it.
+ 	 */
+ 	mmgrab(mm);
+ 	current->active_mm = mm;
++	secondary_trace(1);
+ 
+ 	/*
+ 	 * TTBR0 is only used for the identity mapping at this stage. Make it
+ 	 * point to zero page to avoid speculatively fetching new entries.
+ 	 */
+ 	cpu_uninstall_idmap();
++	secondary_trace(2);
+ 
+ 	if (system_uses_irq_prio_masking())
+ 		init_gic_priority_masking();
+ 
+ 	rcutree_report_cpu_starting(cpu);
+ 	trace_hardirqs_off();
++	secondary_trace(3);
+ 
+ 	/*
+ 	 * If the system has established the capabilities, make sure
+@@ -226,23 +293,28 @@ asmlinkage notrace void secondary_start_kernel(void)
+ 	 * fail to come online.
+ 	 */
+ 	check_local_cpu_capabilities();
++	secondary_trace(4);
+ 
+ 	ops = get_cpu_ops(cpu);
+ 	if (ops->cpu_postboot)
+ 		ops->cpu_postboot();
++	secondary_trace(5);
+ 
+ 	/*
+ 	 * Log the CPU info before it is marked online and might get read.
+ 	 */
+ 	cpuinfo_store_cpu();
+ 	store_cpu_topology(cpu);
++	secondary_trace(6);
+ 
+ 	/*
+ 	 * Enable GIC and timers.
+ 	 */
+ 	notify_cpu_starting(cpu);
++	secondary_trace(7);
+ 
+ 	ipi_setup(cpu);
++	secondary_trace(8);
+ 
+ 	numa_add_cpu(cpu);
+ 
+diff --git a/arch/arm64/mm/mmu.c b/arch/arm64/mm/mmu.c
+index d4384131e..32efe149e 100644
+--- a/arch/arm64/mm/mmu.c
++++ b/arch/arm64/mm/mmu.c
+@@ -62,6 +62,16 @@ static bool rodata_is_rw __ro_after_init = true;
+  * with MMU turned off.
+  */
+ long __section(".mmuoff.data.write") __early_cpu_boot_status;
++#ifdef CONFIG_ARM64_DEBUG_SECONDARY_BOOT
++/*
++ * ID registers of the last secondary CPU that entered the kernel, written
++ * with the MMU off, plus its last C step. Exactly one 64-byte line, so that
++ * secondary_entry can invalidate it with a single DC IVAC.
++ */
++u64 __section(".mmuoff.data.write") __aligned(64)
++	__early_cpu_boot_trace[TRACE_NR];
++static_assert(sizeof(__early_cpu_boot_trace) == 64);
++#endif
+ 
+ static DEFINE_SPINLOCK(swapper_pgdir_lock);
+ static DEFINE_MUTEX(fixmap_lock);
+-- 
+2.56.0
+

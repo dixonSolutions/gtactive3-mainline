@@ -1,7 +1,7 @@
 From cefde1ce2a16b134f58c4b5be6d76a563b402f5a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 13:53:36 +1100
-Subject: [PATCH] board: Add support for Samsung Galaxy Tab Active3 (Wi-Fi)
+Subject: [PATCH 1/9] board: Add support for Samsung Galaxy Tab Active3 (Wi-Fi)
 
 Based on the starlte board. The framebuffer base (0xca000000) comes from
 the stock T570XXSFEYI1 DTBO fb_handover node; the panel is 1200x1920.

@@ -1,0 +1,45 @@
+From 73db3742965e15a4f9035ab30b48801677469147 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:49:06 +1100
+Subject: [PATCH 11/13] configs: gtactive3wifi: Log memory, EFI map and disks
+ when the boot fails
+
+Before the fastboot window, print bdinfo, efidebug memmap and the UFS LU0
+partition table (and the blkmap disk, if one was made), so that the RAM
+log read from the bring-up Linux shows the DRAM banks U-Boot took from
+S-Boot, what EFI hands to the OS and where userdata (sda31) starts.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ board/samsung/exynos-mobile/gtactive3wifi.env | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/board/samsung/exynos-mobile/gtactive3wifi.env b/board/samsung/exynos-mobile/gtactive3wifi.env
+index a49ba24e..9f8f137f 100644
+--- a/board/samsung/exynos-mobile/gtactive3wifi.env
++++ b/board/samsung/exynos-mobile/gtactive3wifi.env
+@@ -49,6 +49,8 @@ bootcmd=mw.l 0x16030070 0x1281;
+ 	run kick;
+ 	run duranium;
+ 	echo "gtactive3wifi: boot failed";
++	run kick;
++	run diag;
+ 	run fastboot_window;
+ 	run fallback
+ 
+@@ -77,6 +79,12 @@ duranium=echo "gtactive3wifi: userdata as a disk";
+ 	load blkmap ${ud_dev}:${esp_part} ${kernel_addr_r} EFI/BOOT/BOOTAA64.EFI &&
+ 	bootefi ${kernel_addr_r}
+ 
++/* For the RAM log ("ulog" in the bring-up Linux): memory, EFI map, disks */
++diag=bdinfo;
++	efidebug memmap;
++	part list scsi 0;
++	if test -n "${ud_dev}"; then blkmap info; fi
++
+ /*
+  * Fastboot for one watchdog period (~82 s), then the bring-up Linux.
+  * From the host: "fastboot oem run:run keepalive" keeps U-Boot running,
+-- 
+2.56.0
+

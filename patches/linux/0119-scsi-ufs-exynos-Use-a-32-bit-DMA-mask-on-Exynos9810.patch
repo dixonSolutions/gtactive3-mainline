@@ -1,0 +1,82 @@
+From 2f8569b0b40cbb5d30658869a4a44a76cdd60846 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 21:01:41 +1100
+Subject: [PATCH 119/119] scsi: ufs: exynos: Use a 32-bit DMA mask on
+ Exynos9810
+
+The Exynos9810 UFS controller reports 64-bit addressing, but with
+descriptors and buffers above 4 GiB (DRAM at 0x880000000) every
+transfer ends in a System Bus Fatal Error (IS bit 17) and an invalid
+OCS, and the block layer hangs. Samsung's kernel uses a 32-bit mask for
+this controller; do the same through a new EXYNOS_UFS_OPT_DMA_32BIT and
+the set_dma_mask variant op.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/ufs/host/ufs-exynos.c | 21 ++++++++++++++++++++-
+ drivers/ufs/host/ufs-exynos.h |  1 +
+ 2 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/ufs/host/ufs-exynos.c b/drivers/ufs/host/ufs-exynos.c
+index 94688577c..686c66629 100644
+--- a/drivers/ufs/host/ufs-exynos.c
++++ b/drivers/ufs/host/ufs-exynos.c
+@@ -12,6 +12,7 @@
+ #include <crypto/aes.h>
+ #include <linux/arm-smccc.h>
+ #include <linux/clk.h>
++#include <linux/dma-mapping.h>
+ #include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+@@ -2101,8 +2102,25 @@ static int gs101_ufs_pre_pwr_change(struct exynos_ufs *ufs,
+ 	return 0;
+ }
+ 
++/*
++ * Some SoCs report 64-bit addressing (CAP.64AS) but their bus only reaches
++ * the low 4 GiB without the (unused) SysMMU: beyond that every transfer
++ * ends in a System Bus Fatal Error. Samsung's kernel uses a 32-bit mask.
++ */
++static int exynos_ufs_set_dma_mask(struct ufs_hba *hba)
++{
++	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
++
++	if (!(ufs->opts & EXYNOS_UFS_OPT_DMA_32BIT) &&
++	    (hba->capabilities & MASK_64_ADDRESSING_SUPPORT) &&
++	    !dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(64)))
++		return 0;
++	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
++}
++
+ static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
+ 	.name				= "exynos_ufs",
++	.set_dma_mask			= exynos_ufs_set_dma_mask,
+ 	.init				= exynos_ufs_init,
+ 	.exit				= exynos_ufs_exit,
+ 	.hce_enable_notify		= exynos_ufs_hce_enable_notify,
+@@ -2415,7 +2433,8 @@ static const struct exynos_ufs_drv_data exynos9810_ufs_drvs = {
+ 	.opts			= EXYNOS_UFS_OPT_HAS_APB_CLK_CTRL |
+ 				  EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL |
+ 				  EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR |
+-				  EXYNOS_UFS_OPT_UFSPR_SECURE,
++				  EXYNOS_UFS_OPT_UFSPR_SECURE |
++				  EXYNOS_UFS_OPT_DMA_32BIT,
+ 	.drv_init		= exynos9810_ufs_drv_init,
+ 	.pre_link		= exynos9810_ufs_pre_link,
+ 	.post_link		= fsd_ufs_post_link,
+diff --git a/drivers/ufs/host/ufs-exynos.h b/drivers/ufs/host/ufs-exynos.h
+index abe7e4727..80a5d92b5 100644
+--- a/drivers/ufs/host/ufs-exynos.h
++++ b/drivers/ufs/host/ufs-exynos.h
+@@ -245,6 +245,7 @@ struct exynos_ufs {
+ #define EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR	BIT(5)
+ #define EXYNOS_UFS_OPT_UFSPR_SECURE		BIT(6)
+ #define EXYNOS_UFS_OPT_TIMER_TICK_SELECT	BIT(7)
++#define EXYNOS_UFS_OPT_DMA_32BIT		BIT(8)
+ };
+ 
+ #define for_each_ufs_rx_lane(ufs, i) \
+-- 
+2.56.0
+

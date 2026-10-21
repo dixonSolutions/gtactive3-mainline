@@ -1,0 +1,281 @@
+From 418517f60298518567fd29a53e9bfa9a3fd5cbfb Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:27:00 +1100
+Subject: [PATCH 6/9] main: chainload: Arm the board guard before touching
+ memory
+
+Only register reads run unguarded now: chain_select() picks the fallback
+at once after a watchdog reset or with the key held, without writing the
+record, so the record still shows how far the failed boot got (new
+"stage" field). Otherwise chain_arm() is called as a guard before the
+record, FDT checks and copies, and again right before the jump, so that a
+crash anywhere in uniLoader's chain code ends in a watchdog reset and the
+fallback Linux instead of a silent hang.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ board/samsung/board-gtactive3wifi.c |   3 +
+ include/board.h                     |   7 +-
+ include/main/chainload.h            |  13 ++-
+ main/chainload.c                    | 119 +++++++++++++++++-----------
+ 4 files changed, 90 insertions(+), 52 deletions(-)
+
+diff --git a/board/samsung/board-gtactive3wifi.c b/board/samsung/board-gtactive3wifi.c
+index 9def79f..465f21f 100644
+--- a/board/samsung/board-gtactive3wifi.c
++++ b/board/samsung/board-gtactive3wifi.c
+@@ -82,8 +82,10 @@ static void wdt_disarm(struct chain_info *ci)
+ 	wr(PMU_WDT_MASK_RESET, rd(PMU_WDT_MASK_RESET) | CL0_WDTRESET);
+ 	wr(PMU_WDT_DISABLE, rd(PMU_WDT_DISABLE) | CL0_WDTRESET);
+ 	ci->wdt_ctrl = rd(WTCON);
++	ci->reason &= ~CHAIN_N_WDT_ARMED;
+ }
+ 
++/* Register reads only: this runs before the watchdog guards anything */
+ static int gtactive3wifi_chain_select(struct chain_info *ci)
+ {
+ 	int i, held = 1;
+@@ -103,6 +105,7 @@ static int gtactive3wifi_chain_select(struct chain_info *ci)
+ 	return !(ci->reason & (CHAIN_R_WDT_RESET | CHAIN_R_KEY));
+ }
+ 
++/* Called once as a guard right after chain_select, and again before the jump */
+ static void gtactive3wifi_chain_arm(struct chain_info *ci)
+ {
+ 	reboot_reason_download();
+diff --git a/include/board.h b/include/board.h
+index 39287d2..50a5d49 100644
+--- a/include/board.h
++++ b/include/board.h
+@@ -17,8 +17,11 @@ struct board_ops {
+ 	/*
+ 	 * Dual payload (CONFIG_CHAINLOAD), all optional:
+ 	 * chain_select: fill in reset status/keys, return 0 to boot the
+-	 *               fallback Linux instead of the chained bootloader.
+-	 * chain_arm:    last call before jumping to the chained bootloader.
++	 *               fallback Linux at once. Runs unguarded: keep it to
++	 *               register reads.
++	 * chain_arm:    arm a recovery mechanism (e.g. a watchdog); called
++	 *               once as a guard before anything that could hang, and
++	 *               again right before jumping to the chained bootloader.
+ 	 * fallback_arm: last call before booting the fallback Linux.
+ 	 */
+ 	int (*chain_select)(struct chain_info *ci);
+diff --git a/include/main/chainload.h b/include/main/chainload.h
+index ebdf4eb..3279c70 100644
+--- a/include/main/chainload.h
++++ b/include/main/chainload.h
+@@ -15,6 +15,12 @@
+ #define CHAIN_BOOT_CHAINED	0
+ #define CHAIN_BOOT_FALLBACK	1
+ 
++/* chain_info.stage */
++#define CHAIN_STAGE_START	1	/* watchdog armed, record started */
++#define CHAIN_STAGE_CHECKED	2	/* FDT and payload checked */
++#define CHAIN_STAGE_FALLBACK	3	/* forced fallback Linux */
++#define CHAIN_STAGE_JUMP	4	/* jumping to the chained bootloader */
++
+ /* chain_info.reason: bits below 8 select the fallback, the others are notes */
+ #define CHAIN_R_WDT_RESET	(1 << 0)	/* last reset was the watchdog */
+ #define CHAIN_R_KEY		(1 << 1)	/* fallback key held */
+@@ -27,7 +33,9 @@
+ 
+ /*
+  * Boot decision record, written at CONFIG_CHAINLOAD_HANDOFF_ADDR. All
+- * fields are 32 bit so it reads back with a plain register dump.
++ * fields are 32 bit so it reads back with a plain register dump. It is not
++ * touched when the board picks the fallback (watchdog reset, key), so after
++ * a watchdog reset it still describes the boot that failed.
+  */
+ struct chain_info {
+ 	uint32_t magic;
+@@ -49,7 +57,8 @@ struct chain_info {
+ 	uint32_t fdt_passed_lo;	/* FDT handed to the chained bootloader */
+ 	uint32_t fdt_passed_hi;
+ 	uint32_t wdt_ctrl;	/* board: watchdog control after arming */
+-	uint32_t reserved[5];
++	uint32_t stage;		/* CHAIN_STAGE_*: how far the last run got */
++	uint32_t reserved[4];
+ 	char bootloader[32];	/* androidboot.bootloader= value */
+ };
+ 
+diff --git a/main/chainload.c b/main/chainload.c
+index 369efcf..565dc3f 100644
+--- a/main/chainload.c
++++ b/main/chainload.c
+@@ -31,12 +31,6 @@ static void dcache_clean_range(unsigned long start, unsigned long size)
+ 	asm volatile("dsb sy" : : : "memory");
+ }
+ 
+-static void record_flush(struct chain_info *ci)
+-{
+-	if (ci)
+-		dcache_clean_range((unsigned long)ci, sizeof(*ci));
+-}
+-
+ /* Find "key=" in a kernel command line; returns the value or NULL. */
+ static const char *cmdline_find(const char *s, int len, const char *key)
+ {
+@@ -102,69 +96,97 @@ static int prev_fdt_usable(struct chain_info *ci, void *fdt)
+ 	return 1;
+ }
+ 
++/* Publish the record (one aligned copy, then cleaned to memory) */
++static void record_commit(struct chain_info *ci, uint32_t stage)
++{
++	struct chain_info *rec = (struct chain_info *)CONFIG_CHAINLOAD_HANDOFF_ADDR;
++
++	ci->stage = stage;
++	if (!CONFIG_CHAINLOAD_HANDOFF_ADDR)
++		return;
++	memcpy(rec, ci, sizeof(*ci));
++	dcache_clean_range((unsigned long)rec, sizeof(*rec));
++}
++
+ void chainload(void *dt, void *prev_fdt, void *load_addr)
+ {
+-	struct chain_info local, *ci = &local;
++	struct chain_info ci;
++	struct chain_info *rec = (struct chain_info *)CONFIG_CHAINLOAD_HANDOFF_ADDR;
+ 	unsigned long entry = CONFIG_CHAINLOAD_ENTRY;
+ 	unsigned long fdt_dst = CONFIG_CHAINLOAD_FDT_ADDR;
+ 	unsigned long size = (unsigned long)&chain_size;
+-	uint32_t count = 1;
+ 	void *fdt_src = dt;
+ 	unsigned long fdt_len;
+ 
+-	if (CONFIG_CHAINLOAD_HANDOFF_ADDR) {
+-		ci = (struct chain_info *)CONFIG_CHAINLOAD_HANDOFF_ADDR;
+-		/* DRAM keeps its contents over a warm reset: count the runs */
+-		if (ci->magic == CHAIN_INFO_MAGIC && ci->version == CHAIN_INFO_VERSION)
+-			count = ci->boot_count + 1;
++	memset(&ci, 0, sizeof(ci));
++
++	/*
++	 * 1. Reset status and keys: register reads only. After a watchdog
++	 * reset or with the key held, boot the fallback straight away and
++	 * leave the record of the failed boot alone.
++	 */
++	if (board_ops.ops.chain_select && !board_ops.ops.chain_select(&ci)) {
++		if (board_ops.ops.fallback_arm)
++			board_ops.ops.fallback_arm(&ci);
++		printk(KERN_INFO, "chainload: fallback Linux (reason 0x%x, reset 0x%x)\n",
++		       ci.reason, ci.rst_stat);
++		return;
+ 	}
+-	memset(ci, 0, sizeof(*ci));
+-	ci->magic = CHAIN_INFO_MAGIC;
+-	ci->version = CHAIN_INFO_VERSION;
+-	ci->boot_count = count;
+-	ci->hw_rev = ~0U;
+-	ci->prev_fdt_lo = (unsigned long)prev_fdt;
+-	ci->prev_fdt_hi = (unsigned long)prev_fdt >> 32;
+-	ci->load_addr_lo = (unsigned long)load_addr;
+-	ci->load_addr_hi = (unsigned long)load_addr >> 32;
+-	ci->chain_entry_lo = entry;
+-	ci->chain_entry_hi = entry >> 32;
+-	ci->chain_size = size;
++
++	/* 2. From here on a hang or crash ends in a watchdog reset (board) */
++	if (board_ops.ops.chain_arm)
++		board_ops.ops.chain_arm(&ci);
++
++	/* 3. Record, checks */
++	ci.magic = CHAIN_INFO_MAGIC;
++	ci.version = CHAIN_INFO_VERSION;
++	ci.boot_count = 1;
++	/* DRAM keeps its contents over a warm reset: count the runs */
++	if (CONFIG_CHAINLOAD_HANDOFF_ADDR && rec->magic == CHAIN_INFO_MAGIC &&
++	    rec->version == CHAIN_INFO_VERSION)
++		ci.boot_count = rec->boot_count + 1;
++	ci.hw_rev = ~0U;
++	ci.prev_fdt_lo = (unsigned long)prev_fdt;
++	ci.prev_fdt_hi = (unsigned long)prev_fdt >> 32;
++	ci.load_addr_lo = (unsigned long)load_addr;
++	ci.load_addr_hi = (unsigned long)load_addr >> 32;
++	ci.chain_entry_lo = entry;
++	ci.chain_entry_hi = entry >> 32;
++	ci.chain_size = size;
++	record_commit(&ci, CHAIN_STAGE_START);
+ 
+ 	printk(KERN_INFO, "chainload: loaded at 0x%lx, previous FDT 0x%lx, run %u\n",
+-	       (unsigned long)load_addr, (unsigned long)prev_fdt, count);
++	       (unsigned long)load_addr, (unsigned long)prev_fdt, ci.boot_count);
+ 
+-	if (prev_fdt_usable(ci, prev_fdt)) {
++	if (prev_fdt_usable(&ci, prev_fdt)) {
+ 		fdt_src = prev_fdt;
+-		if (!ci->bootloader[0])
+-			ci->reason |= CHAIN_N_NO_BOOTLOADER;
++		if (!ci.bootloader[0])
++			ci.reason |= CHAIN_N_NO_BOOTLOADER;
+ 	} else {
+-		ci->reason |= CHAIN_N_PREV_FDT_BAD;
++		ci.reason |= CHAIN_N_PREV_FDT_BAD;
+ 	}
+ 
+ 	if (CONFIG_CHAINLOAD_DEFAULT != 0)
+-		ci->reason |= CHAIN_R_FORCED;
++		ci.reason |= CHAIN_R_FORCED;
+ 	if (size < 0x40 ||
+ 	    *(uint32_t *)(chain + ARM64_IMAGE_MAGIC_OFF) != ARM64_IMAGE_MAGIC ||
+ 	    entry + size > fdt_dst)
+-		ci->reason |= CHAIN_R_BAD_PAYLOAD;
+-	if (board_ops.ops.chain_select && !board_ops.ops.chain_select(ci) &&
+-	    !(ci->reason & CHAIN_R_FALLBACK_MASK))
+-		ci->reason |= CHAIN_R_FORCED;
++		ci.reason |= CHAIN_R_BAD_PAYLOAD;
++	record_commit(&ci, CHAIN_STAGE_CHECKED);
+ 
+-	if (ci->reason & CHAIN_R_FALLBACK_MASK) {
+-		ci->decision = CHAIN_BOOT_FALLBACK;
++	if (ci.reason & CHAIN_R_FALLBACK_MASK) {
++		ci.decision = CHAIN_BOOT_FALLBACK;
+ 		if (board_ops.ops.fallback_arm)
+-			board_ops.ops.fallback_arm(ci);
+-		record_flush(ci);
++			board_ops.ops.fallback_arm(&ci);
++		record_commit(&ci, CHAIN_STAGE_FALLBACK);
+ 		printk(KERN_INFO, "chainload: fallback Linux (reason 0x%x, reset 0x%x)\n",
+-		       ci->reason, ci->rst_stat);
++		       ci.reason, ci.rst_stat);
+ 		return;
+ 	}
+ 
+ 	/*
+-	 * The FDT first: it may sit where the chained image goes. Lengths are
+-	 * rounded up to 16 bytes so that the copy never makes an unaligned
++	 * 4. The FDT first: it may sit where the chained image goes. Lengths
++	 * are rounded up to 16 bytes so that the copy never makes an unaligned
+ 	 * access, which faults if the MMU is off. Both sources are followed by
+ 	 * readable memory (FDT padding, the rest of our image).
+ 	 */
+@@ -176,18 +198,19 @@ void chainload(void *dt, void *prev_fdt, void *load_addr)
+ 	dcache_clean_range(entry, size);
+ 	asm volatile("ic iallu\n\tdsb sy\n\tisb" : : : "memory");
+ 
+-	ci->decision = CHAIN_BOOT_CHAINED;
+-	ci->fdt_passed_lo = fdt_dst;
+-	ci->fdt_passed_hi = fdt_dst >> 32;
++	ci.decision = CHAIN_BOOT_CHAINED;
++	ci.fdt_passed_lo = fdt_dst;
++	ci.fdt_passed_hi = fdt_dst >> 32;
+ 
+ 	printk(KERN_INFO, "chainload: %s FDT, %s, jumping to 0x%lx (%lu bytes)\n",
+ 	       fdt_src == prev_fdt ? "previous bootloader" : "embedded",
+-	       ci->bootloader[0] ? ci->bootloader : "no bootloader version",
++	       ci.bootloader[0] ? ci.bootloader : "no bootloader version",
+ 	       entry, size);
+ 
++	/* 5. Full watchdog timeout for the chained bootloader */
+ 	if (board_ops.ops.chain_arm)
+-		board_ops.ops.chain_arm(ci);
+-	record_flush(ci);
++		board_ops.ops.chain_arm(&ci);
++	record_commit(&ci, CHAIN_STAGE_JUMP);
+ 
+ 	load_kernel_and_jump((void *)fdt_dst, 0, 0, 0, (void *)entry);
+ }
+-- 
+2.56.0
+

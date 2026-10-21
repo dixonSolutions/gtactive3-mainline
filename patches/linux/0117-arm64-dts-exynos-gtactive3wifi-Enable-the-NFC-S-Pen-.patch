@@ -1,0 +1,64 @@
+From d5eb6742ce526211ef6d7a7c7dead2d0dc2934fb Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 20:45:28 +1100
+Subject: [PATCH 117/119] arm64: dts: exynos: gtactive3wifi: Enable the NFC, S
+ Pen and grip I2C buses
+
+HSI2C now works (MAX77705 and the USB-C block on HSI2C_40), so turn on
+the USI08/HSI2C_20 (NFC), USI09/HSI2C_23 (Wacom W9019) and
+USI_CMGP00/HSI2C_34 (grip) buses in the board DT instead of the
+bring-up overlays.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../boot/dts/exynos/exynos9810-gtactive3wifi.dts     | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 267398b1e..577c6c539 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -572,34 +572,34 @@ rt5510: amplifier@34 {
+ /* S.LSI NFC @27 */
+ &usi08_usi {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_50m>;
+-	clock-names = "pclk", "ipclk";
++	clock-names = "pclk", "ipclk";	status = "okay";
+ };
+ 
+ &hsi2c_20 {
+ 	clocks = <&clk_usi_50m>, <&clk_usi_200m>;
+-	clock-names = "hsi2c", "hsi2c_pclk";
++	clock-names = "hsi2c", "hsi2c_pclk";	status = "okay";
+ };
+ 
+ /* Wacom W90xx S Pen digitiser @56 */
+ &usi09_i2c {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
+-	clock-names = "pclk", "ipclk";
++	clock-names = "pclk", "ipclk";	status = "okay";
+ };
+ 
+ &hsi2c_23 {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
+-	clock-names = "hsi2c", "hsi2c_pclk";
++	clock-names = "hsi2c", "hsi2c_pclk";	status = "okay";
+ };
+ 
+ /* A96T3X6 grip sensor @20 */
+ &usi_cmgp00 {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
+-	clock-names = "pclk", "ipclk";
++	clock-names = "pclk", "ipclk";	status = "okay";
+ };
+ 
+ &hsi2c_34 {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
+-	clock-names = "hsi2c", "hsi2c_pclk";
++	clock-names = "hsi2c", "hsi2c_pclk";	status = "okay";
+ };
+ 
+ /* MAX77705 PMIC @66 (+ USB-C @25, fuel gauge @36, ...), SM5504 MUIC @14 */
+-- 
+2.56.0
+

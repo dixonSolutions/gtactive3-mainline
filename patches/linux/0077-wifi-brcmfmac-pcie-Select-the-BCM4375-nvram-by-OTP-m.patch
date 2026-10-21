@@ -1,0 +1,186 @@
+From 88cd8b8b32e31d57e00ebaa4c66ea48176ee5ccd Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:22:36 +1100
+Subject: [PATCH 077/119] wifi: brcmfmac: pcie: Select the BCM4375 nvram by OTP
+ module ID
+
+BCM4375 boards ship with modules from different makers (Samsung's
+bcmdhd lists SEMCO and Murata parts) that need different nvram files.
+The module ID is a Broadcom CIS tuple (tag 0x81: module revision, then
+maker) at the start of the OTP shadow in the GCI core. Read it the way
+bcmdhd's read_otp_from_bp() does, with the OTP powered through OTP
+control 1 and the PMU min resource mask for the duration of the read,
+and try board types "<board>-<maker>-<rev>" and "<board>-<maker>" before
+the plain board type, e.g.
+brcmfmac4375b1-pcie.samsung,gtactive3wifi-semco-51.txt.
+
+A missing or unparsable ID only logs and falls back to the board
+default.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../broadcom/brcm80211/brcmfmac/pcie.c        | 134 ++++++++++++++++++
+ 1 file changed, 134 insertions(+)
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 877ab383c..2f0a143db 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -2050,6 +2050,114 @@ brcmf_pcie_parse_otp(struct brcmf_pciedev_info *devinfo, u8 *otp, size_t size)
+ 	return ret;
+ }
+ 
++/*
++ * BCM4375 modules (Samsung): the OTP shadow in the GCI core starts with
++ * Broadcom CIS tuples (0x80, len, tag, data). Tag 0x81 holds a two-byte
++ * module ID, the module revision first and then the module maker (0x33 =
++ * SEMCO, 0x22 = Murata), and tag 0x1b the board type. Samsung's bcmdhd picks
++ * the nvram by this ID (dhd_custom_cis.c bcm4375 vid_info[]). The shadow only
++ * reads back while the OTP is powered, so OTP control 1 and the PMU min
++ * resource mask are overridden around the read and restored afterwards,
++ * using the backplane addresses and values from bcmdhd's read_otp_from_bp().
++ */
++#define BRCMF_4375_OTP_CIS_ADDR		0x18011120
++#define BRCMF_4375_OTP_CIS_LEN		0x58
++#define BRCMF_4375_OTP_CTRL1_ADDR	0x18010324
++#define BRCMF_4375_OTP_CTRL1_VAL	0x00fa0000
++#define BRCMF_4375_PMU_MINRES_ADDR	0x18012618
++#define BRCMF_4375_PMU_MINRES_VAL	0x0e4fffff
++
++#define BRCMF_CIS_TAG_BOARDTYPE		0x1b
++#define BRCMF_CIS_TAG_VENDOR		0x81
++
++static int brcmf_pcie_read_otp_4375(struct brcmf_pciedev_info *devinfo)
++{
++	u8 cis[BRCMF_4375_OTP_CIS_LEN];
++	u32 ctrl1, minres, base;
++	const char *maker;
++	int boardtype = -1;
++	int p, rev = -1;
++	u32 idx;
++
++	ctrl1 = brcmf_pcie_buscore_read32(devinfo, BRCMF_4375_OTP_CTRL1_ADDR);
++	minres = brcmf_pcie_buscore_read32(devinfo, BRCMF_4375_PMU_MINRES_ADDR);
++	brcmf_pcie_buscore_write32(devinfo, BRCMF_4375_OTP_CTRL1_ADDR,
++				   BRCMF_4375_OTP_CTRL1_VAL);
++	brcmf_pcie_buscore_write32(devinfo, BRCMF_4375_PMU_MINRES_ADDR,
++				   BRCMF_4375_PMU_MINRES_VAL);
++
++	base = brcmf_pcie_buscore_prep_addr(devinfo->pdev,
++					    BRCMF_4375_OTP_CIS_ADDR);
++	for (idx = 0; idx < sizeof(cis); idx += 4)
++		put_unaligned_le32(brcmf_pcie_read_reg32(devinfo, base + idx),
++				   &cis[idx]);
++
++	brcmf_pcie_buscore_write32(devinfo, BRCMF_4375_OTP_CTRL1_ADDR, ctrl1);
++	brcmf_pcie_buscore_write32(devinfo, BRCMF_4375_PMU_MINRES_ADDR, minres);
++
++	brcmf_dbg(PCIE, "OTP CIS: %*ph\n", (int)sizeof(cis), cis);
++
++	for (p = 0; p + 3 <= sizeof(cis) && cis[p] != 0x00 && cis[p] != 0xff;
++	     p += 2 + cis[p + 1]) {
++		u8 len = cis[p + 1];
++		u8 *data = &cis[p + 3];
++
++		if (p + 2 + len > sizeof(cis))
++			break;
++		/* the first tuple must be a Broadcom one, others may follow */
++		if (cis[p] != BRCMF_OTP_BRCM_CIS) {
++			if (!p)
++				break;
++			continue;
++		}
++		if (len < 2)
++			continue;
++
++		switch (cis[p + 2]) {
++		case BRCMF_CIS_TAG_VENDOR:
++			if (len >= 3) {
++				rev = data[0];
++				snprintf(devinfo->otp.version,
++					 sizeof(devinfo->otp.version),
++					 "%02x", data[0]);
++				switch (data[1]) {
++				case 0x33:
++					maker = "semco";
++					break;
++				case 0x22:
++					maker = "murata";
++					break;
++				default:
++					maker = NULL;
++					break;
++				}
++				if (maker)
++					strscpy(devinfo->otp.vendor, maker);
++				else
++					snprintf(devinfo->otp.vendor,
++						 sizeof(devinfo->otp.vendor),
++						 "v%02x", data[1]);
++			}
++			break;
++		case BRCMF_CIS_TAG_BOARDTYPE:
++			boardtype = data[0];
++			break;
++		}
++	}
++
++	if (rev < 0) {
++		brcmf_info("OTP: no module ID (CIS %*ph), using board defaults\n",
++			   8, cis);
++		return 0;
++	}
++
++	devinfo->otp.valid = true;
++	brcmf_info("OTP: module %s rev %s, board type 0x%02x\n",
++		   devinfo->otp.vendor, devinfo->otp.version, boardtype);
++
++	return 0;
++}
++
+ static int brcmf_pcie_read_otp(struct brcmf_pciedev_info *devinfo)
+ {
+ 	const struct pci_dev *pdev = devinfo->pdev;
+@@ -2081,6 +2189,8 @@ static int brcmf_pcie_read_otp(struct brcmf_pciedev_info *devinfo)
+ 		base = 0x113c;
+ 		words = 0x170;
+ 		break;
++	case BRCM_CC_4375_CHIP_ID:
++		return brcmf_pcie_read_otp_4375(devinfo);
+ 	default:
+ 		/* OTP not supported on this chip */
+ 		return 0;
+@@ -2301,6 +2411,30 @@ brcmf_pcie_prepare_fw_request(struct brcmf_pciedev_info *devinfo)
+ 			kfree(fwreq);
+ 			return NULL;
+ 		}
++	} else if (devinfo->settings->board_type && devinfo->otp.valid &&
++		   devinfo->ci->chip == BRCM_CC_4375_CHIP_ID) {
++		const struct brcmf_otp_params *otp = &devinfo->otp;
++		struct device *dev = &devinfo->pdev->dev;
++		const char **bt = fwreq->board_types;
++
++		/*
++		 * Module-specific nvram, e.g.
++		 * brcmfmac4375b1-pcie.samsung,gtactive3wifi-semco-51.txt, then
++		 * per maker, then the board default.
++		 */
++		bt[0] = devm_kasprintf(dev, GFP_KERNEL, "%s-%s-%s",
++				       devinfo->settings->board_type,
++				       otp->vendor, otp->version);
++		bt[1] = devm_kasprintf(dev, GFP_KERNEL, "%s-%s",
++				       devinfo->settings->board_type,
++				       otp->vendor);
++		bt[2] = devinfo->settings->board_type;
++
++		if (!bt[0] || !bt[1]) {
++			kfree(fwreq);
++			return NULL;
++		}
++		brcmf_dbg(PCIE, "Board: %s, module %s\n", bt[2], bt[0]);
+ 	} else {
+ 		brcmf_dbg(PCIE, "Board: %s\n", devinfo->settings->board_type);
+ 		fwreq->board_types[0] = devinfo->settings->board_type;
+-- 
+2.56.0
+

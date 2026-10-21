@@ -1,0 +1,185 @@
+From 0ad0a71a50368b7c36ff11fb2d19cdab1b0e0b4e Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:22:28 +1100
+Subject: [PATCH 089/119] arm64: dts: exynos: gtactive3wifi: Describe I2C
+ peripherals
+
+Add the clients of the remaining HSI2C buses, with addresses, interrupts
+and GPIOs from the stock T570XXSFEYI1 DT (stock-0.dts, dtbo-4.dts):
+
+- hsi2c_20 (USI08): S.LSI NFC at 0x27, IRQ gpa1-2, VEN gpg1-0
+  (high = power down), FIRM gpg1-6, 400 kHz
+- hsi2c_23 (USI09_I2C): Wacom W9019 at 0x56, IRQ gpa3-3 (level low),
+  FWE gpm41-0, 3.3 V supply switched by gpm42-0, y inverted and x/y
+  swapped, 400 kHz
+- hsi2c_34 (USI_CMGP00): A96T3x6 grip sensor at 0x20, IRQ gpa1-7,
+  VDD_GRIP_3P0 (S2MPS18 LDO40), 10 kHz
+- hsi2c_40: SM5504 pogo MUIC at 0x14, IRQ gpa1-4
+
+The three new buses themselves stay disabled in the base DTB. NFC still
+needs its AP clock (oscclk_nfc) and VDD_NFC_1P8 (LDO41).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 133 ++++++++++++++++++
+ 1 file changed, 133 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 6accc4bb3..e5577bd8e 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -173,6 +173,17 @@ led {
+ 		};
+ 	};
+ 
++	/* S Pen digitiser supply (stock wacom_ldo_en: gpm42-0, 3.3 V) */
++	vdd_wacom: regulator-wacom {
++		compatible = "regulator-fixed";
++		regulator-name = "wacom_3.3v";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&gpm42 0 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++	};
++
+ 	memory@80000000 {
+ 		device_type = "memory";
+ 		reg = <0x0 0x80000000 0x3c800000>,
+@@ -261,6 +272,49 @@ max77705_irq: max77705-irq-pins {
+ 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+ 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+ 	};
++
++	nfc_irq: nfc-irq-pins {
++		samsung,pins = "gpa1-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	sm5504_irq: sm5504-irq-pins {
++		samsung,pins = "gpa1-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	grip_irq: grip-irq-pins {
++		samsung,pins = "gpa1-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV4>;
++	};
++
++	/* gpa3-3 = pen interrupt, gpa3-7 = pen detect (PDCT) */
++	epen_irq: epen-irq-pins {
++		samsung,pins = "gpa3-3", "gpa3-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++};
++
++&pinctrl_peric0 {
++	nfc_pd: nfc-pd-pins {
++		samsung,pins = "gpg1-0";
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	nfc_firm: nfc-firm-pins {
++		samsung,pins = "gpg1-6";
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
+ };
+ 
+ &pinctrl_peric1 {
+@@ -840,4 +894,83 @@ fuel-gauge@36 {
+ 		maxim,rsns-microohm = <5000>;
+ 		power-supplies = <&max77705_charger>;
+ 	};
++
++	/*
++	 * Pogo-connector MUIC. Its IRQ handler in the stock kernel
++	 * (sm5504-muic-pogo.c) moves usb-mux-sel to the pogo pins when a
++	 * dock (ID 34k or 49.9k) is attached; mainline has no such consumer
++	 * yet, so the hog keeps USB on the USB-C port.
++	 */
++	muic@14 {
++		compatible = "siliconmitus,sm5504-muic";
++		reg = <0x14>;
++		interrupt-parent = <&gpa1>;
++		interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
++		pinctrl-0 = <&sm5504_irq>;
++		pinctrl-names = "default";
++	};
++};
++
++/* Peripheral I2C clients (stock-0.dts / dtbo-4.dts, hw_rev 4) */
++&hsi2c_20 {
++	clock-frequency = <400000>;
++
++	/* S.LSI NFC controller (stock "sec-nfc", 400 kHz bus) */
++	nfc@27 {
++		compatible = "samsung,s3fwrn5-i2c";
++		reg = <0x27>;
++		interrupt-parent = <&gpa1>;
++		interrupts = <2 IRQ_TYPE_EDGE_RISING>;
++		/* VEN: high = power down; FIRM: high = firmware mode */
++		en-gpios = <&gpg1 0 GPIO_ACTIVE_HIGH>;
++		wake-gpios = <&gpg1 6 GPIO_ACTIVE_HIGH>;
++		pinctrl-0 = <&nfc_irq &nfc_pd &nfc_firm>;
++		pinctrl-names = "default";
++		/*
++		 * TODO: AP reference clock "oscclk_nfc" (CMU gate, requested
++		 * by the chip on gpa2-6) and VDD_NFC_1P8 (S2MPS18 LDO41).
++		 */
++	};
++};
++
++&hsi2c_23 {
++	clock-frequency = <400000>;
++
++	/*
++	 * Wacom W9019 EMR digitiser (stock "wacom,w90xx", fw
++	 * w9019_gtactive3.bin, max 17222 x 10764, pressure 4095,
++	 * wacom,invert = <0 1 1>: y inverted, then x/y swapped).
++	 * Bootloader address 0x09 is only used for firmware updates.
++	 */
++	digitizer@56 {
++		compatible = "wacom,w9019";
++		reg = <0x56>;
++		interrupt-parent = <&gpa3>;
++		interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
++		vdd-supply = <&vdd_wacom>;
++		flash-mode-gpios = <&gpm41 0 GPIO_ACTIVE_HIGH>;
++		pinctrl-0 = <&epen_irq>;
++		pinctrl-names = "default";
++		touchscreen-inverted-y;
++		touchscreen-swapped-x-y;
++		/* 8.0" 16:10 panel; raw x is the long axis */
++		touchscreen-x-mm = <172>;
++		touchscreen-y-mm = <108>;
++	};
++};
++
++&hsi2c_34 {
++	/* stock: 10 kHz */
++	clock-frequency = <10000>;
++
++	/* ABOV A96T3x6 Wi-Fi antenna grip sensor */
++	proximity@20 {
++		compatible = "abov,a96t3x6";
++		reg = <0x20>;
++		interrupt-parent = <&gpa1>;
++		interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
++		vdd-supply = <&s2mps18_ldo40>;
++		pinctrl-0 = <&grip_irq>;
++		pinctrl-names = "default";
++	};
+ };
+-- 
+2.56.0
+

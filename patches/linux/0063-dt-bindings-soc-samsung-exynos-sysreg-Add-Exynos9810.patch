@@ -1,0 +1,29 @@
+From 17fde0d240d0124104ac8eb5326e9e3d0da62455 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:47:05 +1100
+Subject: [PATCH 063/119] dt-bindings: soc: samsung: exynos-sysreg: Add
+ Exynos9810 FSYS1 sysreg
+
+The FSYS1 system registers hold the PCIe PHY lane configuration
+(stock DT sysreg@11410000, PCIe "sysreg" at 0x11411044).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml   | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml b/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
+index 28f914592..d69931a05 100644
+--- a/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
++++ b/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
+@@ -37,6 +37,7 @@ properties:
+               - samsung,exynos8895-peric1-sysreg
+               - samsung,exynos9810-chub-sysreg
+               - samsung,exynos9810-cmgp-sysreg
++              - samsung,exynos9810-fsys1-sysreg
+               - samsung,exynos9810-peric0-sysreg
+               - samsung,exynos9810-peric1-sysreg
+               - samsung,exynos990-peric0-sysreg
+-- 
+2.56.0
+

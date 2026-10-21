@@ -1,7 +1,7 @@
 From cc64330f54ead80f1c671455f2d1bd161e6c92c3 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:52:07 +1100
-Subject: [PATCH 16/64] dt-bindings: mfd: Add Samsung S2MPS18 PMIC
+Subject: [PATCH 016/119] dt-bindings: mfd: Add Samsung S2MPS18 PMIC
 
 The S2MPS18 is the main PMIC of Exynos9810 boards. It sits on the
 SPEEDY bus owned by the APM and the AP reaches it through ACPM IPC, so

@@ -1,8 +1,8 @@
 From d85a893271a6c345f6b05e31676aefc663347b1d Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:08:04 +1100
-Subject: [PATCH 27/64] backlight: Add DCS backlight for bootloader-initialised
- Exynos9810 DSIM
+Subject: [PATCH 027/119] backlight: Add DCS backlight for
+ bootloader-initialised Exynos9810 DSIM
 
 The Galaxy Tab Active3 (SM-T570) panel, a Himax HX83102E TDDI on two
 DSI links, has no backlight IC on I2C: Samsung's panel driver

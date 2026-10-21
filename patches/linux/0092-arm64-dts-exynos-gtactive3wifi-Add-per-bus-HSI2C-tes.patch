@@ -1,0 +1,122 @@
+From 0ad0e50797db6a37974d55d52ddbf1fc131414f2 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:32:13 +1100
+Subject: [PATCH 092/119] arm64: dts: exynos: gtactive3wifi: Add per-bus HSI2C
+ test variants
+
+The USI driver programs a bus's SW_CONF register at boot, and the PERIC
+sysreg holds secure registers (reading the fingerprint channel's SW_CONF
+aborts). Add one overlay variant per new bus so each can be tested on
+its own before it is enabled in the base DTB:
+
+- exynos9810-gtactive3wifi-grip.dtb: USI_CMGP00 / hsi2c_34
+- exynos9810-gtactive3wifi-nfc.dtb: USI08 / hsi2c_20
+- exynos9810-gtactive3wifi-wacom.dtb: USI09_I2C / hsi2c_23
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/Makefile             |  9 +++++++++
+ .../exynos/exynos9810-gtactive3wifi-grip.dtso   | 17 +++++++++++++++++
+ .../exynos/exynos9810-gtactive3wifi-nfc.dtso    | 17 +++++++++++++++++
+ .../exynos/exynos9810-gtactive3wifi-wacom.dtso  | 17 +++++++++++++++++
+ 4 files changed, 60 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-grip.dtso
+ create mode 100644 arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-nfc.dtso
+ create mode 100644 arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-wacom.dtso
+
+diff --git a/arch/arm64/boot/dts/exynos/Makefile b/arch/arm64/boot/dts/exynos/Makefile
+index d209e9221..2eec01fe2 100644
+--- a/arch/arm64/boot/dts/exynos/Makefile
++++ b/arch/arm64/boot/dts/exynos/Makefile
+@@ -18,6 +18,9 @@ dtb-$(CONFIG_ARCH_EXYNOS) += \
+ 	exynos8895-dreamlte.dtb		\
+ 	exynos9810-gtactive3wifi.dtb	\
+ 	exynos9810-gtactive3wifi-i2cgpio.dtb \
++	exynos9810-gtactive3wifi-grip.dtb \
++	exynos9810-gtactive3wifi-nfc.dtb \
++	exynos9810-gtactive3wifi-wacom.dtb \
+ 	exynos9810-starlte.dtb		\
+ 	exynos990-c1s.dtb		\
+ 	exynos990-r8s.dtb               \
+@@ -28,3 +31,9 @@ dtb-$(CONFIG_ARCH_EXYNOS) += \
+ 
+ exynos9810-gtactive3wifi-i2cgpio-dtbs := exynos9810-gtactive3wifi.dtb \
+ 	exynos9810-gtactive3wifi-i2cgpio.dtbo
++exynos9810-gtactive3wifi-grip-dtbs := exynos9810-gtactive3wifi.dtb \
++	exynos9810-gtactive3wifi-grip.dtbo
++exynos9810-gtactive3wifi-nfc-dtbs := exynos9810-gtactive3wifi.dtb \
++	exynos9810-gtactive3wifi-nfc.dtbo
++exynos9810-gtactive3wifi-wacom-dtbs := exynos9810-gtactive3wifi.dtb \
++	exynos9810-gtactive3wifi-wacom.dtbo
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-grip.dtso b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-grip.dtso
+new file mode 100644
+index 000000000..2f2616032
+--- /dev/null
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-grip.dtso
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/*
++ * Bring-up variant: enable the HSI2C bus in CMGP USI_CMGP00, SW_CONF 0x14212000, for the A96T3x6 grip sensor.
++ * The base DTB keeps it disabled until the bus has been tested, because
++ * the USI driver programs the bus's SW_CONF register at boot.
++ */
++
++/dts-v1/;
++/plugin/;
++
++&usi_cmgp00 {
++	status = "okay";
++};
++
++&hsi2c_34 {
++	status = "okay";
++};
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-nfc.dtso b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-nfc.dtso
+new file mode 100644
+index 000000000..b80372008
+--- /dev/null
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-nfc.dtso
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/*
++ * Bring-up variant: enable the HSI2C bus in PERIC1 USI08, SW_CONF 0x1081102c, for the S.LSI NFC controller.
++ * The base DTB keeps it disabled until the bus has been tested, because
++ * the USI driver programs the bus's SW_CONF register at boot.
++ */
++
++/dts-v1/;
++/plugin/;
++
++&usi08_usi {
++	status = "okay";
++};
++
++&hsi2c_20 {
++	status = "okay";
++};
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-wacom.dtso b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-wacom.dtso
+new file mode 100644
+index 000000000..768acdadf
+--- /dev/null
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi-wacom.dtso
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/*
++ * Bring-up variant: enable the HSI2C bus in PERIC1 USI09_I2C, SW_CONF 0x10811038, for the Wacom W9019 digitiser.
++ * The base DTB keeps it disabled until the bus has been tested, because
++ * the USI driver programs the bus's SW_CONF register at boot.
++ */
++
++/dts-v1/;
++/plugin/;
++
++&usi09_i2c {
++	status = "okay";
++};
++
++&hsi2c_23 {
++	status = "okay";
++};
+-- 
+2.56.0
+

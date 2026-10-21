@@ -1,0 +1,1286 @@
+From c9cb74725c887d91a3107a02cccfec737eb897b2 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:31:39 +1100
+Subject: [PATCH 106/119] ASoC: samsung: Add Exynos9810 A-Box firmware-less
+ driver
+
+Samsung's A-Box driver loads the Calliope DSP firmware and lets it
+program the RDMA/WDMA engines. Program them from Linux instead, with the
+register layout recovered from the firmware's own accessors
+(calliope_sram.bin 0x209c-0x2330 for RDMA at 0x17c51000,
+calliope_dram.bin 0x80002b6a-0x80002d18 for WDMA at 0x17c52000):
+
+  CTRL0: [0] enable, [4] buffer type, [5] update, [12:8] format,
+         [13] mono expand, [18:16] function, [22:19] burst length
+  0x08 BUF_STR, 0x0c BUF_END, 0x10 BUF_OFFSET (period), 0x14 STR_POINT,
+  0x18 VOL_FACTOR, 0x1c VOL_CHANGE, 0x20 SBANK limit, 0x30 status
+
+The routing, SPUS/SPUM and UAIF register fields are the ones of the
+downstream regmap (abox.c, abox_if.c). Routes are fixed: RDMA0 -> SIFS1
+-> UAIF0, RDMA1 -> SIFS2 -> UAIF1, UAIFn -> NSRCn -> WDMAn+1, ASRC off.
+The DMA interrupts only reach the A-Box GIC, so periods are emulated with
+an hrtimer and the position comes from the DMA status register.
+
+Without a CMU_AUD clock driver the node can ask the driver to set
+PLL_AUD to 1179.648 MHz, AUDIF to 24.576 MHz and the UAIF dividers itself
+(samsung,cmu-bringup), following the downstream CMUCAL sequences.
+
+Bring-up helpers: a 'regs' sysfs dump and a 'tone' sysfs self test that
+plays a square wave through RDMA0/1 without ALSA userspace.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/soc/samsung/Kconfig           |   10 +
+ sound/soc/samsung/Makefile          |    2 +
+ sound/soc/samsung/exynos9810-abox.c | 1203 +++++++++++++++++++++++++++
+ 3 files changed, 1215 insertions(+)
+ create mode 100644 sound/soc/samsung/exynos9810-abox.c
+
+diff --git a/sound/soc/samsung/Kconfig b/sound/soc/samsung/Kconfig
+index ec7204f57..91c14cdc8 100644
+--- a/sound/soc/samsung/Kconfig
++++ b/sound/soc/samsung/Kconfig
+@@ -148,4 +148,14 @@ config SND_SOC_SAMSUNG_MIDAS_WM1811
+ 	help
+ 	  Say Y if you want to add support for SoC audio on the Midas boards.
+ 
++config SND_SOC_SAMSUNG_EXYNOS9810_ABOX
++	tristate "Exynos9810 A-Box audio subsystem (firmware-less)"
++	depends on ARCH_EXYNOS || COMPILE_TEST
++	depends on HAS_DMA && ARM64
++	select MFD_SYSCON
++	help
++	  Say Y or M to drive the Exynos9810 A-Box UAIF I2S ports with its
++	  RDMA/WDMA engines directly from Linux, without the Calliope DSP
++	  firmware. Effects, offload and the voice DSP are not supported.
++
+ endif #SND_SOC_SAMSUNG
+diff --git a/sound/soc/samsung/Makefile b/sound/soc/samsung/Makefile
+index 8d5f09147..55f8866e2 100644
+--- a/sound/soc/samsung/Makefile
++++ b/sound/soc/samsung/Makefile
+@@ -27,6 +27,7 @@ snd-soc-arndale-y := arndale.o
+ snd-soc-tm2-wm5110-y := tm2_wm5110.o
+ snd-soc-aries-wm8994-y := aries_wm8994.o
+ snd-soc-midas-wm1811-y := midas_wm1811.o
++snd-soc-exynos9810-abox-y := exynos9810-abox.o
+ 
+ obj-$(CONFIG_SND_SOC_SAMSUNG_SMDK_WM8994) += snd-soc-smdk-wm8994.o
+ obj-$(CONFIG_SND_SOC_SNOW) += snd-soc-snow.o
+@@ -42,3 +43,4 @@ obj-$(CONFIG_SND_SOC_ARNDALE) += snd-soc-arndale.o
+ obj-$(CONFIG_SND_SOC_SAMSUNG_TM2_WM5110) += snd-soc-tm2-wm5110.o
+ obj-$(CONFIG_SND_SOC_SAMSUNG_ARIES_WM8994) += snd-soc-aries-wm8994.o
+ obj-$(CONFIG_SND_SOC_SAMSUNG_MIDAS_WM1811) += snd-soc-midas-wm1811.o
++obj-$(CONFIG_SND_SOC_SAMSUNG_EXYNOS9810_ABOX) += snd-soc-exynos9810-abox.o
+diff --git a/sound/soc/samsung/exynos9810-abox.c b/sound/soc/samsung/exynos9810-abox.c
+new file mode 100644
+index 000000000..e1b7433d1
+--- /dev/null
++++ b/sound/soc/samsung/exynos9810-abox.c
+@@ -0,0 +1,1203 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Samsung Exynos9810 A-Box audio subsystem, firmware-less ("direct") mode.
++ *
++ * Copyright (c) 2026 dixonSolutions
++ *
++ * The A-Box is a Cortex-A7 audio DSP ("Calliope") with a set of hardware
++ * blocks around it: read DMAs (RDMA0-7), write DMAs (WDMA0-4), a speaker-side
++ * sample processing unit (SPUS: per-RDMA ASRC, a mixer and the SIFS0-2
++ * serial outputs), a mic-side one (SPUM: NSRC0-3 inputs, SIFM0-3 outputs) and
++ * the UAIF0-3 I2S/TDM ports.
++ *
++ * Samsung's driver (sound/soc/samsung/abox/ in the downstream 4.9 kernels)
++ * boots the Calliope firmware and only sends it IPC messages; the firmware
++ * then programs the DMAs. The AP side still owns the routing, the SPUS/SPUM
++ * and the UAIF registers through a regmap.
++ *
++ * This driver does not run any firmware. It programs the RDMA/WDMA registers
++ * itself, with the bit layout taken from the register accessors of the
++ * Calliope firmware (vendor/firmware/calliope_sram.bin, T570XXSFEYI1,
++ * functions at 0x209c-0x2330 for RDMA at 0x17c51000, and
++ * calliope_dram.bin 0x80002b6a-0x80002d18 for WDMA at 0x17c52000), and it
++ * uses fixed routes:
++ *
++ *   playback UAIF0: RDMA0 -> SPUS IN0 (ASRC off) -> SIFS1 -> UAIF0 SPK
++ *   playback UAIF1: RDMA1 -> SPUS IN1 (ASRC off) -> SIFS2 -> UAIF1 SPK
++ *   capture  UAIFn: UAIFn MIC -> NSRCn -> SPUM (ASRC off) -> SIFMn -> WDMAn+1
++ *
++ * The DMA interrupts are only routed to the A-Box's own GIC (ids 38+n and
++ * 46+n for RDMAn, 54+n and 59+n for WDMAn according to the firmware), so the
++ * period interrupts are emulated with an hrtimer and the hardware position is
++ * read back from the DMA status register.
++ *
++ * The A-Box clocks live in CMU_AUD (0x17c00000), which has no mainline clock
++ * driver yet. For bring-up the driver can program the few CMU_AUD registers
++ * it needs itself (PLL_AUD, the AUDIF and UAIF dividers and the UAIF bit
++ * clock gates) when the node has a "cmu" register range and the
++ * "samsung,cmu-bringup" property. This is to be replaced by a CMU_AUD clock
++ * driver.
++ */
++
++#include <linux/arm-smccc.h>
++#include <linux/bitfield.h>
++#include <linux/bits.h>
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/dma-mapping.h>
++#include <linux/hrtimer.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/mfd/syscon.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++/* ---- A-Box SFR (0x17c50000), abox.h in the downstream kernel ------------ */
++#define ABOX_IP_INDEX			0x0000	/* reads "ABOX" */
++#define ABOX_VERSION			0x0004
++#define ABOX_SYSPOWER_CTRL		0x0010
++#define ABOX_SYSPOWER_STATUS		0x0014
++#define ABOX_QCHANNEL_DISABLE		0x0038
++#define ABOX_ROUTE_CTRL0		0x0040	/* UAIFn SPK source, 4 bits each */
++#define ABOX_ROUTE_CTRL1		0x0044	/* NSRCn source, 4 bits each */
++#define ABOX_SPUS_CTRL0			0x0200	/* per RDMA: IN, OUT, ASRC */
++#define ABOX_SPUS_CTRL1			0x0204
++#define ABOX_SPUS_CTRL3			0x020c	/* SIFS flush */
++#define ABOX_SPUS_SBANK_RDMA(x)		(0x0220 + 4 * (x))
++#define ABOX_SPUS_SBANK_ASRC(x)		(0x0240 + 4 * (x))
++#define ABOX_SPUM_CTRL0			0x0300	/* per NSRC: ASRC, OUT */
++#define ABOX_SPUM_CTRL3			0x030c	/* SIFM flush */
++#define ABOX_UAIF_CTRL0(x)		(0x0500 + 0x10 * (x))
++#define ABOX_UAIF_CTRL1(x)		(0x0504 + 0x10 * (x))
++#define ABOX_UAIF_STATUS(x)		(0x050c + 0x10 * (x))
++#define ABOX_RDMA_BASE(x)		(0x1000 + 0x100 * (x))
++#define ABOX_WDMA_BASE(x)		(0x2000 + 0x100 * (x))
++#define ABOX_SFR_SIZE			0x2d10
++
++/* QCHANNEL_DISABLE bits (enum qchannel) */
++#define ABOX_QCH_ACLK			BIT(1)
++#define ABOX_QCH_BCLK_UAIF(x)		BIT(2 + (x))
++
++/* ROUTE_CTRL0: UAIFn speaker source */
++#define ABOX_ROUTE_UAIF_SPK(x)		(GENMASK(3, 0) << (4 * (x)))
++#define ABOX_ROUTE_SPK_SIFS0		1
++#define ABOX_ROUTE_SPK_SIFS1		2
++#define ABOX_ROUTE_SPK_SIFS2		3
++/* ROUTE_CTRL1: NSRCn source */
++#define ABOX_ROUTE_NSRC(x)		(GENMASK(3, 0) << (4 * (x)))
++#define ABOX_ROUTE_NSRC_UAIF(x)		(8 + (x))
++
++/* SPUS_CTRL0, FUNC_CHAIN_SRC: bit 4n ASRC, bits 4n+2:4n+1 OUT, bit 4n+3 IN */
++#define ABOX_SPUS_ASRC(x)		BIT(4 * (x))
++#define ABOX_SPUS_OUT(x)		(GENMASK(2, 1) << (4 * (x)))
++#define ABOX_SPUS_OUT_SIFS1		0
++#define ABOX_SPUS_OUT_SIFS0		1
++#define ABOX_SPUS_OUT_SIFS2		2
++#define ABOX_SPUS_IN(x)			BIT(4 * (x) + 3)	/* 0: RDMA */
++/* SPUS_CTRL1 */
++#define ABOX_SIFS_OUT1_SEL		GENMASK(18, 16)
++#define ABOX_SIFS_OUT2_SEL		GENMASK(21, 19)
++/* SPUS_CTRL3 */
++#define ABOX_SPUS_SIFS1_FLUSH		BIT(0)
++#define ABOX_SPUS_SIFS2_FLUSH		BIT(1)
++/* SBANK registers: [13:7] start (128 byte units), [29:20] size (16 bytes) */
++#define ABOX_SBANK_STR			GENMASK(13, 7)
++#define ABOX_SBANK_SIZE			GENMASK(29, 20)
++
++/* SPUM_CTRL0, FUNC_CHAIN_NSRC: bit 4n+4 ASRC, bit 4n+7 OUT (0: WDMA) */
++#define ABOX_SPUM_ASRC(x)		BIT(4 * (x) + 4)
++#define ABOX_SPUM_OUT(x)		BIT(4 * (x) + 7)
++
++/* UAIF_CTRL0 */
++#define ABOX_UAIF_DATA_MODE		BIT(4)
++#define ABOX_UAIF_IRQ_MODE		BIT(3)
++#define ABOX_UAIF_MODE			BIT(2)	/* 1: A-Box drives BCLK/WS */
++#define ABOX_UAIF_MIC_ENABLE		BIT(1)
++#define ABOX_UAIF_SPK_ENABLE		BIT(0)
++/* UAIF_CTRL1 */
++#define ABOX_UAIF_FORMAT		GENMASK(28, 24)
++#define ABOX_UAIF_BCLK_POLARITY		BIT(23)
++#define ABOX_UAIF_WS_MODE		BIT(22)	/* 0: I2S, 1: DSP_A */
++#define ABOX_UAIF_WS_POLAR		BIT(21)
++#define ABOX_UAIF_SLOT_MAX		GENMASK(20, 18)
++#define ABOX_UAIF_SBIT_MAX		GENMASK(17, 12)
++#define ABOX_UAIF_VALID_STR		GENMASK(11, 6)
++#define ABOX_UAIF_VALID_END		GENMASK(5, 0)
++
++/*
++ * RDMA/WDMA registers, from the Calliope firmware accessors (see top). The
++ * names follow the later A-Box drivers (abox_dma.h, Exynos 2100), whose
++ * layout matches.
++ */
++#define DMA_CTRL0			0x00
++#define DMA_CTRL1			0x04
++#define DMA_BUF_STR			0x08	/* [31:4] */
++#define DMA_BUF_END			0x0c	/* [31:4] */
++#define DMA_BUF_OFFSET			0x10	/* [15:4], period bytes */
++#define DMA_STR_POINT			0x14	/* [31:4] */
++#define DMA_VOL_FACTOR			0x18	/* [23:0], 0x800000 = 0 dB */
++#define DMA_VOL_CHANGE			0x1c	/* [23:0] */
++#define DMA_SBANK_LIMIT			0x20	/* [13:7] */
++#define DMA_STATUS			0x30
++
++#define DMA_CTRL0_ENABLE		BIT(0)
++#define DMA_CTRL0_BUF_TYPE		BIT(4)	/* firmware: setbuffer type */
++#define DMA_CTRL0_BUF_UPDATE		BIT(5)	/* firmware sets it to 1 */
++#define DMA_CTRL0_FORMAT		GENMASK(12, 8)
++#define DMA_CTRL0_EXPAND		BIT(13)	/* RDMA: mono 16 bit -> stereo */
++#define DMA_CTRL0_FUNC			GENMASK(18, 16)	/* 0: normal, 1: pending */
++#define DMA_CTRL0_BURST_LEN		GENMASK(22, 19)
++#define DMA_STATUS_PROGRESS		BIT(31)
++#define DMA_STATUS_OFFSET		GENMASK(28, 16)	/* << 4 = bytes */
++#define DMA_STATUS_CNT			GENMASK(12, 0)
++
++#define ABOX_VOL_0DB			0x800000
++
++/* ---- CMU_AUD (0x17c00000), cmucal-sfr.c in the downstream kernel -------- */
++#define CMU_PLL_LOCKTIME_PLL_AUD	0x0000
++#define CMU_PLL_CON0_PLL_AUD		0x0120
++#define CMU_PLL_CON3_PLL_AUD		0x018c
++#define CMU_MUX_CLK_AUD_UAIF(x)		(0x1004 + 4 * (x))
++#define CMU_DIV_CLK_AUD_AUDIF		0x1800
++#define CMU_DIV_CLK_AUD_BUS		0x1804
++#define CMU_DIV_CLK_AUD_BUSP		0x1808
++#define CMU_DIV_CLK_AUD_CPU_ACLK	0x180c
++#define CMU_DIV_CLK_AUD_CPU_ATCLK	0x1810
++#define CMU_DIV_CLK_AUD_UAIF(x)		(0x1824 + 4 * (x))
++#define CMU_GAT_ABOX_BCLK_UAIF(x)	(0x201c + 4 * (x))
++#define CMU_GAT_RSTNSYNC_UAIF(x)	(0x2090 + 4 * (x))
++
++#define CMU_PLL_ENABLE			BIT(31)
++#define CMU_PLL_STABLE			BIT(29)
++#define CMU_PLL_MUX_BUSY		BIT(7)
++#define CMU_PLL_MUX_SEL			BIT(4)	/* 0: FIN (26 MHz), 1: FOUT */
++#define CMU_PLL_M			GENMASK(25, 16)
++#define CMU_PLL_P			GENMASK(13, 8)
++#define CMU_PLL_S			GENMASK(2, 0)
++#define CMU_PLL_K			GENMASK(15, 0)
++#define CMU_DIV_RATIO			GENMASK(8, 0)
++#define CMU_DIV_BUSY			BIT(16)
++#define CMU_GATE_MANUAL			BIT(20)
++#define CMU_GATE_CG_VAL			BIT(21)
++#define CMU_GATE_HWACG			BIT(28)
++
++/* PLL_AUD for the 48 kHz family: 26 MHz * (45 + 24319/65536) = 1179.648 MHz */
++#define AUD_PLL_RATE			1179648000UL
++#define AUD_PLL_M			45
++#define AUD_PLL_P			1
++#define AUD_PLL_S			0
++#define AUD_PLL_K			24319
++#define AUDIF_RATE			24576000UL	/* AUDIF_RATE_HZ */
++
++/* PMU (0x14060000), abox.c in the downstream kernel */
++#define PMU_AUD_STATUS			0x4004	/* flexpmu_cal aud_status */
++#define PMU_AUD_STATUS_ON		GENMASK(3, 0)
++#define PMU_ABOX_CPU_STATUS		0x4160
++#define PMU_ABOX_CPU_OPTION		0x4164
++#define PMU_GPIO_MODE_ABOX_SYS_PWR_REG	0x1424
++#define PMU_GPIO_MODE_ABOX		BIT(0)
++#define PMU_PAD_RETENTION_ABOX_OPTION	0x4170
++#define PMU_PAD_RETENTION_RELEASE	BIT(28)
++
++#define ABOX_NUM_UAIF			4
++#define ABOX_NUM_RDMA			8
++#define ABOX_NUM_WDMA			5
++
++#define ABOX_RATES	(SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 | \
++			 SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_48000 | \
++			 SNDRV_PCM_RATE_96000 | SNDRV_PCM_RATE_192000)
++#define ABOX_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE)
++
++static bool cmu_init = true;
++module_param(cmu_init, bool, 0444);
++MODULE_PARM_DESC(cmu_init, "Program PLL_AUD/AUDIF with samsung,cmu-bringup (0: only dump CMU_AUD)");
++
++static unsigned int sbank_size = 512;
++module_param(sbank_size, uint, 0644);
++MODULE_PARM_DESC(sbank_size, "SBANK size per RDMA in bytes (RE, default 512)");
++
++static unsigned int burst_len = 8;
++module_param(burst_len, uint, 0644);
++MODULE_PARM_DESC(burst_len, "DMA burst length field (firmware uses 8)");
++
++static unsigned int vol_change;
++module_param(vol_change, uint, 0644);
++MODULE_PARM_DESC(vol_change, "DMA VOL_CHANGE value (RE, unknown semantics)");
++
++struct abox_dma {
++	struct abox *abox;
++	void __iomem *base;
++	unsigned int id;
++	bool capture;
++	struct snd_pcm_substream *substream;
++	struct hrtimer timer;
++	ktime_t period_time;
++	size_t period_bytes;
++	size_t buffer_bytes;
++};
++
++struct abox {
++	struct device *dev;
++	void __iomem *sfr;
++	void __iomem *sysreg;
++	void __iomem *cmu;
++	struct regmap *pmu;
++	struct clk_bulk_data *clks;
++	int num_clks;
++	struct clk *bclk[ABOX_NUM_UAIF];
++	spinlock_t lock;		/* read-modify-write of shared SFRs */
++	unsigned int fmt[ABOX_NUM_UAIF];
++	unsigned int active;		/* streams running */
++	struct abox_dma rdma[ABOX_NUM_RDMA];
++	struct abox_dma wdma[ABOX_NUM_WDMA];
++};
++
++static void abox_update(struct abox *abox, u32 reg, u32 mask, u32 val)
++{
++	unsigned long flags;
++	u32 tmp;
++
++	spin_lock_irqsave(&abox->lock, flags);
++	tmp = readl(abox->sfr + reg);
++	tmp = (tmp & ~mask) | (val & mask);
++	writel(tmp, abox->sfr + reg);
++	spin_unlock_irqrestore(&abox->lock, flags);
++}
++
++static void dma_update(struct abox_dma *dma, u32 reg, u32 mask, u32 val)
++{
++	u32 tmp = readl(dma->base + reg);
++
++	writel((tmp & ~mask) | (val & mask), dma->base + reg);
++}
++
++/* abox_get_format() in the downstream abox.h, also used by the DMAs */
++static u32 abox_format(unsigned int width, unsigned int channels)
++{
++	u32 fmt = channels - 1;
++
++	switch (width) {
++	case 16:
++		fmt |= 1 << 3;
++		break;
++	case 24:
++		fmt |= 2 << 3;
++		break;
++	case 32:
++		fmt |= 3 << 3;
++		break;
++	}
++	return fmt;
++}
++
++/* ---- CMU_AUD bring-up --------------------------------------------------- */
++
++static void abox_cmu_gate_on(struct abox *abox, u32 reg)
++{
++	u32 val = readl(abox->cmu + reg);
++
++	val &= ~CMU_GATE_HWACG;
++	val |= CMU_GATE_MANUAL | CMU_GATE_CG_VAL;
++	writel(val, abox->cmu + reg);
++}
++
++static int abox_cmu_set_div(struct abox *abox, u32 reg, unsigned int ratio)
++{
++	u32 val = readl(abox->cmu + reg);
++
++	val &= ~CMU_DIV_RATIO;
++	val |= FIELD_PREP(CMU_DIV_RATIO, ratio);
++	writel(val, abox->cmu + reg);
++
++	return readl_poll_timeout_atomic(abox->cmu + reg, val,
++					 !(val & CMU_DIV_BUSY), 1, 1000);
++}
++
++static int abox_cmu_init(struct abox *abox)
++{
++	u32 con0, con3, val;
++	int ret;
++
++	con0 = readl(abox->cmu + CMU_PLL_CON0_PLL_AUD);
++	con3 = readl(abox->cmu + CMU_PLL_CON3_PLL_AUD);
++	dev_info(abox->dev, "CMU_AUD: PLL_CON0 %08x CON3 %08x BUS %08x BUSP %08x AUDIF %08x\n",
++		 con0, con3, readl(abox->cmu + CMU_DIV_CLK_AUD_BUS),
++		 readl(abox->cmu + CMU_DIV_CLK_AUD_BUSP),
++		 readl(abox->cmu + CMU_DIV_CLK_AUD_AUDIF));
++	for (val = 0; val < 2; val++)
++		dev_info(abox->dev, "CMU_AUD: UAIF%u mux %08x div %08x gate %08x rstn %08x\n",
++			 val, readl(abox->cmu + CMU_MUX_CLK_AUD_UAIF(val)),
++			 readl(abox->cmu + CMU_DIV_CLK_AUD_UAIF(val)),
++			 readl(abox->cmu + CMU_GAT_ABOX_BCLK_UAIF(val)),
++			 readl(abox->cmu + CMU_GAT_RSTNSYNC_UAIF(val)));
++
++	if (!cmu_init) {
++		dev_info(abox->dev, "CMU_AUD left as found (cmu_init=0)\n");
++		return 0;
++	}
++
++	if ((con0 & CMU_PLL_ENABLE) && (con0 & CMU_PLL_MUX_SEL) &&
++	    FIELD_GET(CMU_PLL_M, con0) == AUD_PLL_M &&
++	    FIELD_GET(CMU_PLL_P, con0) == AUD_PLL_P &&
++	    FIELD_GET(CMU_PLL_S, con0) == AUD_PLL_S &&
++	    FIELD_GET(CMU_PLL_K, con3) == AUD_PLL_K)
++		goto pll_done;
++
++	/*
++	 * The AUD bus dividers hang off PLL_AUD: put them at the CMUCAL boot
++	 * values (blk_aud_lut_params: ATCLK /2, ACLK /2, BUS /2, BUSP /3)
++	 * before the PLL goes from 26 MHz to 1.18 GHz.
++	 */
++	ret = abox_cmu_set_div(abox, CMU_DIV_CLK_AUD_CPU_ATCLK, 1);
++	ret = ret ?: abox_cmu_set_div(abox, CMU_DIV_CLK_AUD_CPU_ACLK, 1);
++	ret = ret ?: abox_cmu_set_div(abox, CMU_DIV_CLK_AUD_BUS, 1);
++	ret = ret ?: abox_cmu_set_div(abox, CMU_DIV_CLK_AUD_BUSP, 2);
++	if (ret)
++		return dev_err_probe(abox->dev, ret, "CMU_AUD divider busy\n");
++
++	/*
++	 * ra_enable_pll(0) + ra_pll_set_pmsk() in the downstream CMUCAL:
++	 * switch the PLL mux to FIN first, so that the AUD clocks keep
++	 * running at 26 MHz while the PLL relocks.
++	 */
++	con0 &= ~CMU_PLL_MUX_SEL;
++	writel(con0, abox->cmu + CMU_PLL_CON0_PLL_AUD);
++	ret = readl_poll_timeout_atomic(abox->cmu + CMU_PLL_CON0_PLL_AUD, val,
++					!(val & CMU_PLL_MUX_BUSY), 1, 1000);
++	if (ret)
++		return dev_err_probe(abox->dev, ret, "PLL_AUD mux busy\n");
++	con0 &= ~CMU_PLL_ENABLE;
++	writel(con0, abox->cmu + CMU_PLL_CON0_PLL_AUD);
++
++	writel(AUD_PLL_P * 500, abox->cmu + CMU_PLL_LOCKTIME_PLL_AUD);
++	con3 = (con3 & ~CMU_PLL_K) | FIELD_PREP(CMU_PLL_K, AUD_PLL_K);
++	writel(con3, abox->cmu + CMU_PLL_CON3_PLL_AUD);
++	con0 &= ~(CMU_PLL_M | CMU_PLL_P | CMU_PLL_S);
++	con0 |= FIELD_PREP(CMU_PLL_M, AUD_PLL_M) |
++		FIELD_PREP(CMU_PLL_P, AUD_PLL_P) |
++		FIELD_PREP(CMU_PLL_S, AUD_PLL_S) |
++		CMU_PLL_MUX_SEL | CMU_PLL_ENABLE;
++	writel(con0, abox->cmu + CMU_PLL_CON0_PLL_AUD);
++	ret = readl_poll_timeout_atomic(abox->cmu + CMU_PLL_CON0_PLL_AUD, val,
++					val & CMU_PLL_STABLE, 1, 10000);
++	if (ret)
++		return dev_err_probe(abox->dev, ret, "PLL_AUD did not lock\n");
++
++pll_done:
++	/* AUDIF = PLL_AUD / 48 = 24.576 MHz */
++	ret = abox_cmu_set_div(abox, CMU_DIV_CLK_AUD_AUDIF,
++			       AUD_PLL_RATE / AUDIF_RATE - 1);
++	if (ret)
++		return dev_err_probe(abox->dev, ret, "AUDIF divider busy\n");
++
++	dev_info(abox->dev, "CMU_AUD: PLL_AUD on, AUDIF %lu Hz\n", AUDIF_RATE);
++	return 0;
++}
++
++static int abox_set_bclk(struct abox *abox, unsigned int uaif,
++			 unsigned long rate)
++{
++	unsigned int ratio;
++	int ret;
++
++	if (abox->bclk[uaif])
++		return clk_set_rate(abox->bclk[uaif], rate);
++
++	if (!abox->cmu || !cmu_init)
++		return 0;	/* left as the bootloader set it */
++
++	if (!rate || AUDIF_RATE % rate) {
++		dev_err(abox->dev, "UAIF%u: BCLK %lu Hz not a divisor of %lu\n",
++			uaif, rate, AUDIF_RATE);
++		return -EINVAL;
++	}
++	ratio = AUDIF_RATE / rate;
++	if (ratio > FIELD_MAX(CMU_DIV_RATIO) + 1)
++		return -EINVAL;
++
++	/* MUX_CLK_AUD_UAIFn: 0 = DIV_CLK_AUD_UAIFn, 1 = external CLKIO */
++	writel(readl(abox->cmu + CMU_MUX_CLK_AUD_UAIF(uaif)) & ~BIT(0),
++	       abox->cmu + CMU_MUX_CLK_AUD_UAIF(uaif));
++	ret = abox_cmu_set_div(abox, CMU_DIV_CLK_AUD_UAIF(uaif), ratio - 1);
++	if (ret)
++		return ret;
++	abox_cmu_gate_on(abox, CMU_GAT_RSTNSYNC_UAIF(uaif));
++	abox_cmu_gate_on(abox, CMU_GAT_ABOX_BCLK_UAIF(uaif));
++
++	return 0;
++}
++
++/* ---- DMA ---------------------------------------------------------------- */
++
++static struct abox_dma *abox_stream_dma(struct abox *abox,
++					struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	unsigned int uaif = snd_soc_rtd_to_cpu(rtd, 0)->id;
++
++	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		return &abox->wdma[uaif + 1];
++	return &abox->rdma[uaif];
++}
++
++static enum hrtimer_restart abox_dma_timer(struct hrtimer *t)
++{
++	struct abox_dma *dma = container_of(t, struct abox_dma, timer);
++
++	snd_pcm_period_elapsed(dma->substream);
++	hrtimer_forward_now(t, dma->period_time);
++	return HRTIMER_RESTART;
++}
++
++static const struct snd_pcm_hardware abox_pcm_hw = {
++	.info = SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER |
++		SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
++		SNDRV_PCM_INFO_PAUSE | SNDRV_PCM_INFO_RESUME,
++	.formats = ABOX_FORMATS,
++	.rates = ABOX_RATES,
++	.rate_min = 8000,
++	.rate_max = 192000,
++	.channels_min = 2,
++	.channels_max = 2,
++	.buffer_bytes_max = SZ_512K,
++	/* BUF_OFFSET is [15:4]: periods are 16..65520 bytes, 16 byte aligned */
++	.period_bytes_min = SZ_256,
++	.period_bytes_max = SZ_32K,
++	.periods_min = 2,
++	.periods_max = 64,
++};
++
++static int abox_pcm_open(struct snd_soc_component *component,
++			 struct snd_pcm_substream *substream)
++{
++	struct abox *abox = snd_soc_component_get_drvdata(component);
++	struct abox_dma *dma = abox_stream_dma(abox, substream);
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	int ret;
++
++	if (dma->substream)
++		return -EBUSY;
++
++	snd_soc_set_runtime_hwparams(substream, &abox_pcm_hw);
++	ret = snd_pcm_hw_constraint_step(runtime, 0,
++					 SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 16);
++	if (ret)
++		return ret;
++	ret = snd_pcm_hw_constraint_step(runtime, 0,
++					 SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 16);
++	if (ret)
++		return ret;
++	ret = snd_pcm_hw_constraint_integer(runtime,
++					    SNDRV_PCM_HW_PARAM_PERIODS);
++	if (ret < 0)
++		return ret;
++
++	dma->substream = substream;
++	return 0;
++}
++
++static int abox_pcm_close(struct snd_soc_component *component,
++			  struct snd_pcm_substream *substream)
++{
++	struct abox *abox = snd_soc_component_get_drvdata(component);
++	struct abox_dma *dma = abox_stream_dma(abox, substream);
++
++	hrtimer_cancel(&dma->timer);
++	dma->substream = NULL;
++	return 0;
++}
++
++static void abox_route_playback(struct abox *abox, unsigned int uaif)
++{
++	unsigned int sifs = uaif ? ABOX_SPUS_OUT_SIFS2 : ABOX_SPUS_OUT_SIFS1;
++	unsigned int spk = uaif ? ABOX_ROUTE_SPK_SIFS2 : ABOX_ROUTE_SPK_SIFS1;
++	unsigned int start = uaif * DIV_ROUND_UP(sbank_size, 128);
++
++	/* RDMAn -> SPUS IN n, ASRC off, -> SIFS1/2 */
++	abox_update(abox, ABOX_SPUS_CTRL0,
++		    ABOX_SPUS_IN(uaif) | ABOX_SPUS_ASRC(uaif) |
++		    ABOX_SPUS_OUT(uaif),
++		    sifs << (4 * uaif + 1));
++	if (uaif)
++		abox_update(abox, ABOX_SPUS_CTRL1, ABOX_SIFS_OUT2_SEL,
++			    FIELD_PREP(ABOX_SIFS_OUT2_SEL, uaif));
++	else
++		abox_update(abox, ABOX_SPUS_CTRL1, ABOX_SIFS_OUT1_SEL, 0);
++
++	writel(FIELD_PREP(ABOX_SBANK_STR, start) |
++	       FIELD_PREP(ABOX_SBANK_SIZE, sbank_size / 16),
++	       abox->sfr + ABOX_SPUS_SBANK_RDMA(uaif));
++
++	/* SIFS1/2 -> UAIFn speaker */
++	abox_update(abox, ABOX_ROUTE_CTRL0, ABOX_ROUTE_UAIF_SPK(uaif),
++		    spk << (4 * uaif));
++	writel(uaif ? ABOX_SPUS_SIFS2_FLUSH : ABOX_SPUS_SIFS1_FLUSH,
++	       abox->sfr + ABOX_SPUS_CTRL3);
++}
++
++static void abox_route_capture(struct abox *abox, unsigned int uaif)
++{
++	/* UAIFn mic -> NSRCn, ASRC off, -> SIFMn -> WDMAn+1 */
++	abox_update(abox, ABOX_ROUTE_CTRL1, ABOX_ROUTE_NSRC(uaif),
++		    ABOX_ROUTE_NSRC_UAIF(uaif) << (4 * uaif));
++	abox_update(abox, ABOX_SPUM_CTRL0,
++		    ABOX_SPUM_ASRC(uaif) | ABOX_SPUM_OUT(uaif), 0);
++	writel(BIT(uaif), abox->sfr + ABOX_SPUM_CTRL3);
++}
++
++static int abox_dma_setup(struct abox *abox, struct abox_dma *dma,
++			  unsigned int uaif, dma_addr_t addr,
++			  size_t buffer_bytes, size_t period_bytes,
++			  unsigned int width, unsigned int channels)
++{
++	u32 ctrl;
++
++	if (upper_32_bits(addr) || upper_32_bits(addr + buffer_bytes)) {
++		dev_err(abox->dev, "DMA buffer %pad above 4 GiB\n", &addr);
++		return -EINVAL;
++	}
++	if (!IS_ALIGNED(addr, 16) || !IS_ALIGNED(period_bytes, 16)) {
++		dev_err(abox->dev, "DMA buffer %pad/%zu not 16 byte aligned\n",
++			&addr, period_bytes);
++		return -EINVAL;
++	}
++
++	dma->period_bytes = period_bytes;
++	dma->buffer_bytes = buffer_bytes;
++
++	/* Same order as the firmware's setbuffer (calliope_dram 0x8000048e) */
++	writel(ABOX_VOL_0DB, dma->base + DMA_VOL_FACTOR);
++	writel(vol_change, dma->base + DMA_VOL_CHANGE);
++	dma_update(dma, DMA_CTRL0, DMA_CTRL0_FUNC, 0);
++	writel(lower_32_bits(addr), dma->base + DMA_BUF_STR);
++	writel(lower_32_bits(addr) + buffer_bytes, dma->base + DMA_BUF_END);
++	writel(lower_32_bits(addr), dma->base + DMA_STR_POINT);
++	writel(period_bytes & GENMASK(15, 4), dma->base + DMA_BUF_OFFSET);
++	if (!dma->capture)
++		writel(FIELD_PREP(ABOX_SBANK_STR, DIV_ROUND_UP(sbank_size, 128)),
++		       dma->base + DMA_SBANK_LIMIT);
++
++	ctrl = readl(dma->base + DMA_CTRL0);
++	ctrl &= ~(DMA_CTRL0_BURST_LEN | DMA_CTRL0_FORMAT | DMA_CTRL0_BUF_TYPE |
++		  DMA_CTRL0_EXPAND | DMA_CTRL0_ENABLE);
++	ctrl |= FIELD_PREP(DMA_CTRL0_BURST_LEN, burst_len) |
++		FIELD_PREP(DMA_CTRL0_FORMAT, abox_format(width, channels)) |
++		DMA_CTRL0_BUF_UPDATE;
++	writel(ctrl, dma->base + DMA_CTRL0);
++
++	if (dma->capture)
++		abox_route_capture(abox, uaif);
++	else
++		abox_route_playback(abox, uaif);
++
++	dev_dbg(abox->dev, "%cDMA%u: %pad +%zu period %zu, ctrl %08x\n",
++		dma->capture ? 'W' : 'R', dma->id, &addr, buffer_bytes,
++		period_bytes, readl(dma->base + DMA_CTRL0));
++	return 0;
++}
++
++static int abox_pcm_hw_params(struct snd_soc_component *component,
++			      struct snd_pcm_substream *substream,
++			      struct snd_pcm_hw_params *params)
++{
++	struct abox *abox = snd_soc_component_get_drvdata(component);
++	struct abox_dma *dma = abox_stream_dma(abox, substream);
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	unsigned int uaif = snd_soc_rtd_to_cpu(rtd, 0)->id;
++
++	dma->period_time = ns_to_ktime(div_u64((u64)NSEC_PER_SEC *
++					       params_period_size(params),
++					       params_rate(params)));
++
++	return abox_dma_setup(abox, dma, uaif, substream->runtime->dma_addr,
++			      params_buffer_bytes(params),
++			      params_period_bytes(params),
++			      params_width(params), params_channels(params));
++}
++
++static int abox_dma_wait_progress(struct abox_dma *dma, bool on)
++{
++	u32 status;
++
++	return readl_poll_timeout_atomic(dma->base + DMA_STATUS, status,
++					 !!(status & DMA_STATUS_PROGRESS) == on,
++					 10, 2000);
++}
++
++static int abox_pcm_trigger(struct snd_soc_component *component,
++			    struct snd_pcm_substream *substream, int cmd)
++{
++	struct abox *abox = snd_soc_component_get_drvdata(component);
++	struct abox_dma *dma = abox_stream_dma(abox, substream);
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++		dma_update(dma, DMA_CTRL0, DMA_CTRL0_FUNC, 0);
++		dma_update(dma, DMA_CTRL0, DMA_CTRL0_ENABLE, DMA_CTRL0_ENABLE);
++		if (abox_dma_wait_progress(dma, true))
++			dev_warn_ratelimited(abox->dev, "%cDMA%u did not start, status %08x\n",
++					     dma->capture ? 'W' : 'R', dma->id,
++					     readl(dma->base + DMA_STATUS));
++		hrtimer_start(&dma->timer, dma->period_time,
++			      HRTIMER_MODE_REL_SOFT);
++		return 0;
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		dma_update(dma, DMA_CTRL0, DMA_CTRL0_FUNC, 0);
++		hrtimer_start(&dma->timer, dma->period_time,
++			      HRTIMER_MODE_REL_SOFT);
++		return 0;
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		hrtimer_try_to_cancel(&dma->timer);
++		dma_update(dma, DMA_CTRL0, DMA_CTRL0_FUNC,
++			   FIELD_PREP(DMA_CTRL0_FUNC, 1));
++		return 0;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++		hrtimer_try_to_cancel(&dma->timer);
++		dma_update(dma, DMA_CTRL0, DMA_CTRL0_ENABLE, 0);
++		if (abox_dma_wait_progress(dma, false)) {
++			/* abox_dma_barrier(): toggle enable to force it off */
++			dma_update(dma, DMA_CTRL0, DMA_CTRL0_ENABLE,
++				   DMA_CTRL0_ENABLE);
++			dma_update(dma, DMA_CTRL0, DMA_CTRL0_ENABLE, 0);
++		}
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static snd_pcm_uframes_t abox_pcm_pointer(struct snd_soc_component *component,
++					  struct snd_pcm_substream *substream)
++{
++	struct abox *abox = snd_soc_component_get_drvdata(component);
++	struct abox_dma *dma = abox_stream_dma(abox, substream);
++	u32 status = readl(dma->base + DMA_STATUS);
++	ssize_t buffer_bytes = dma->buffer_bytes;
++	size_t offset, count;
++
++	if (!(status & DMA_STATUS_PROGRESS) || !dma->period_bytes)
++		return 0;
++
++	/* abox_rdma_pointer() in the downstream driver */
++	offset = FIELD_GET(DMA_STATUS_OFFSET, status) << 4;
++	count = FIELD_GET(DMA_STATUS_CNT, status);
++	while ((offset % dma->period_bytes) && buffer_bytes >= 0) {
++		buffer_bytes -= dma->period_bytes;
++		if ((buffer_bytes & offset) == offset)
++			offset = buffer_bytes;
++	}
++
++	return bytes_to_frames(substream->runtime,
++			       (offset + count) % dma->buffer_bytes);
++}
++
++static int abox_pcm_new(struct snd_soc_component *component,
++			struct snd_soc_pcm_runtime *rtd)
++{
++	struct abox *abox = snd_soc_component_get_drvdata(component);
++
++	snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV, abox->dev,
++				       SZ_64K, SZ_512K);
++	return 0;
++}
++
++/* ---- UAIF DAIs ---------------------------------------------------------- */
++
++static int abox_uaif_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
++{
++	struct abox *abox = snd_soc_dai_get_drvdata(dai);
++
++	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
++	case SND_SOC_DAIFMT_I2S:
++	case SND_SOC_DAIFMT_DSP_A:
++		break;
++	default:
++		return -EINVAL;
++	}
++	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
++	case SND_SOC_DAIFMT_BP_FP:
++	case SND_SOC_DAIFMT_BC_FC:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	abox->fmt[dai->id] = fmt;
++	return 0;
++}
++
++static int abox_uaif_config(struct abox *abox, unsigned int id,
++			    unsigned int fmt, unsigned int rate,
++			    unsigned int width, unsigned int channels)
++{
++	u32 ctrl1 = 0;
++	int ret;
++
++	if ((fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) == SND_SOC_DAIFMT_BP_FP) {
++		ret = abox_set_bclk(abox, id, rate * channels * width);
++		if (ret)
++			return ret;
++		abox_update(abox, ABOX_UAIF_CTRL0(id), ABOX_UAIF_MODE,
++			    ABOX_UAIF_MODE);
++	} else {
++		abox_update(abox, ABOX_UAIF_CTRL0(id), ABOX_UAIF_MODE, 0);
++	}
++
++	/* abox_uaif_set_fmt() / abox_uaif_hw_params() downstream */
++	if ((fmt & SND_SOC_DAIFMT_FORMAT_MASK) == SND_SOC_DAIFMT_DSP_A)
++		ctrl1 |= ABOX_UAIF_WS_MODE;
++	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
++	case SND_SOC_DAIFMT_NB_NF:
++		ctrl1 |= ABOX_UAIF_BCLK_POLARITY;
++		break;
++	case SND_SOC_DAIFMT_NB_IF:
++		ctrl1 |= ABOX_UAIF_BCLK_POLARITY | ABOX_UAIF_WS_POLAR;
++		break;
++	case SND_SOC_DAIFMT_IB_NF:
++		break;
++	case SND_SOC_DAIFMT_IB_IF:
++		ctrl1 |= ABOX_UAIF_WS_POLAR;
++		break;
++	}
++	ctrl1 |= FIELD_PREP(ABOX_UAIF_SBIT_MAX, width - 1);
++	if (channels != 2)
++		ctrl1 |= FIELD_PREP(ABOX_UAIF_VALID_STR, width - 1) |
++			 FIELD_PREP(ABOX_UAIF_VALID_END, width - 1);
++	ctrl1 |= FIELD_PREP(ABOX_UAIF_SLOT_MAX, channels - 1);
++	ctrl1 |= FIELD_PREP(ABOX_UAIF_FORMAT, abox_format(width, channels));
++	writel(ctrl1, abox->sfr + ABOX_UAIF_CTRL1(id));
++
++	return 0;
++}
++
++static int abox_uaif_hw_params(struct snd_pcm_substream *substream,
++			       struct snd_pcm_hw_params *params,
++			       struct snd_soc_dai *dai)
++{
++	struct abox *abox = snd_soc_dai_get_drvdata(dai);
++
++	/* the other direction may already have configured the port */
++	if (snd_soc_dai_stream_active(dai, !substream->stream))
++		return 0;
++
++	return abox_uaif_config(abox, dai->id, abox->fmt[dai->id],
++				params_rate(params), params_width(params),
++				params_channels(params));
++}
++
++static int abox_uaif_trigger(struct snd_pcm_substream *substream, int cmd,
++			     struct snd_soc_dai *dai)
++{
++	struct abox *abox = snd_soc_dai_get_drvdata(dai);
++	u32 bit = substream->stream == SNDRV_PCM_STREAM_CAPTURE ?
++		  ABOX_UAIF_MIC_ENABLE : ABOX_UAIF_SPK_ENABLE;
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		abox_update(abox, ABOX_UAIF_CTRL0(dai->id), bit, bit);
++		return 0;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		abox_update(abox, ABOX_UAIF_CTRL0(dai->id), bit, 0);
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static int abox_uaif_startup(struct snd_pcm_substream *substream,
++			     struct snd_soc_dai *dai)
++{
++	struct abox *abox = snd_soc_dai_get_drvdata(dai);
++	unsigned long flags;
++
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK && dai->id > 1)
++		return -EINVAL;	/* only SIFS1/SIFS2 are routed */
++
++	spin_lock_irqsave(&abox->lock, flags);
++	if (!abox->active++)
++		writel(1, abox->sfr + ABOX_SYSPOWER_CTRL);	/* DRAM on */
++	spin_unlock_irqrestore(&abox->lock, flags);
++
++	/* keep the bit clock and the bus clock requested while running */
++	abox_update(abox, ABOX_QCHANNEL_DISABLE,
++		    ABOX_QCH_ACLK | ABOX_QCH_BCLK_UAIF(dai->id),
++		    ABOX_QCH_ACLK | ABOX_QCH_BCLK_UAIF(dai->id));
++
++	/* abox_if_startup(): the mic side wants DATA_MODE 1, IRQ_MODE 0 */
++	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		abox_update(abox, ABOX_UAIF_CTRL0(dai->id),
++			    ABOX_UAIF_DATA_MODE | ABOX_UAIF_IRQ_MODE,
++			    ABOX_UAIF_DATA_MODE);
++	return 0;
++}
++
++static void abox_uaif_shutdown(struct snd_pcm_substream *substream,
++			       struct snd_soc_dai *dai)
++{
++	struct abox *abox = snd_soc_dai_get_drvdata(dai);
++	unsigned long flags;
++
++	if (!snd_soc_dai_active(dai))
++		abox_update(abox, ABOX_QCHANNEL_DISABLE,
++			    ABOX_QCH_BCLK_UAIF(dai->id), 0);
++
++	spin_lock_irqsave(&abox->lock, flags);
++	if (abox->active && !--abox->active)
++		writel(0, abox->sfr + ABOX_SYSPOWER_CTRL);
++	spin_unlock_irqrestore(&abox->lock, flags);
++}
++
++static const struct snd_soc_dai_ops abox_uaif_ops = {
++	.set_fmt	= abox_uaif_set_fmt,
++	.startup	= abox_uaif_startup,
++	.shutdown	= abox_uaif_shutdown,
++	.hw_params	= abox_uaif_hw_params,
++	.trigger	= abox_uaif_trigger,
++};
++
++#define ABOX_UAIF_DAI(_id)						\
++	{								\
++		.name = "UAIF" #_id,					\
++		.id = _id,						\
++		.playback = {						\
++			.stream_name = "UAIF" #_id " Playback",		\
++			.channels_min = 2,				\
++			.channels_max = 2,				\
++			.rates = ABOX_RATES,				\
++			.formats = ABOX_FORMATS,			\
++		},							\
++		.capture = {						\
++			.stream_name = "UAIF" #_id " Capture",		\
++			.channels_min = 2,				\
++			.channels_max = 2,				\
++			.rates = ABOX_RATES,				\
++			.formats = ABOX_FORMATS,			\
++		},							\
++		.ops = &abox_uaif_ops,					\
++		.symmetric_rate = 1,					\
++	}
++
++static struct snd_soc_dai_driver abox_dais[] = {
++	ABOX_UAIF_DAI(0),
++	ABOX_UAIF_DAI(1),
++	ABOX_UAIF_DAI(2),
++	ABOX_UAIF_DAI(3),
++};
++
++static const struct snd_soc_component_driver abox_component = {
++	.name		= "exynos9810-abox",
++	.open		= abox_pcm_open,
++	.close		= abox_pcm_close,
++	.hw_params	= abox_pcm_hw_params,
++	.trigger	= abox_pcm_trigger,
++	.pointer	= abox_pcm_pointer,
++	.pcm_new	= abox_pcm_new,
++};
++
++/* ---- register dump for bring-up ----------------------------------------- */
++
++static const struct {
++	const char *name;
++	u32 reg;
++} abox_dump_regs[] = {
++	{ "IP_INDEX", ABOX_IP_INDEX },
++	{ "VERSION", ABOX_VERSION },
++	{ "SYSPOWER_CTRL", ABOX_SYSPOWER_CTRL },
++	{ "SYSPOWER_STATUS", ABOX_SYSPOWER_STATUS },
++	{ "QCHANNEL_DISABLE", ABOX_QCHANNEL_DISABLE },
++	{ "ROUTE_CTRL0", ABOX_ROUTE_CTRL0 },
++	{ "ROUTE_CTRL1", ABOX_ROUTE_CTRL1 },
++	{ "SPUS_CTRL0", ABOX_SPUS_CTRL0 },
++	{ "SPUS_CTRL1", ABOX_SPUS_CTRL1 },
++	{ "SPUS_SBANK_RDMA0", ABOX_SPUS_SBANK_RDMA(0) },
++	{ "SPUS_SBANK_RDMA1", ABOX_SPUS_SBANK_RDMA(1) },
++	{ "SPUS_SBANK_ASRC0", ABOX_SPUS_SBANK_ASRC(0) },
++	{ "SPUM_CTRL0", ABOX_SPUM_CTRL0 },
++	{ "UAIF0_CTRL0", ABOX_UAIF_CTRL0(0) },
++	{ "UAIF0_CTRL1", ABOX_UAIF_CTRL1(0) },
++	{ "UAIF0_STATUS", ABOX_UAIF_STATUS(0) },
++	{ "UAIF1_CTRL0", ABOX_UAIF_CTRL0(1) },
++	{ "UAIF1_CTRL1", ABOX_UAIF_CTRL1(1) },
++	{ "UAIF1_STATUS", ABOX_UAIF_STATUS(1) },
++};
++
++static ssize_t regs_show(struct device *dev, struct device_attribute *attr,
++			 char *buf)
++{
++	struct abox *abox = dev_get_drvdata(dev);
++	int i, n = 0;
++
++	for (i = 0; i < ARRAY_SIZE(abox_dump_regs); i++)
++		n += sysfs_emit_at(buf, n, "%-18s %08x\n", abox_dump_regs[i].name,
++				   readl(abox->sfr + abox_dump_regs[i].reg));
++	for (i = 0; i < 2; i++) {
++		void __iomem *b = abox->sfr + ABOX_RDMA_BASE(i);
++
++		n += sysfs_emit_at(buf, n,
++				   "RDMA%d ctrl %08x %08x buf %08x-%08x off %08x str %08x vol %08x/%08x lim %08x st %08x\n",
++				   i, readl(b), readl(b + 4), readl(b + 8),
++				   readl(b + 0xc), readl(b + 0x10),
++				   readl(b + 0x14), readl(b + 0x18),
++				   readl(b + 0x1c), readl(b + 0x20),
++				   readl(b + 0x30));
++	}
++	for (i = 1; i < 3; i++) {
++		void __iomem *b = abox->sfr + ABOX_WDMA_BASE(i);
++
++		n += sysfs_emit_at(buf, n,
++				   "WDMA%d ctrl %08x buf %08x-%08x off %08x str %08x st %08x\n",
++				   i, readl(b), readl(b + 8), readl(b + 0xc),
++				   readl(b + 0x10), readl(b + 0x14),
++				   readl(b + 0x30));
++	}
++	return n;
++}
++static DEVICE_ATTR_RO(regs);
++
++/*
++ * Bring-up self test without ALSA userspace: "echo UAIF MS > tone" plays a
++ * 1 kHz square wave (-12 dBFS, 48 kHz S16 stereo, A-Box clock provider) on
++ * UAIF0 or UAIF1 through RDMA0/1 for MS milliseconds and logs the DMA and
++ * UAIF status. It only proves that the DMA runs and the port clocks out;
++ * the codec/amplifier path is not enabled by it.
++ */
++static ssize_t tone_store(struct device *dev, struct device_attribute *attr,
++			  const char *buf, size_t count)
++{
++	struct abox *abox = dev_get_drvdata(dev);
++	const unsigned int rate = 48000, frames = 4800, period = 480;
++	unsigned int uaif, ms, i, steps;
++	struct abox_dma *dma;
++	dma_addr_t addr;
++	s16 *pcm;
++	int ret;
++
++	if (sscanf(buf, "%u %u", &uaif, &ms) != 2 || uaif > 1 || !ms ||
++	    ms > 10000)
++		return -EINVAL;
++	dma = &abox->rdma[uaif];
++	if (dma->substream || abox->active)
++		return -EBUSY;
++
++	pcm = dma_alloc_coherent(dev, frames * 4, &addr, GFP_KERNEL);
++	if (!pcm)
++		return -ENOMEM;
++	for (i = 0; i < frames; i++)
++		pcm[2 * i] = pcm[2 * i + 1] = (i % 48) < 24 ? 0x2000 : -0x2000;
++
++	ret = abox_dma_setup(abox, dma, uaif, addr, frames * 4, period * 4,
++			     16, 2);
++	if (ret)
++		goto free;
++	ret = abox_uaif_config(abox, uaif, SND_SOC_DAIFMT_I2S |
++			       SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_BP_FP,
++			       rate, 16, 2);
++	if (ret)
++		goto free;
++
++	writel(1, abox->sfr + ABOX_SYSPOWER_CTRL);
++	abox_update(abox, ABOX_QCHANNEL_DISABLE,
++		    ABOX_QCH_ACLK | ABOX_QCH_BCLK_UAIF(uaif),
++		    ABOX_QCH_ACLK | ABOX_QCH_BCLK_UAIF(uaif));
++	dma_update(dma, DMA_CTRL0, DMA_CTRL0_ENABLE, DMA_CTRL0_ENABLE);
++	if (abox_dma_wait_progress(dma, true))
++		dev_warn(dev, "tone: RDMA%u did not start\n", uaif);
++	abox_update(abox, ABOX_UAIF_CTRL0(uaif), ABOX_UAIF_SPK_ENABLE,
++		    ABOX_UAIF_SPK_ENABLE);
++
++	steps = min(ms / 10, 20U) ?: 1;
++	for (i = 0; i < steps; i++) {
++		msleep(ms / steps);
++		dev_info(dev, "tone: t=%ums RDMA%u st %08x UAIF%u ctrl0 %08x st %08x\n",
++			 (i + 1) * (ms / steps), uaif,
++			 readl(dma->base + DMA_STATUS), uaif,
++			 readl(abox->sfr + ABOX_UAIF_CTRL0(uaif)),
++			 readl(abox->sfr + ABOX_UAIF_STATUS(uaif)));
++	}
++
++	abox_update(abox, ABOX_UAIF_CTRL0(uaif), ABOX_UAIF_SPK_ENABLE, 0);
++	dma_update(dma, DMA_CTRL0, DMA_CTRL0_ENABLE, 0);
++	if (abox_dma_wait_progress(dma, false))
++		dev_warn(dev, "tone: RDMA%u did not stop\n", uaif);
++	abox_update(abox, ABOX_QCHANNEL_DISABLE, ABOX_QCH_BCLK_UAIF(uaif), 0);
++	writel(0, abox->sfr + ABOX_SYSPOWER_CTRL);
++	ret = 0;
++free:
++	dma_free_coherent(dev, frames * 4, pcm, addr);
++	return ret ?: count;
++}
++static DEVICE_ATTR_WO(tone);
++
++static struct attribute *abox_attrs[] = {
++	&dev_attr_regs.attr,
++	&dev_attr_tone.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(abox);
++
++/* ---- probe -------------------------------------------------------------- */
++
++static int abox_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct abox *abox;
++	struct resource *res;
++	u32 ip, ver, smc_addr;
++	int i, ret;
++
++	abox = devm_kzalloc(dev, sizeof(*abox), GFP_KERNEL);
++	if (!abox)
++		return -ENOMEM;
++	abox->dev = dev;
++	spin_lock_init(&abox->lock);
++	platform_set_drvdata(pdev, abox);
++
++	/* The A-Box DMA address registers are 32 bit wide */
++	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
++	if (ret)
++		return ret;
++
++	abox->sfr = devm_platform_ioremap_resource_byname(pdev, "sfr");
++	if (IS_ERR(abox->sfr))
++		return PTR_ERR(abox->sfr);
++
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "sysreg");
++	if (res) {
++		abox->sysreg = devm_ioremap_resource(dev, res);
++		if (IS_ERR(abox->sysreg))
++			return PTR_ERR(abox->sysreg);
++	}
++
++	if (of_property_read_bool(dev->of_node, "samsung,cmu-bringup")) {
++		abox->cmu = devm_platform_ioremap_resource_byname(pdev, "cmu");
++		if (IS_ERR(abox->cmu))
++			return PTR_ERR(abox->cmu);
++	}
++
++	abox->pmu = syscon_regmap_lookup_by_phandle_optional(dev->of_node,
++							     "samsung,pmu-syscon");
++	if (IS_ERR(abox->pmu))
++		return PTR_ERR(abox->pmu);
++
++	ret = devm_clk_bulk_get_all_enabled(dev, &abox->clks);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "failed to get clocks\n");
++	abox->num_clks = ret;
++	for (i = 0; i < ABOX_NUM_UAIF; i++) {
++		char name[8];
++
++		snprintf(name, sizeof(name), "bclk%d", i);
++		abox->bclk[i] = devm_clk_get_optional(dev, name);
++		if (IS_ERR(abox->bclk[i]))
++			return PTR_ERR(abox->bclk[i]);
++	}
++
++	/*
++	 * Touching a powered-down AUD block is an SError. S-Boot leaves the
++	 * domain on (PMU 0x14064004 reads 0x0010000f on the device), but
++	 * check it, since there is no power domain driver for it yet.
++	 */
++	if (abox->pmu) {
++		u32 st = 0, cpu = 0, opt = 0, ret_opt = 0;
++
++		regmap_read(abox->pmu, PMU_AUD_STATUS, &st);
++		if ((st & PMU_AUD_STATUS_ON) != PMU_AUD_STATUS_ON)
++			return dev_err_probe(dev, -ENODEV,
++					     "AUD power domain is off (%08x)\n", st);
++
++		/* the Calliope CPU stays in reset: nothing boots it here */
++		regmap_read(abox->pmu, PMU_ABOX_CPU_STATUS, &cpu);
++		regmap_read(abox->pmu, PMU_ABOX_CPU_OPTION, &opt);
++		regmap_read(abox->pmu, PMU_PAD_RETENTION_ABOX_OPTION, &ret_opt);
++		dev_info(dev, "PMU: AUD %08x CPU status %08x option %08x pad retention %08x\n",
++			 st, cpu, opt, ret_opt);
++	}
++
++	/*
++	 * Downstream exynos-pd restores the AUD DTZPC with this SMC after
++	 * powering the domain up. Only issued when the DT asks for it.
++	 */
++	if (!of_property_read_u32(dev->of_node, "samsung,dtzpc-smc", &smc_addr)) {
++		struct arm_smccc_res smc;
++
++		arm_smccc_smc(0x82000410, 1, smc_addr, 0, 0, 0, 0, 0, &smc);
++		dev_info(dev, "DTZPC restore SMC(%#x): %ld\n", smc_addr,
++			 (long)smc.a0);
++	}
++
++	if (abox->cmu) {
++		ret = abox_cmu_init(abox);
++		if (ret)
++			return ret;
++	}
++
++	ip = readl(abox->sfr + ABOX_IP_INDEX);
++	ver = readl(abox->sfr + ABOX_VERSION);
++	dev_info(dev, "IP %08x (%.4s) version %08x\n", ip, (char *)&ip, ver);
++
++	if (abox->pmu) {
++		/* abox_pad_retention(false) */
++		regmap_update_bits(abox->pmu, PMU_PAD_RETENTION_ABOX_OPTION,
++				   PMU_PAD_RETENTION_RELEASE,
++				   PMU_PAD_RETENTION_RELEASE);
++		regmap_update_bits(abox->pmu, PMU_GPIO_MODE_ABOX_SYS_PWR_REG,
++				   PMU_GPIO_MODE_ABOX, PMU_GPIO_MODE_ABOX);
++	}
++	if (abox->sysreg)
++		writel(1, abox->sysreg + 0x32c);	/* ABOX_SYSREG_MISC_CON */
++
++	for (i = 0; i < ABOX_NUM_RDMA; i++) {
++		struct abox_dma *dma = &abox->rdma[i];
++
++		dma->abox = abox;
++		dma->id = i;
++		dma->base = abox->sfr + ABOX_RDMA_BASE(i);
++		hrtimer_setup(&dma->timer, abox_dma_timer, CLOCK_MONOTONIC,
++			      HRTIMER_MODE_REL_SOFT);
++	}
++	for (i = 0; i < ABOX_NUM_WDMA; i++) {
++		struct abox_dma *dma = &abox->wdma[i];
++
++		dma->abox = abox;
++		dma->id = i;
++		dma->capture = true;
++		dma->base = abox->sfr + ABOX_WDMA_BASE(i);
++		hrtimer_setup(&dma->timer, abox_dma_timer, CLOCK_MONOTONIC,
++			      HRTIMER_MODE_REL_SOFT);
++	}
++
++	return devm_snd_soc_register_component(dev, &abox_component, abox_dais,
++					       ARRAY_SIZE(abox_dais));
++}
++
++static const struct of_device_id abox_of_match[] = {
++	{ .compatible = "samsung,exynos9810-abox" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, abox_of_match);
++
++static struct platform_driver abox_driver = {
++	.driver = {
++		.name = "exynos9810-abox",
++		.of_match_table = abox_of_match,
++		.dev_groups = abox_groups,
++	},
++	.probe = abox_probe,
++};
++module_platform_driver(abox_driver);
++
++MODULE_DESCRIPTION("Samsung Exynos9810 A-Box firmware-less ASoC driver");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

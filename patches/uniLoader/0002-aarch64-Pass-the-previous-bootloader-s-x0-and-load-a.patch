@@ -1,0 +1,89 @@
+From 5363c4f58d49434ba19189fffd62ee4781a69fd0 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:24:28 +1100
+Subject: [PATCH 2/9] aarch64: Pass the previous bootloader's x0 and load
+ address to main()
+
+start.S overwrites x0 with the embedded DTB before calling main(), so the
+FDT that the previous bootloader handed over is lost. Keep it in x19 and
+pass it as the fourth argument. With POSITION_INDEPENDENT, reloc.S also
+notes where the image was loaded (x7) before copying it to TEXT_BASE; pass
+that as the fifth argument.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/aarch64/reloc.S |  1 +
+ arch/aarch64/start.S | 13 +++++++++++++
+ main/main.c          |  6 +++++-
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/arch/aarch64/reloc.S b/arch/aarch64/reloc.S
+index b6fb485..b87195a 100644
+--- a/arch/aarch64/reloc.S
++++ b/arch/aarch64/reloc.S
+@@ -26,6 +26,7 @@ ENTRY_ALIAS(_rel_stack_size)
+ 	.quad _reloc_size
+ 
+ ENTRY_ALIAS( _reloc_entry)
++	adr	x7, _head		/* where we were loaded, for main() */
+ 	adr	x4, _start
+ 	ldr	x5, _rel_stack_base
+ 	cmp	x4, x5
+diff --git a/arch/aarch64/start.S b/arch/aarch64/start.S
+index de454f9..eda1b42 100644
+--- a/arch/aarch64/start.S
++++ b/arch/aarch64/start.S
+@@ -23,6 +23,17 @@ _stack_size:
+ .align 4
+ #endif
+ ENTRY(_start)
++	/*
++	 * Keep what the previous bootloader handed over: x0 (its FDT) and,
++	 * when relocating, the address it loaded us at (x7, from reloc.S).
++	 */
++	mov	x19, x0
++#ifdef CONFIG_POSITION_INDEPENDENT
++	mov	x20, x7
++#else
++	mov	x20, xzr
++#endif
++
+ 	/* Set up the base address for the stack */
+ 	adrp    x0, _stack_end      /* Load page of the _stack_end symbol */
+ 	add     x0, x0, #:lo12:_stack_end  /* Add the offset within the page */
+@@ -51,6 +62,8 @@ ENTRY(_start)
+ 	adrp    x2, ramdisk          /* Load page of kernel */
+ 	add     x2, x2, #:lo12:ramdisk /* Add offset within the page */
+ #endif
++	mov	x3, x19             /* previous bootloader's x0 */
++	mov	x4, x20             /* our original load address */
+ 
+ 	bl main
+ END(_start)
+diff --git a/main/main.c b/main/main.c
+index 579def3..d47a5ae 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -25,7 +25,7 @@ static void print_splash(void)
+ 	printk(KERN_INFO, "welcome to uniLoader %s on %s\n", VER_TAG, board_ops.name);
+ }
+ 
+-void main(void* dt, void* kernel, void* ramdisk)
++void main(void* dt, void* kernel, void* ramdisk, void* prev_fdt, void* load_addr)
+ {
+ 	early_console_init();
+ 	INITCALL(board_ops.ops.early_init);
+@@ -36,6 +36,10 @@ void main(void* dt, void* kernel, void* ramdisk)
+ 
+ 	INITCALL(board_ops.ops.late_init);
+ 
++	/* Handed over by the previous bootloader, unused for now */
++	(void)prev_fdt;
++	(void)load_addr;
++
+ 	boot_kernel(dt, kernel, ramdisk);
+ 
+ 	// todo: reset the board?
+-- 
+2.56.0
+

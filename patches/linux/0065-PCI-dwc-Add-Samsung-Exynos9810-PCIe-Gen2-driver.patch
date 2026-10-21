@@ -1,0 +1,750 @@
+From c4a51ad971dda022261fbd3599e86403a322e6a2 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:47:06 +1100
+Subject: [PATCH 065/119] PCI: dwc: Add Samsung Exynos9810 PCIe Gen2 driver
+
+Add a root complex driver for PCIe channel 0 of Exynos9810, which
+connects the Broadcom Wi-Fi chip on Galaxy S9 / Tab Active3 class
+devices. The sequences follow Samsung's GPL kernel (pci-exynos.c,
+pci-exynos9810_cal.c): PMU PHY isolation release, PHY power-down clear,
+sysreg lane setup, PCS/MAC/PHY reset pulses through ELBI, the 26 MHz Gen2
+PMA tables, CDR reset, then LTSSM enable with up to ten retries.
+
+While the link is down every DBI access is bracketed with the PCS
+"ignore RX electrical idle" bit and NCLK control, as the vendor driver
+does, since the core clock is otherwise gated and the access hangs.
+INTx is delivered on the controller's own GIC line; MSI and ASPM are not
+used (the L1.2 CDR-reset sequencer is not programmed).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pci/controller/dwc/Kconfig           |  13 +
+ drivers/pci/controller/dwc/Makefile          |   1 +
+ drivers/pci/controller/dwc/pcie-exynos9810.c | 679 +++++++++++++++++++
+ 3 files changed, 693 insertions(+)
+ create mode 100644 drivers/pci/controller/dwc/pcie-exynos9810.c
+
+diff --git a/drivers/pci/controller/dwc/Kconfig b/drivers/pci/controller/dwc/Kconfig
+index dcfbe7e22..ec178786e 100644
+--- a/drivers/pci/controller/dwc/Kconfig
++++ b/drivers/pci/controller/dwc/Kconfig
+@@ -403,6 +403,19 @@ config PCI_EXYNOS
+ 	  hardware and therefore the driver re-uses the DesignWare core
+ 	  functions to implement the driver.
+ 
++config PCIE_EXYNOS9810
++	tristate "Samsung Exynos 9810 PCIe controller"
++	depends on ARCH_EXYNOS || COMPILE_TEST
++	depends on OF
++	depends on PCI_MSI
++	select MFD_SYSCON
++	select PCIE_DW_HOST
++	help
++	  Enables support for the Gen2 x1 DesignWare PCIe root complex
++	  (channel 0) of the Samsung Exynos 9810 SoC, which connects the
++	  Broadcom Wi-Fi chip on Galaxy S9 / Tab Active3 class devices.
++	  The PHY is programmed by this driver.
++
+ config PCIE_FU740
+ 	bool "SiFive FU740 PCIe controller"
+ 	depends on PCI_MSI
+diff --git a/drivers/pci/controller/dwc/Makefile b/drivers/pci/controller/dwc/Makefile
+index d4f88cfc6..a1fa05baa 100644
+--- a/drivers/pci/controller/dwc/Makefile
++++ b/drivers/pci/controller/dwc/Makefile
+@@ -9,6 +9,7 @@ obj-$(CONFIG_PCIE_ANDES_QILAI) += pcie-andes-qilai.o
+ obj-$(CONFIG_PCIE_ESWIN) += pcie-eswin.o
+ obj-$(CONFIG_PCI_DRA7XX) += pci-dra7xx.o
+ obj-$(CONFIG_PCI_EXYNOS) += pci-exynos.o
++obj-$(CONFIG_PCIE_EXYNOS9810) += pcie-exynos9810.o
+ obj-$(CONFIG_PCIE_FU740) += pcie-fu740.o
+ obj-$(CONFIG_PCI_IMX6) += pci-imx6.o
+ obj-$(CONFIG_PCIE_NXP_S32G) += pcie-nxp-s32g.o
+diff --git a/drivers/pci/controller/dwc/pcie-exynos9810.c b/drivers/pci/controller/dwc/pcie-exynos9810.c
+new file mode 100644
+index 000000000..c41ae370c
+--- /dev/null
++++ b/drivers/pci/controller/dwc/pcie-exynos9810.c
+@@ -0,0 +1,679 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Samsung Exynos 9810 PCIe Gen2 x1 root complex (Wi-Fi channel, "pcie0")
++ *
++ * The register sequences are taken from Samsung's GPL Exynos 9810 kernel
++ * (drivers/pci/host/pci-exynos.c, pci-exynos9810_cal.c). Only channel 0
++ * (Gen2 PHY, used for the Broadcom Wi-Fi chip) is supported. The PHY shares
++ * reset bits in ELBI with the controller and its PCS has to be told to ignore
++ * RX electrical idle around DBI accesses while the link is down, so the PHY
++ * is driven from this driver instead of a separate generic PHY.
++ *
++ * There is no clock driver for Exynos 9810 yet. All CMU_FSYS1 PCIe gates
++ * are found enabled and their Q-channels held on after the bootloader,
++ * and the vendor driver itself manages zero clocks on this SoC.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/interrupt.h>
++#include <linux/iopoll.h>
++#include <linux/mfd/syscon.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/pci.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++
++#include "pcie-designware.h"
++
++/* ELBI ("elbi" region, PCIe sub-controller) */
++#define ELBI_IRQ_PULSE			0x000
++#define  IRQ_INTA_ASSERT		BIT(0)
++#define  IRQ_INTB_ASSERT		BIT(2)
++#define  IRQ_INTC_ASSERT		BIT(4)
++#define  IRQ_INTD_ASSERT		BIT(6)
++#define  IRQ_LINK_DOWN			BIT(30)
++#define ELBI_IRQ_LEVEL			0x004
++#define ELBI_IRQ_SPECIAL		0x008
++#define ELBI_IRQ_EN_PULSE		0x00c
++#define ELBI_IRQ_EN_LEVEL		0x010
++#define ELBI_IRQ_EN_SPECIAL		0x014
++#define ELBI_SW_WAKE			0x018
++#define  SW_WAKE_BUS_NUM_DIS		BIT(1)
++#define ELBI_APP_LTSSM_ENABLE		0x02c
++#define ELBI_IRQ_TOE_EN_PULSE2		0x034
++#define ELBI_IRQ_TOE_EN_LEVEL		0x038
++#define ELBI_RDLH_LINKUP		0x074
++#define  LTSSM_STATE_MASK		0x1f
++#define  LTSSM_L0_MIN			0x0d
++#define  LTSSM_L0_MAX			0x15
++#define ELBI_PM_DSTATE			0x088
++#define ELBI_APP_REQ_EXIT_L1_MODE	0x0f4
++#define  APP_REQ_EXIT_L1_MODE_HW	BIT(0)
++#define  L1_REQ_NAK_CONTROL_MASTER	BIT(4)
++#define ELBI_HISTORY_REG(x)		(0x138 + (x) * 4)
++#define  HISTORY_LTSSM(x)		(((x) >> 16) & 0x3f)
++#define  HISTORY_DSTATE(x)		(((x) >> 8) & 0x7)
++#define  HISTORY_L1SUB(x)		((x) & 0x7)
++#define ELBI_LINKDOWN_RST_CTRL_SEL	0x1b8
++#define  LINKDOWN_RST_MANUAL		BIT(1)
++#define ELBI_SOFT_CORE_RESET		0x1d0
++#define ELBI_STATE_HISTORY_CHECK	0x274
++#define  HISTORY_BUFFER_ENABLE		0x3
++#define ELBI_PCS_GLOBAL_RST		0x288
++#define ELBI_PHY_RST			0x28c
++#define ELBI_MAC_RST			0x290
++#define ELBI_STATE_POWER_S		0x2bc
++#define ELBI_STATE_POWER_M		0x2c0
++#define ELBI_QCH_SEL			0x2c8
++#define  QCH_CLOCK_GATING_MASK		GENMASK(11, 0)
++#define ELBI_L12ERR_CTRL		0x2f0
++#define  L12ERR_NCLK_OFF		BIT(2)
++
++/* PHY: "phy" region = PCS at 0x116c0000, PMA at 0x116d0000 */
++#define PHY_PMA_OFFSET			0x10000
++
++/* PHY PCS, channel 0 */
++#define PCS_PRGM_TIMEOUT		0x00c
++#define PCS_CDR_CTRL			0x0d0
++#define  CDR_RESET_MASK			GENMASK(7, 6)
++#define PCS_RX_ELECIDLE			0x0ec
++#define  RX_ELECIDLE_IGNORE		BIT(3)
++#define PCS_TX_LATENCY			0x0f8
++#define PCS_REFCLK_OUT0			0x100
++#define  REFCLK_OUT0_PWRDN		BIT(6)
++#define PCS_REFCLK_OUT1			0x104
++#define  REFCLK_OUT1_PWRDN		BIT(7)
++
++/* PHY PMA: byte-wide registers at a 4-byte stride */
++#define PMA_REG(n)			((n) * 4)
++#define PMA_CMN_PWR			PMA_REG(0x20)
++#define PMA_TRSV_PWR			PMA_REG(0x57)
++#define PMA_TRSV_BASE			0x30
++
++/* PMU: PCIE_PHY_CONTROL for channel 0, bit 0 releases the PHY isolation */
++#define PMU_PCIE_PHY_CONTROL		0x71c
++#define  PMU_PCIE_PHY_ENABLE		BIT(0)
++
++/* FSYS1 sysreg (0x11410000): channel 0 PHY / PCS lane configuration */
++#define SYSREG_PCIE0_CON		0x1044
++#define  PCIE0_PCS_HIGH_SPEED		BIT(1)
++#define SYSREG_PCIE0_PHY_CON		0x1050
++#define  PCIE0_PHY_CON_CLR		GENMASK(7, 1)
++#define  PCIE0_PHY_CON_SET		(0x3 << 2)
++#define  PCIE0_PCS_LANE0_ENABLE		BIT(12)
++
++/* DBI, Synopsys port logic: auxiliary clock (26 MHz) and L1 substate timing */
++#define PCIE_AUX_CLK_FREQ_OFF		0xb40
++#define  AUX_CLK_FREQ_26MHZ		0x1a
++#define PCIE_L1_SUBSTATES_OFF		0xb44
++#define  L1_SUBSTATES_VAL		0xea
++
++#define LINK_POLL_US			10
++#define LINK_POLL_COUNT			2000
++#define LINK_TRIES			10
++
++/* 26 MHz reference, Gen2, channel 0 (pci-exynos9810_cal.c:182-207) */
++static const u8 exynos9810_pcie_cmn_cfg[] = {
++	0x01, 0xE1, 0x05, 0x00, 0x88, 0x88, 0x88, 0x0C,
++	0x61, 0x45, 0x65, 0x24, 0x33, 0x18, 0xE3, 0xFC,
++	0xD8, 0x05, 0xE6, 0x80, 0x00, 0x00, 0x00, 0x00,
++	0x60, 0x11, 0x00, 0xA0, 0x05, 0x04, 0x18, 0x88,
++	0xC0, 0xFF, 0x9B, 0x52, 0x22, 0x30, 0x4F, 0xDC,
++	0x40, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x80,
++};
++
++static const u8 exynos9810_pcie_trsv_cfg[] = {
++	0x31, 0x40, 0x37, 0x99, 0x85, 0x00, 0xC0, 0xFF,
++	0xFF, 0x3F, 0x8C, 0xC8, 0x02, 0x01, 0x88, 0x80,
++	0x06, 0x90, 0x6C, 0x66, 0x09, 0x61, 0x42, 0x44,
++	0xC6, 0x50, 0x0A, 0x33, 0x58, 0xE7, 0x20, 0x22,
++	0x80, 0x38, 0x05, 0x85, 0x00, 0x00, 0x00, 0x7E,
++	0x00, 0x00, 0x55, 0x15, 0xAC, 0xAA, 0x3E, 0x00,
++	0x00, 0x00, 0x20, 0x3F, 0x00, 0x03, 0x01, 0x00,
++	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
++	0x05, 0x85, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
++};
++
++struct exynos9810_pcie {
++	struct dw_pcie pci;
++	void __iomem *elbi;
++	void __iomem *pma;
++	void __iomem *pcs;
++	struct regmap *pmu;
++	struct regmap *sysreg;
++	struct gpio_desc *perst;
++	struct regulator *vpcie;
++	int irq;
++	/* serialises the PCS RX-elecidle override around DBI accesses */
++	spinlock_t dbi_lock;
++	bool linked;
++	bool powered;
++};
++
++#define to_exynos9810_pcie(x)	dev_get_drvdata((x)->dev)
++
++static inline void elbi_writel(struct exynos9810_pcie *ep, u32 val, u32 reg)
++{
++	writel(val, ep->elbi + reg);
++}
++
++static inline u32 elbi_readl(struct exynos9810_pcie *ep, u32 reg)
++{
++	return readl(ep->elbi + reg);
++}
++
++static void pcs_rmw(struct exynos9810_pcie *ep, u32 reg, u32 clr, u32 set)
++{
++	u32 val = readl(ep->pcs + reg);
++
++	writel((val & ~clr) | set, ep->pcs + reg);
++}
++
++/*
++ * While the link is down the PCS gates the core clock on RX electrical idle,
++ * and a DBI access then never completes. The vendor driver brackets every
++ * own-config access with this override and NCLK control
++ * (pci-exynos.c:1462-1584); do the same.
++ */
++static void exynos9810_pcie_dbi_guard(struct exynos9810_pcie *ep, bool on)
++{
++	if (on) {
++		elbi_writel(ep, 0, ELBI_L12ERR_CTRL);
++		pcs_rmw(ep, PCS_RX_ELECIDLE, 0, RX_ELECIDLE_IGNORE);
++	} else {
++		pcs_rmw(ep, PCS_RX_ELECIDLE, RX_ELECIDLE_IGNORE, 0);
++		elbi_writel(ep, L12ERR_NCLK_OFF, ELBI_L12ERR_CTRL);
++	}
++}
++
++static u32 exynos9810_pcie_read_dbi(struct dw_pcie *pci, void __iomem *base,
++				    u32 reg, size_t size)
++{
++	struct exynos9810_pcie *ep = to_exynos9810_pcie(pci);
++	unsigned long flags;
++	u32 val;
++
++	spin_lock_irqsave(&ep->dbi_lock, flags);
++	if (!ep->linked)
++		exynos9810_pcie_dbi_guard(ep, true);
++	dw_pcie_read(base + reg, size, &val);
++	if (!ep->linked)
++		exynos9810_pcie_dbi_guard(ep, false);
++	spin_unlock_irqrestore(&ep->dbi_lock, flags);
++
++	return val;
++}
++
++static void exynos9810_pcie_write_dbi(struct dw_pcie *pci, void __iomem *base,
++				      u32 reg, size_t size, u32 val)
++{
++	struct exynos9810_pcie *ep = to_exynos9810_pcie(pci);
++	unsigned long flags;
++
++	spin_lock_irqsave(&ep->dbi_lock, flags);
++	if (!ep->linked)
++		exynos9810_pcie_dbi_guard(ep, true);
++	dw_pcie_write(base + reg, size, val);
++	if (!ep->linked)
++		exynos9810_pcie_dbi_guard(ep, false);
++	spin_unlock_irqrestore(&ep->dbi_lock, flags);
++}
++
++static void exynos9810_pcie_set_linked(struct exynos9810_pcie *ep, bool linked)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&ep->dbi_lock, flags);
++	ep->linked = linked;
++	/* NCLK stays on while the link is up (pci-exynos.c:2361-2364) */
++	elbi_writel(ep, linked ? 0 : L12ERR_NCLK_OFF, ELBI_L12ERR_CTRL);
++	spin_unlock_irqrestore(&ep->dbi_lock, flags);
++}
++
++static u32 exynos9810_pcie_ltssm(struct exynos9810_pcie *ep)
++{
++	return elbi_readl(ep, ELBI_RDLH_LINKUP) & LTSSM_STATE_MASK;
++}
++
++static bool exynos9810_pcie_link_up(struct dw_pcie *pci)
++{
++	struct exynos9810_pcie *ep = to_exynos9810_pcie(pci);
++	u32 st;
++
++	if (!ep->powered)
++		return false;
++
++	st = exynos9810_pcie_ltssm(ep);
++	return st >= LTSSM_L0_MIN && st <= LTSSM_L0_MAX;
++}
++
++static void exynos9810_pcie_print_history(struct exynos9810_pcie *ep)
++{
++	struct device *dev = ep->pci.dev;
++	int i;
++
++	for (i = 31; i >= 0; i--) {
++		u32 h = elbi_readl(ep, ELBI_HISTORY_REG(i));
++
++		dev_info(dev, "LTSSM: 0x%02x, L1sub: 0x%x, D state: 0x%x\n",
++			 HISTORY_LTSSM(h), HISTORY_L1SUB(h), HISTORY_DSTATE(h));
++	}
++}
++
++/* exynos_phy_all_pwrdn_clear(), pci-exynos9810_cal.c:94-119 */
++static void exynos9810_pcie_phy_pwrdn_clear(struct exynos9810_pcie *ep)
++{
++	pcs_rmw(ep, PCS_REFCLK_OUT0, REFCLK_OUT0_PWRDN, 0);
++	pcs_rmw(ep, PCS_REFCLK_OUT1, REFCLK_OUT1_PWRDN, 0);
++	writel(0xc0, ep->pma + PMA_CMN_PWR);
++	writel(0x7e, ep->pma + PMA_TRSV_PWR);
++}
++
++/* exynos_phy_all_pwrdn(), pci-exynos9810_cal.c:59-91 */
++static void exynos9810_pcie_phy_pwrdn(struct exynos9810_pcie *ep)
++{
++	writel(0xfe, ep->pma + PMA_TRSV_PWR);
++	writel(0xc1, ep->pma + PMA_CMN_PWR);
++	pcs_rmw(ep, PCS_REFCLK_OUT0, 0, REFCLK_OUT0_PWRDN);
++	pcs_rmw(ep, PCS_REFCLK_OUT1, 0, REFCLK_OUT1_PWRDN);
++}
++
++static void elbi_pulse(struct exynos9810_pcie *ep, u32 reg, unsigned int us)
++{
++	elbi_writel(ep, 1, reg);
++	udelay(10);
++	elbi_writel(ep, 0, reg);
++	udelay(10);
++	elbi_writel(ep, 1, reg);
++	udelay(us);
++}
++
++/* exynos_pcie_phy_config() for ch_num 0, pci-exynos9810_cal.c:179-399 */
++static void exynos9810_pcie_phy_config(struct exynos9810_pcie *ep)
++{
++	unsigned int i;
++
++	regmap_update_bits(ep->sysreg, SYSREG_PCIE0_CON, PCIE0_PCS_HIGH_SPEED,
++			   PCIE0_PCS_HIGH_SPEED);
++	regmap_update_bits(ep->sysreg, SYSREG_PCIE0_PHY_CON, PCIE0_PHY_CON_CLR,
++			   PCIE0_PHY_CON_SET);
++	regmap_update_bits(ep->sysreg, SYSREG_PCIE0_PHY_CON,
++			   PCIE0_PCS_LANE0_ENABLE, PCIE0_PCS_LANE0_ENABLE);
++
++	elbi_pulse(ep, ELBI_PCS_GLOBAL_RST, 10);
++
++	for (i = 0; i < ARRAY_SIZE(exynos9810_pcie_cmn_cfg); i++)
++		writel(exynos9810_pcie_cmn_cfg[i], ep->pma + PMA_REG(i));
++	for (i = 0; i < ARRAY_SIZE(exynos9810_pcie_trsv_cfg); i++)
++		writel(exynos9810_pcie_trsv_cfg[i],
++		       ep->pma + PMA_REG(PMA_TRSV_BASE + i));
++
++	writel(0x70, ep->pcs + PCS_TX_LATENCY);
++	writel(0x87, ep->pcs + PCS_REFCLK_OUT0);
++	writel(0x50, ep->pcs + PCS_REFCLK_OUT1);
++	pcs_rmw(ep, PCS_PRGM_TIMEOUT, BIT(1), BIT(4));
++
++	elbi_pulse(ep, ELBI_MAC_RST, 10);
++	elbi_pulse(ep, ELBI_PHY_RST, 100);
++
++	/* CDR reset */
++	pcs_rmw(ep, PCS_CDR_CTRL, 0, CDR_RESET_MASK);
++	udelay(20);
++	pcs_rmw(ep, PCS_CDR_CTRL, CDR_RESET_MASK, 0x2 << 6);
++	pcs_rmw(ep, PCS_CDR_CTRL, CDR_RESET_MASK, 0);
++}
++
++/*
++ * First half of exynos_pcie_establish_link() (pci-exynos.c:1100-1160): core
++ * soft reset, PERST# release, ELBI setup and PHY bring-up. Leaves the RX
++ * elecidle override on, so DBI is accessible afterwards.
++ */
++static void exynos9810_pcie_bringup(struct exynos9810_pcie *ep)
++{
++	u32 val;
++
++	pcs_rmw(ep, PCS_RX_ELECIDLE, 0, RX_ELECIDLE_IGNORE);
++
++	elbi_writel(ep, 0, ELBI_SOFT_CORE_RESET);
++	udelay(20);
++	elbi_writel(ep, 1, ELBI_SOFT_CORE_RESET);
++
++	gpiod_set_value_cansleep(ep->perst, 0);
++	usleep_range(18000, 20000);
++
++	val = elbi_readl(ep, ELBI_APP_REQ_EXIT_L1_MODE);
++	val |= APP_REQ_EXIT_L1_MODE_HW | L1_REQ_NAK_CONTROL_MASTER;
++	elbi_writel(ep, val, ELBI_APP_REQ_EXIT_L1_MODE);
++	elbi_writel(ep, LINKDOWN_RST_MANUAL, ELBI_LINKDOWN_RST_CTRL_SEL);
++
++	/* ip_ver 0x981000: no PMU/APB/AXI clock gating in any link state */
++	val = elbi_readl(ep, ELBI_QCH_SEL);
++	elbi_writel(ep, val & ~QCH_CLOCK_GATING_MASK, ELBI_QCH_SEL);
++
++	exynos9810_pcie_phy_config(ep);
++
++	/* "Bus number enable" */
++	val = elbi_readl(ep, ELBI_SW_WAKE);
++	elbi_writel(ep, val & ~SW_WAKE_BUS_NUM_DIS, ELBI_SW_WAKE);
++}
++
++static irqreturn_t exynos9810_pcie_irq(int irq, void *arg)
++{
++	struct exynos9810_pcie *ep = arg;
++	u32 pulse, level, special;
++
++	pulse = elbi_readl(ep, ELBI_IRQ_PULSE);
++	elbi_writel(ep, pulse, ELBI_IRQ_PULSE);
++	level = elbi_readl(ep, ELBI_IRQ_LEVEL);
++	elbi_writel(ep, level, ELBI_IRQ_LEVEL);
++	special = elbi_readl(ep, ELBI_IRQ_SPECIAL);
++	elbi_writel(ep, special, ELBI_IRQ_SPECIAL);
++
++	if (pulse & IRQ_LINK_DOWN) {
++		dev_err_ratelimited(ep->pci.dev, "link down (pulse 0x%08x)\n",
++				    pulse);
++		exynos9810_pcie_set_linked(ep, false);
++	}
++
++	/*
++	 * INTx is wired straight to this GIC line too (stock interrupt-map),
++	 * so the endpoint driver shares it; only claim our own events.
++	 */
++	return (pulse | level | special) ? IRQ_HANDLED : IRQ_NONE;
++}
++
++static void exynos9810_pcie_power_off(struct exynos9810_pcie *ep)
++{
++	exynos9810_pcie_set_linked(ep, false);
++	elbi_writel(ep, 0, ELBI_APP_LTSSM_ENABLE);
++	gpiod_set_value_cansleep(ep->perst, 1);
++	if (ep->powered) {
++		exynos9810_pcie_phy_pwrdn(ep);
++		regmap_update_bits(ep->pmu, PMU_PCIE_PHY_CONTROL,
++				   PMU_PCIE_PHY_ENABLE, 0);
++		ep->powered = false;
++	}
++	if (ep->vpcie)
++		regulator_disable(ep->vpcie);
++}
++
++static int exynos9810_pcie_host_init(struct dw_pcie_rp *pp)
++{
++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
++	struct exynos9810_pcie *ep = to_exynos9810_pcie(pci);
++	struct device *dev = pci->dev;
++	u32 val;
++	int ret;
++
++	/* No MSI: INTx only, like the vendor configuration (use-msi = "false") */
++	pp->use_imsi_rx = false;
++
++	if (ep->vpcie) {
++		ret = regulator_enable(ep->vpcie);
++		if (ret) {
++			dev_err(dev, "failed to enable vpcie3v3: %d\n", ret);
++			return ret;
++		}
++		/* WIFI_TURNON_DELAY, dhd_custom_exynos.c:69,189-190 */
++		msleep(200);
++	}
++
++	regmap_update_bits(ep->pmu, PMU_PCIE_PHY_CONTROL, PMU_PCIE_PHY_ENABLE,
++			   PMU_PCIE_PHY_ENABLE);
++	ep->powered = true;
++
++	exynos9810_pcie_phy_pwrdn_clear(ep);
++
++	/* Enable the LTSSM history buffer (debug aid on link failure) */
++	elbi_writel(ep, 0, ELBI_STATE_HISTORY_CHECK);
++	elbi_writel(ep, HISTORY_BUFFER_ENABLE, ELBI_STATE_HISTORY_CHECK);
++	elbi_writel(ep, 0x200000, ELBI_STATE_POWER_S);
++	elbi_writel(ep, 0xffffffff, ELBI_STATE_POWER_M);
++
++	/* exynos_pcie_enable_interrupts(), pci-exynos.c:1367-1386 */
++	elbi_writel(ep, IRQ_INTA_ASSERT | IRQ_INTB_ASSERT | IRQ_INTC_ASSERT |
++		    IRQ_INTD_ASSERT, ELBI_IRQ_EN_PULSE);
++	elbi_writel(ep, 0, ELBI_IRQ_TOE_EN_PULSE2);
++	elbi_writel(ep, 0, ELBI_IRQ_TOE_EN_LEVEL);
++	elbi_writel(ep, 0, ELBI_IRQ_EN_LEVEL);
++	elbi_writel(ep, 0, ELBI_IRQ_EN_SPECIAL);
++	val = elbi_readl(ep, ELBI_IRQ_PULSE);
++	elbi_writel(ep, val, ELBI_IRQ_PULSE);
++
++	ret = devm_request_irq(dev, ep->irq, exynos9810_pcie_irq, IRQF_SHARED,
++			       "exynos9810-pcie", ep);
++	if (ret) {
++		exynos9810_pcie_power_off(ep);
++		return ret;
++	}
++
++	exynos9810_pcie_bringup(ep);
++
++	return 0;
++}
++
++static void exynos9810_pcie_host_deinit(struct dw_pcie_rp *pp)
++{
++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
++	struct exynos9810_pcie *ep = to_exynos9810_pcie(pci);
++
++	devm_free_irq(pci->dev, ep->irq, ep);
++	exynos9810_pcie_power_off(ep);
++}
++
++/* exynos_pcie_setup_rc() parts that dw_pcie_setup_rc() does not cover */
++static void exynos9810_pcie_setup_rc(struct exynos9810_pcie *ep)
++{
++	struct dw_pcie *pci = &ep->pci;
++	u8 cap = dw_pcie_find_capability(pci, PCI_CAP_ID_EXP);
++	u32 val;
++
++	dw_pcie_dbi_ro_wr_en(pci);
++
++	val = dw_pcie_readl_dbi(pci, cap + PCI_EXP_LNKCAP);
++	val &= ~PCI_EXP_LNKCAP_L1EL;
++	val |= FIELD_PREP(PCI_EXP_LNKCAP_L1EL, 0x7);	/* 64 us */
++	/*
++	 * Keep ASPM off: entering L1.2 needs a CDR-reset sequencer ("PCIE_IA")
++	 * that this driver does not program yet.
++	 */
++	val &= ~PCI_EXP_LNKCAP_ASPMS;
++	dw_pcie_writel_dbi(pci, cap + PCI_EXP_LNKCAP, val);
++
++	dw_pcie_writel_dbi(pci, PCIE_AUX_CLK_FREQ_OFF, AUX_CLK_FREQ_26MHZ);
++	dw_pcie_writel_dbi(pci, PCIE_L1_SUBSTATES_OFF, L1_SUBSTATES_VAL);
++
++	dw_pcie_dbi_ro_wr_dis(pci);
++}
++
++static int exynos9810_pcie_start_link(struct dw_pcie *pci)
++{
++	struct exynos9810_pcie *ep = to_exynos9810_pcie(pci);
++	struct device *dev = pci->dev;
++	unsigned int try;
++	u32 val;
++	int ret;
++
++	for (try = 1; ; try++) {
++		exynos9810_pcie_setup_rc(ep);
++
++		pcs_rmw(ep, PCS_RX_ELECIDLE, RX_ELECIDLE_IGNORE, 0);
++		dev_dbg(dev, "D state: %x, %x\n",
++			elbi_readl(ep, ELBI_PM_DSTATE) & 0x7,
++			elbi_readl(ep, ELBI_RDLH_LINKUP));
++
++		elbi_writel(ep, 1, ELBI_APP_LTSSM_ENABLE);
++
++		ret = readl_poll_timeout(ep->elbi + ELBI_RDLH_LINKUP, val,
++					 (val & LTSSM_STATE_MASK) >= LTSSM_L0_MIN &&
++					 (val & LTSSM_STATE_MASK) <= 0x14,
++					 LINK_POLL_US, LINK_POLL_US * LINK_POLL_COUNT);
++		if (!ret)
++			break;
++
++		dev_err(dev, "link is not up, try %u, state 0x%x\n", try,
++			exynos9810_pcie_ltssm(ep));
++
++		if (try >= LINK_TRIES) {
++			exynos9810_pcie_print_history(ep);
++			/* leave DBI accessible for the core's error path */
++			pcs_rmw(ep, PCS_RX_ELECIDLE, 0, RX_ELECIDLE_IGNORE);
++			return 0;	/* dw_pcie_wait_for_link() reports it */
++		}
++
++		gpiod_set_value_cansleep(ep->perst, 1);
++		elbi_writel(ep, 0, ELBI_APP_LTSSM_ENABLE);
++		exynos9810_pcie_bringup(ep);
++		ret = dw_pcie_setup_rc(&pci->pp);
++		if (ret)
++			return ret;
++	}
++
++	dev_info(dev, "link up, LTSSM 0x%x\n", exynos9810_pcie_ltssm(ep));
++	exynos9810_pcie_set_linked(ep, true);
++
++	val = elbi_readl(ep, ELBI_IRQ_PULSE);
++	elbi_writel(ep, val, ELBI_IRQ_PULSE);
++	val = elbi_readl(ep, ELBI_IRQ_EN_PULSE);
++	elbi_writel(ep, val | IRQ_LINK_DOWN, ELBI_IRQ_EN_PULSE);
++
++	return 0;
++}
++
++static void exynos9810_pcie_stop_link(struct dw_pcie *pci)
++{
++	struct exynos9810_pcie *ep = to_exynos9810_pcie(pci);
++	u32 val;
++
++	val = elbi_readl(ep, ELBI_IRQ_EN_PULSE);
++	elbi_writel(ep, val & ~IRQ_LINK_DOWN, ELBI_IRQ_EN_PULSE);
++	exynos9810_pcie_set_linked(ep, false);
++	pcs_rmw(ep, PCS_RX_ELECIDLE, 0, RX_ELECIDLE_IGNORE);
++	elbi_writel(ep, 0, ELBI_APP_LTSSM_ENABLE);
++	gpiod_set_value_cansleep(ep->perst, 1);
++}
++
++static const struct dw_pcie_host_ops exynos9810_pcie_host_ops = {
++	.init = exynos9810_pcie_host_init,
++	.deinit = exynos9810_pcie_host_deinit,
++};
++
++static const struct dw_pcie_ops exynos9810_pcie_ops = {
++	.read_dbi = exynos9810_pcie_read_dbi,
++	.write_dbi = exynos9810_pcie_write_dbi,
++	.link_up = exynos9810_pcie_link_up,
++	.start_link = exynos9810_pcie_start_link,
++	.stop_link = exynos9810_pcie_stop_link,
++};
++
++static int exynos9810_pcie_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct exynos9810_pcie *ep;
++	struct dw_pcie *pci;
++	struct resource *res;
++	int ret;
++
++	ep = devm_kzalloc(dev, sizeof(*ep), GFP_KERNEL);
++	if (!ep)
++		return -ENOMEM;
++
++	spin_lock_init(&ep->dbi_lock);
++	pci = &ep->pci;
++	pci->dev = dev;
++	pci->ops = &exynos9810_pcie_ops;
++	pci->pp.ops = &exynos9810_pcie_host_ops;
++	platform_set_drvdata(pdev, ep);
++
++	ep->elbi = devm_platform_ioremap_resource_byname(pdev, "elbi");
++	if (IS_ERR(ep->elbi))
++		return PTR_ERR(ep->elbi);
++	pci->elbi_base = ep->elbi;
++
++	/* "phy" spans the channel 0 PCS (+0) and PMA (+0x10000) blocks */
++	ep->pcs = devm_platform_ioremap_resource_byname(pdev, "phy");
++	if (IS_ERR(ep->pcs))
++		return PTR_ERR(ep->pcs);
++	ep->pma = ep->pcs + PHY_PMA_OFFSET;
++
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dbi");
++	pci->dbi_base = devm_pci_remap_cfg_resource(dev, res);
++	if (IS_ERR(pci->dbi_base))
++		return PTR_ERR(pci->dbi_base);
++	pci->dbi_phys_addr = res->start;
++	/*
++	 * Viewport iATU (pre-4.80 core, vendor code programs it at DBI 0x900).
++	 * Point the unrolled-iATU fallback inside the 4 KiB DBI window so a
++	 * misdetection cannot touch the default DBI + 3 MiB offset.
++	 */
++	pci->atu_base = pci->dbi_base + PCIE_ATU_VIEWPORT_BASE;
++	pci->atu_size = PCIE_ATU_VIEWPORT_SIZE;
++	/* No eDMA in this IP: skip the probe of its legacy viewport */
++	pci->edma.mf = EDMA_MF_EDMA_UNROLL;
++
++	ep->pmu = syscon_regmap_lookup_by_phandle(np, "samsung,pmu-syscon");
++	if (IS_ERR(ep->pmu))
++		return dev_err_probe(dev, PTR_ERR(ep->pmu), "no PMU syscon\n");
++
++	ep->sysreg = syscon_regmap_lookup_by_phandle(np, "samsung,fsys-sysreg");
++	if (IS_ERR(ep->sysreg))
++		return dev_err_probe(dev, PTR_ERR(ep->sysreg),
++				     "no FSYS1 sysreg syscon\n");
++
++	/* Asserted (driven low) until the PHY is configured */
++	ep->perst = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(ep->perst))
++		return dev_err_probe(dev, PTR_ERR(ep->perst),
++				     "failed to get PERST# GPIO\n");
++
++	ep->vpcie = devm_regulator_get_optional(dev, "vpcie3v3");
++	if (IS_ERR(ep->vpcie)) {
++		if (PTR_ERR(ep->vpcie) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(ep->vpcie),
++					     "failed to get vpcie3v3\n");
++		ep->vpcie = NULL;
++	}
++
++	ep->irq = platform_get_irq(pdev, 0);
++	if (ep->irq < 0)
++		return ep->irq;
++
++	ret = dw_pcie_host_init(&pci->pp);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to initialise host\n");
++
++	return 0;
++}
++
++static void exynos9810_pcie_remove(struct platform_device *pdev)
++{
++	struct exynos9810_pcie *ep = platform_get_drvdata(pdev);
++
++	dw_pcie_host_deinit(&ep->pci.pp);
++}
++
++static const struct of_device_id exynos9810_pcie_of_match[] = {
++	{ .compatible = "samsung,exynos9810-pcie" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, exynos9810_pcie_of_match);
++
++static struct platform_driver exynos9810_pcie_driver = {
++	.probe = exynos9810_pcie_probe,
++	.remove = exynos9810_pcie_remove,
++	.driver = {
++		.name = "exynos9810-pcie",
++		.of_match_table = exynos9810_pcie_of_match,
++		.suppress_bind_attrs = true,
++	},
++};
++module_platform_driver(exynos9810_pcie_driver);
++
++MODULE_DESCRIPTION("Samsung Exynos 9810 PCIe Gen2 root complex driver");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

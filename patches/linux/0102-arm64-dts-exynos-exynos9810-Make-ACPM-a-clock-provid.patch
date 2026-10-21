@@ -1,0 +1,29 @@
+From 4c78b461681a9ce87610b4f5d6e614fcae59a31a Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:36:54 +1100
+Subject: [PATCH 102/119] arm64: dts: exynos: exynos9810: Make ACPM a clock
+ provider
+
+The ACPM clock driver registers the DVFS domains of the APM firmware as
+clocks of the ACPM node, so give it #clock-cells.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 23394682c..b1ae8c198 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -146,6 +146,7 @@ cpu7: cpu@103 {
+ 	firmware {
+ 		acpm_ipc: power-management {
+ 			compatible = "samsung,exynos9810-acpm-ipc";
++			#clock-cells = <1>;
+ 			mboxes = <&ap2apm_mailbox>;
+ 			shmem = <&apm_sram>;
+ 		};
+-- 
+2.56.0
+

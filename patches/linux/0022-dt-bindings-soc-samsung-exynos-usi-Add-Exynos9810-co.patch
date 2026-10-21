@@ -1,7 +1,7 @@
 From 65030ef1e1e9067fe1ab0c496bdda2e85662fe3c Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:53:20 +1100
-Subject: [PATCH 22/64] dt-bindings: soc: samsung: exynos-usi: Add Exynos9810
+Subject: [PATCH 022/119] dt-bindings: soc: samsung: exynos-usi: Add Exynos9810
  compatible
 
 The USI blocks of Exynos9810 are USIv2: one SW_CONF register per block

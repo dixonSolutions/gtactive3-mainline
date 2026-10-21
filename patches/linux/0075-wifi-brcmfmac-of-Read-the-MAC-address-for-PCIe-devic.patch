@@ -1,0 +1,55 @@
+From 9822dec8340cd3c0dd332a6a6494621b1bfdcc1d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:22:35 +1100
+Subject: [PATCH 075/119] wifi: brcmfmac: of: Read the MAC address for PCIe
+ devices too
+
+PCIe devices are described in the device tree by their "pciVVVV,DDDD"
+compatible alone, so the brcm,bcm4329-fmac check returned before
+of_get_mac_address() ran and a local-mac-address set by the bootloader
+or installer was ignored. Look up the MAC address first; the remaining
+properties stay limited to brcm,bcm4329-fmac nodes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/of.c  | 18 +++++++++++++-----
+ 1 file changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.c
+index 03efae36a..906a85a0f 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.c
+@@ -121,17 +121,25 @@ int brcmf_of_probe(struct device *dev, enum brcmf_bus_type bus_type,
+ 
+ 	brcmf_dbg(INFO, "%s LPO clock\n", clk ? "enable" : "no");
+ 
+-	if (!np || !of_device_is_compatible(np, "brcm,bcm4329-fmac"))
++	if (!np)
+ 		return 0;
+ 
+-	err = brcmf_of_get_country_codes(dev, settings);
+-	if (err)
+-		brcmf_err("failed to get OF country code map (err=%d)\n", err);
+-
++	/*
++	 * PCIe devices are matched by their "pciVVVV,DDDD" compatible only,
++	 * so look for a local-mac-address / mac-address before the
++	 * brcm,bcm4329-fmac check.
++	 */
+ 	err = of_get_mac_address(np, settings->mac);
+ 	if (err == -EPROBE_DEFER)
+ 		return err;
+ 
++	if (!of_device_is_compatible(np, "brcm,bcm4329-fmac"))
++		return 0;
++
++	err = brcmf_of_get_country_codes(dev, settings);
++	if (err)
++		brcmf_err("failed to get OF country code map (err=%d)\n", err);
++
+ 	if (bus_type != BRCMF_BUSTYPE_SDIO)
+ 		return 0;
+ 
+-- 
+2.56.0
+

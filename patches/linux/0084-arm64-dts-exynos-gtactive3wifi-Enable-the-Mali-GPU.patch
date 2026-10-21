@@ -1,0 +1,56 @@
+From db2cded7857a352848edd6d5589c23e6ce2618c0 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:06:33 +1100
+Subject: [PATCH 084/119] arm64: dts: exynos: gtactive3wifi: Enable the Mali
+ GPU
+
+Feed the GPU the 260 MHz that S-Boot leaves on PLL_G3D (read back on
+the device: PLL_CON0_PLL_G3D 0x17400140 = 0xa0a00412, user mux
+0x17400100 = 0x10, MUX_CLK_G3D_BUSD = 0, DIV_CLK_G3D_BUSD = 0) and keep
+the G3D domain on (PMU 0x14064044 reads 0x0010000f after S-Boot) until
+its power cycle has been tested.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 28 +++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index d3e7b3cb9..52482f4dd 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -834,3 +834,31 @@ &usi_chub01 {
+ 	/* SPI21: touchscreen */
+ 	status = "okay";
+ };
++
++/ {
++	/*
++	 * GPU core clock as left by S-Boot (no CMU_G3D driver yet):
++	 * PLL_CON0_PLL_G3D = 0xa0a00412 -> 26 MHz * 160 / (4 << 2) = 260 MHz,
++	 * MUX_CLK_G3D_BUSD = PLL_G3D, DIV_CLK_G3D_BUSD = 1, GPU user mux on.
++	 * 260 MHz is the stock boot/minimum G3D level, so the ACPM-managed
++	 * vdd_g3d (S2MPS18 BUCK6) is already at a voltage for it. The stock
++	 * DVFS levels are 572/546/455/338/299/260 MHz; their voltages come from
++	 * the ECT/ASV tables, so no OPP table until vdd_g3d can be controlled.
++	 */
++	gpu_clk: clock-gpu {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <260000000>;
++	};
++};
++
++&gpu {
++	clocks = <&gpu_clk>;
++	status = "okay";
++};
++
++&pd_g3d {
++	/* S-Boot leaves G3D on; don't power-cycle it until that is tested */
++	samsung,bringup-keep-on;
++	status = "okay";
++};
+-- 
+2.56.0
+

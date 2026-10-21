@@ -1,0 +1,225 @@
+From e80c0a0bc5fd5bf892c8e5324d43d79a2ea00cd6 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:31:39 +1100
+Subject: [PATCH 104/119] ASoC: mt6660: Add Richtek RT5510 support
+
+The RT5510 is the Richtek-branded MT6660: Samsung's rt5510.c (SM-T570
+kernel) uses the same register map, the same chip ID check (DEVID & 0xff0
+== 0x0e0/0x1e0), the same reset/power sequence and the same init table,
+except that the word length default is written to TDM_CFG3 (0x15) instead
+of 0x16, and that from chip revision 0xe2 on the PWM phase shift
+(RESV23, 0xbd) is set to 0 ns while the class-D stage is off and back to
+20 ns when it is on.
+
+Add a per-compatible variant with the init table and the phase shift
+quirk, and match richtek,rt5510.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/soc/codecs/Kconfig  |  6 ++-
+ sound/soc/codecs/mt6660.c | 83 +++++++++++++++++++++++++++++++++++----
+ sound/soc/codecs/mt6660.h |  9 +++++
+ 3 files changed, 89 insertions(+), 9 deletions(-)
+
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index 8e251e1d8..561078bd9 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -2862,12 +2862,14 @@ config SND_SOC_MT6359_ACCDET
+ 	  Select N if you don't have jack on board.
+ 
+ config SND_SOC_MT6660
+-	tristate "Mediatek MT6660 Speaker Amplifier"
++	tristate "Mediatek MT6660 / Richtek RT5510 Speaker Amplifier"
+ 	depends on I2C
+ 	help
+ 	  MediaTek MT6660 is a smart power amplifier which contain
+ 	  speaker protection, multi-band DRC, equalizer functions.
+-	  Select N if you don't have MT6660 on board.
++	  The Richtek RT5510 is the same chip and is handled by this
++	  driver as well.
++	  Select N if you don't have MT6660 or RT5510 on board.
+ 	  Select M to build this as module.
+ 
+ config SND_SOC_NAU8315
+diff --git a/sound/soc/codecs/mt6660.c b/sound/soc/codecs/mt6660.c
+index 21741afc8..a0b6cda76 100644
+--- a/sound/soc/codecs/mt6660.c
++++ b/sound/soc/codecs/mt6660.c
+@@ -6,6 +6,7 @@
+ #include <linux/kernel.h>
+ #include <linux/err.h>
+ #include <linux/i2c.h>
++#include <linux/of.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/delay.h>
+ #include <sound/soc.h>
+@@ -94,6 +95,9 @@ static int mt6660_codec_classd_event(struct snd_soc_dapm_widget *w,
+ {
+ 	struct snd_soc_component *component =
+ 		snd_soc_dapm_to_component(w->dapm);
++	struct mt6660_chip *chip = snd_soc_component_get_drvdata(component);
++	bool phase_shift = chip->variant->pwm_phase_shift &&
++			   chip->chip_rev >= 0xe2;
+ 	int ret;
+ 
+ 	switch (event) {
+@@ -137,10 +141,24 @@ static int mt6660_codec_classd_event(struct snd_soc_dapm_widget *w,
+ 				"pop-noise improvement 1 fail\n");
+ 			return ret;
+ 		}
++		/* RT5510 E2 and later: PWM phase shift 0 ns while off */
++		if (phase_shift) {
++			ret = snd_soc_component_update_bits(component,
++				MT6660_REG_RESV23, 0xffff, 0x07f8);
++			if (ret < 0)
++				return ret;
++		}
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMD:
+ 		dev_dbg(component->dev,
+ 			"%s: after classd turn off\n", __func__);
++		/* RT5510 E2 and later: back to 20 ns PWM phase shift */
++		if (phase_shift) {
++			ret = snd_soc_component_update_bits(component,
++				MT6660_REG_RESV23, 0xffff, 0x17f8);
++			if (ret < 0)
++				return ret;
++		}
+ 		/* pop-noise improvement 2 */
+ 		ret = snd_soc_component_update_bits(component,
+ 			MT6660_REG_RESV10, 0x10, 0x00);
+@@ -256,9 +274,57 @@ static const struct reg_table mt6660_setting_table[] = {
+ 	{ 0x68, 0x1f, 0x07 },
+ };
+ 
++/*
++ * Richtek RT5510 is the Richtek-branded MT6660: same register map, same
++ * chip ID. The only difference in the vendor init sequence
++ * (sound/soc/codecs/rt5510.c, e4_reg_inits[], in Samsung's SM-T570 kernel)
++ * is that the word length bits are set in TDM_CFG3 (0x15, two bytes)
++ * instead of 0x16.
++ */
++static const struct reg_table rt5510_setting_table[] = {
++	{ 0x20, 0x80, 0x00 },
++	{ 0x30, 0x01, 0x00 },
++	{ 0x50, 0x1c, 0x04 },
++	{ 0xB1, 0x0c, 0x00 },
++	{ 0xD3, 0x03, 0x03 },
++	{ 0xE0, 0x01, 0x00 },
++	{ 0x98, 0x44, 0x04 },
++	{ 0xB9, 0xff, 0x82 },
++	{ 0xB7, 0x7777, 0x7273 },
++	{ 0xB6, 0x07, 0x03 },
++	{ 0x6B, 0xe0, 0x20 },
++	{ 0x07, 0xff, 0x70 },
++	{ 0xBB, 0xff, 0x20 },
++	{ 0x69, 0xff, 0x40 },
++	{ 0xBD, 0xffff, 0x17f8 },
++	{ 0x70, 0xff, 0x15 },
++	{ 0x7C, 0xff, 0x00 },
++	{ 0x46, 0xff, 0x1d },
++	{ 0x1A, 0xffffffff, 0x7fdb7ffe },
++	{ 0x1B, 0xffffffff, 0x7fdb7ffe },
++	{ 0x51, 0xff, 0x58 },
++	{ 0xA2, 0xff, 0xce },
++	{ 0x33, 0xffff, 0x7fff },
++	{ 0x4C, 0xffff, 0x0116 },
++	{ MT6660_REG_TDM_CFG3, 0x1c00, 0x0800 },
++	{ 0x68, 0x1f, 0x07 },
++};
++
++static const struct mt6660_variant mt6660_variant = {
++	.settings = mt6660_setting_table,
++	.num_settings = ARRAY_SIZE(mt6660_setting_table),
++};
++
++static const struct mt6660_variant rt5510_variant = {
++	.settings = rt5510_setting_table,
++	.num_settings = ARRAY_SIZE(rt5510_setting_table),
++	.pwm_phase_shift = true,
++};
++
+ static int mt6660_component_setting(struct snd_soc_component *component)
+ {
+ 	struct mt6660_chip *chip = snd_soc_component_get_drvdata(component);
++	const struct reg_table *table = chip->variant->settings;
+ 	int ret = 0;
+ 	size_t i = 0;
+ 
+@@ -268,14 +334,12 @@ static int mt6660_component_setting(struct snd_soc_component *component)
+ 		return ret;
+ 	}
+ 
+-	for (i = 0; i < ARRAY_SIZE(mt6660_setting_table); i++) {
++	for (i = 0; i < chip->variant->num_settings; i++) {
+ 		ret = snd_soc_component_update_bits(component,
+-				mt6660_setting_table[i].addr,
+-				mt6660_setting_table[i].mask,
+-				mt6660_setting_table[i].val);
++				table[i].addr, table[i].mask, table[i].val);
+ 		if (ret < 0) {
+ 			dev_err(component->dev, "%s update 0x%02x failed\n",
+-				__func__, mt6660_setting_table[i].addr);
++				__func__, table[i].addr);
+ 			return ret;
+ 		}
+ 	}
+@@ -467,6 +531,9 @@ static int mt6660_i2c_probe(struct i2c_client *client)
+ 		return -ENOMEM;
+ 	chip->i2c = client;
+ 	chip->dev = &client->dev;
++	chip->variant = i2c_get_match_data(client);
++	if (!chip->variant)
++		chip->variant = &mt6660_variant;
+ 	mutex_init(&chip->io_lock);
+ 	i2c_set_clientdata(client, chip);
+ 
+@@ -551,13 +618,15 @@ static const struct dev_pm_ops mt6660_dev_pm_ops = {
+ };
+ 
+ static const struct of_device_id __maybe_unused mt6660_of_id[] = {
+-	{ .compatible = "mediatek,mt6660",},
++	{ .compatible = "mediatek,mt6660", .data = &mt6660_variant },
++	{ .compatible = "richtek,rt5510", .data = &rt5510_variant },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, mt6660_of_id);
+ 
+ static const struct i2c_device_id mt6660_i2c_id[] = {
+-	{ .name = "mt6660" },
++	{ .name = "mt6660", .driver_data = (kernel_ulong_t)&mt6660_variant },
++	{ .name = "rt5510", .driver_data = (kernel_ulong_t)&rt5510_variant },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(i2c, mt6660_i2c_id);
+diff --git a/sound/soc/codecs/mt6660.h b/sound/soc/codecs/mt6660.h
+index 054a3c56e..60ee2e8bf 100644
+--- a/sound/soc/codecs/mt6660.h
++++ b/sound/soc/codecs/mt6660.h
+@@ -9,6 +9,14 @@
+ #include <linux/mutex.h>
+ #include <linux/regmap.h>
+ 
++struct reg_table;
++
++struct mt6660_variant {
++	const struct reg_table *settings;
++	size_t num_settings;
++	bool pwm_phase_shift;
++};
++
+ #pragma pack(push, 1)
+ struct mt6660_platform_data {
+ 	u8 init_setting_num;
+@@ -24,6 +32,7 @@ struct mt6660_chip {
+ 	struct mt6660_platform_data plat_data;
+ 	struct mutex io_lock;
+ 	struct regmap *regmap;
++	const struct mt6660_variant *variant;
+ 	u16 chip_rev;
+ };
+ #pragma pack(pop)
+-- 
+2.56.0
+

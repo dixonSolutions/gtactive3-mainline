@@ -1,7 +1,7 @@
 From 4e626c6c5b34eee064dda7653c186c65562315f2 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:52:51 +1100
-Subject: [PATCH 19/64] regulator: s2mps11: Add read-only S2MPS18 support
+Subject: [PATCH 019/119] regulator: s2mps11: Add read-only S2MPS18 support
 
 Describe the S2MPS18 bucks and the LDOs the stock Exynos9810 kernel
 exposes, with ranges and registers from the downstream

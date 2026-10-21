@@ -1,0 +1,152 @@
+From 81ced8a47cc50b09f97e1cc59bf6179b66c16d01 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:32:07 +1100
+Subject: [PATCH 110/119] arm64: dts: exynos: gtactive3wifi: Add audio
+
+Enable the A-Box with UAIF0/UAIF1 pins, the RT5665 codec at 0x1b on
+HSI2C_7 (IRQ gpa2-2, differential IN1/IN3/IN4, stock dtbo-4.dts
+fragment@18) and the RT5510 amplifier at 0x34 on HSI2C_18 at 400 kHz
+(fragment@19), and the sound card with the stock routing.
+
+Jack detection stays off: the stock jd-src 2 (JD1+JD2) is a Samsung
+extension of the RT5665 driver. The codec supplies (S2MPS18 LDO33/LDO36)
+are left as the bootloader set them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 82 +++++++++++++++++++
+ 1 file changed, 82 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 2f166f2fc..f415f0a0e 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -132,6 +132,47 @@ recent-key {
+ 		};
+ 	};
+ 
++	/*
++	 * Stock routing (dtbo-4.dts sound node, samsung,routing): headset mic
++	 * on IN1 with MICBIAS1, main mic on IN3 with MICBIAS2, sub mic on IN4
++	 * with MICBIAS3, headphones on HPOL/HPOR, speaker on the RT5510.
++	 */
++	sound {
++		compatible = "samsung,gtactive3-audio";
++		model = "Galaxy Tab Active3";
++		audio-routing = "Headphones", "HPOL",
++				"Headphones", "HPOR",
++				"Speaker", "OUTP",
++				"Speaker", "OUTN",
++				"IN1P", "Headset Mic",
++				"IN1N", "Headset Mic",
++				"Headset Mic", "MICBIAS1",
++				"IN3P", "Main Mic",
++				"IN3N", "Main Mic",
++				"Main Mic", "MICBIAS2",
++				"IN4P", "Sub Mic",
++				"IN4N", "Sub Mic",
++				"Sub Mic", "MICBIAS3";
++
++		headset-dai-link {
++			cpu {
++				sound-dai = <&abox 0>;
++			};
++			codec {
++				sound-dai = <&rt5665 0>;
++			};
++		};
++
++		speaker-dai-link {
++			cpu {
++				sound-dai = <&abox 1>;
++			};
++			codec {
++				sound-dai = <&rt5510>;
++			};
++		};
++	};
++
+ 	memory@80000000 {
+ 		device_type = "memory";
+ 		reg = <0x0 0x80000000 0x3c800000>,
+@@ -171,6 +212,14 @@ &oscclk {
+ 	clock-frequency = <26000000>;
+ };
+ 
++&abox {
++	pinctrl-0 = <&aud_i2s0_bus &aud_i2s1_bus>;
++	pinctrl-names = "default";
++	/* no CMU_AUD clock driver yet: let the A-Box driver set PLL_AUD up */
++	samsung,cmu-bringup;
++	status = "okay";
++};
++
+ &pinctrl_alive {
+ 	key_power: key-power-pins {
+ 		samsung,pins = "gpa2-4";
+@@ -329,6 +378,9 @@ clk_usi_50m: clock-usi-50m {
+ 	aliases {
+ 		/* the debug console's i2cr/i2cw use /dev/i2c-0 */
+ 		i2c0 = &hsi2c_40;
++		/* same numbers as the stock kernel: rt5665 3-001b, rt5510 4-0034 */
++		i2c3 = &hsi2c_7;
++		i2c4 = &hsi2c_18;
+ 	};
+ };
+ 
+@@ -360,22 +412,52 @@ &hsi2c_3 {
+ &usi01_i2c {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
+ 	clock-names = "pclk", "ipclk";
++	status = "okay";
+ };
+ 
+ &hsi2c_7 {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
+ 	clock-names = "hsi2c", "hsi2c_pclk";
++	status = "okay";
++
++	/*
++	 * Stock dtbo-4: realtek,jd-src = <2> (JD1+JD2) is a Samsung
++	 * extension that mainline does not have, so no jack detection yet,
++	 * and no IRQ (gpa2-2): without a JD source the mainline jack work
++	 * would only spin.
++	 * Supplies: S2MPS18 LDO33 (1.8 V) and LDO36 (3.3 V), left on by the
++	 * bootloader until the PMIC driver can describe them.
++	 */
++	rt5665: audio-codec@1b {
++		compatible = "realtek,rt5665";
++		reg = <0x1b>;
++		#sound-dai-cells = <1>;
++		realtek,in1-differential;
++		realtek,in3-differential;
++		realtek,in4-differential;
++		realtek,jd-src = <0>;
++	};
+ };
+ 
+ /* RT5510 speaker amplifier @34 (hw_rev 4) */
+ &usi07_usi {
+ 	clocks = <&clk_usi_200m>, <&clk_usi_50m>;
+ 	clock-names = "pclk", "ipclk";
++	status = "okay";
+ };
+ 
+ &hsi2c_18 {
+ 	clocks = <&clk_usi_50m>, <&clk_usi_200m>;
+ 	clock-names = "hsi2c", "hsi2c_pclk";
++	clock-frequency = <400000>;
++	status = "okay";
++
++	/* hw_rev 4 only (dtbo-4); hw_rev 5+ has a TAS2562 here instead */
++	rt5510: amplifier@34 {
++		compatible = "richtek,rt5510";
++		reg = <0x34>;
++		#sound-dai-cells = <0>;
++	};
+ };
+ 
+ /* S.LSI NFC @27 */
+-- 
+2.56.0
+

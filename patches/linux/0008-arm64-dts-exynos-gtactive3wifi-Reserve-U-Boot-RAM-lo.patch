@@ -1,7 +1,7 @@
 From f34e7b04239b00d5bbaa8df842ba1b9605b494b3 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:26:57 +1100
-Subject: [PATCH 08/64] arm64: dts: exynos: gtactive3wifi: Reserve U-Boot RAM
+Subject: [PATCH 008/119] arm64: dts: exynos: gtactive3wifi: Reserve U-Boot RAM
  log
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

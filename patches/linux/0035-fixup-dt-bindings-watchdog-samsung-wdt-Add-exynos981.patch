@@ -1,7 +1,7 @@
 From ff5611f21778284fc368aa771a1a3994f775486e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:12:47 +1100
-Subject: [PATCH 35/64] fixup! dt-bindings: watchdog: samsung-wdt: Add
+Subject: [PATCH 035/119] fixup! dt-bindings: watchdog: samsung-wdt: Add
  exynos9810-wdt compatible
 
 Keep the compatible list sorted: exynos9810 sorts before exynos990.

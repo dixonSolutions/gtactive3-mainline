@@ -1,0 +1,431 @@
+From b060cbc886d9aab8398fcaf2f8feadde00fed356 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:43:25 +1100
+Subject: [PATCH 112/119] power: supply: Add MAX77705 USB-C/BC1.2 input power
+ detection
+
+The firmware in the MAX77705 USB-C block (I2C 0x25) does BC1.2 and
+Type-C current detection on its own, and publishes the result in
+BC_STATUS (VBUSDet, ChgTyp, PrChgTyp) and CC_STATUS0 (CCStat,
+CCIStat). Without a driver for it, the charger keeps whatever input
+current limit it had, 500 mA on the Galaxy Tab Active3, even on a
+charger that allows more.
+
+Add a small driver that only reads those registers and registers a USB
+power supply ("max77705-usb") with online, usb_type, current_max (what
+the source allows) and input_current_limit (that value after a cap).
+The limits follow the SM-T570 stock battery tables: SDP or unknown
+475 mA, CDP 1.5 A, DCP 1.8 A, and Type-C Rp 1.5 A or 3.0 A, where an
+Rp above the default wins over BC1.2.
+
+The USB-C interrupt (MAX77705 INTSRC bit 3) is used with only the
+VBUSDet, ChgTyp, DCD-timeout, CCStat and CCIStat events unmasked.
+Reading UIC_INT..VDM_INT acknowledges them. No firmware command is
+sent, and the data switch and PD state are left alone.
+
+The input_cap_ua parameter (1.5 A by default, 0 = none) caps the
+advertised input current while the battery temperature is not
+monitored.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/Kconfig             |  10 +
+ drivers/power/supply/Makefile            |   1 +
+ drivers/power/supply/max77705_usbc_psy.c | 352 +++++++++++++++++++++++
+ 3 files changed, 363 insertions(+)
+ create mode 100644 drivers/power/supply/max77705_usbc_psy.c
+
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index b89ef40df..8a32e5f48 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -642,6 +642,16 @@ config CHARGER_MAX77705
+ 	help
+ 	  Say Y to enable support for the Maxim MAX77705 battery charger.
+ 
++config CHARGER_MAX77705_USBC
++	tristate "Maxim MAX77705 USB-C/BC1.2 input power detection"
++	depends on MFD_MAX77705
++	select REGMAP_I2C
++	help
++	  Say Y to read the source type (BC1.2 SDP/CDP/DCP, Type-C Rp
++	  current) detected by the USB-C block of the Maxim MAX77705 and
++	  export the input current it allows as a USB power supply. The
++	  MAX77705 charger uses it to set its input current limit.
++
+ config CHARGER_MAX77759
+ 	tristate "Maxim MAX77759 battery charger driver"
+ 	depends on MFD_MAX77759 && REGULATOR
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+index f3c0d1006..40013c391 100644
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -87,6 +87,7 @@ obj-$(CONFIG_CHARGER_DETECTOR_MAX14656)	+= max14656_charger_detector.o
+ obj-$(CONFIG_CHARGER_MAX77650)	+= max77650-charger.o
+ obj-$(CONFIG_CHARGER_MAX77693)	+= max77693_charger.o
+ obj-$(CONFIG_CHARGER_MAX77705)	+= max77705_charger.o
++obj-$(CONFIG_CHARGER_MAX77705_USBC)	+= max77705_usbc_psy.o
+ obj-$(CONFIG_CHARGER_MAX77976)	+= max77976_charger.o
+ obj-$(CONFIG_CHARGER_MAX8971)	+= max8971_charger.o
+ obj-$(CONFIG_CHARGER_MAX8997)	+= max8997_charger.o
+diff --git a/drivers/power/supply/max77705_usbc_psy.c b/drivers/power/supply/max77705_usbc_psy.c
+new file mode 100644
+index 000000000..40214f1e1
+--- /dev/null
++++ b/drivers/power/supply/max77705_usbc_psy.c
+@@ -0,0 +1,352 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * MAX77705 USB-C / BC1.2 input power detection
++ *
++ * The MAX77705 USB-C block (I2C 0x25) runs its own firmware for Type-C,
++ * USB PD and BC1.2 detection and publishes the results in status registers.
++ * This driver only reads them: it reports what kind of source is attached
++ * and how much input current it allows, as a USB power supply that the
++ * MAX77705 charger uses as its supplier. It does not send firmware commands
++ * and leaves the data switch and PD alone.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/minmax.h>
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/power_supply.h>
++#include <linux/regmap.h>
++
++#define MAX77705_USBC_REG_HW_REV	0x00
++#define MAX77705_USBC_REG_FW_REV	0x01
++#define MAX77705_USBC_REG_UIC_INT	0x02	/* UIC/CC/PD/VDM_INT: clear on read */
++#define MAX77705_USBC_REG_VDM_INT	0x05
++#define MAX77705_USBC_REG_BC_STATUS	0x08
++#define MAX77705_USBC_REG_FW_MINOR	0x09
++#define MAX77705_USBC_REG_CC_STATUS0	0x0a
++#define MAX77705_USBC_REG_UIC_INT_M	0x0e
++#define MAX77705_USBC_REG_CC_INT_M	0x0f
++#define MAX77705_USBC_REG_PD_INT_M	0x10
++#define MAX77705_USBC_REG_VDM_INT_M	0x11
++
++/* UIC_INT */
++#define MAX77705_VBUSDETI		BIT(5)
++#define MAX77705_DCDTMOI		BIT(3)
++#define MAX77705_CHGTYPI		BIT(1)
++/* CC_INT */
++#define MAX77705_CCISTATI		BIT(2)
++#define MAX77705_CCSTATI		BIT(0)
++
++/* BC_STATUS */
++#define MAX77705_VBUSDET		BIT(7)
++#define MAX77705_PRCHGTYP		GENMASK(5, 3)
++#define MAX77705_DCDTMO			BIT(2)
++#define MAX77705_CHGTYP			GENMASK(1, 0)
++#define MAX77705_CHGTYP_NONE		0
++#define MAX77705_CHGTYP_SDP		1
++#define MAX77705_CHGTYP_CDP		2
++#define MAX77705_CHGTYP_DCP		3
++
++/* CC_STATUS0 */
++#define MAX77705_CCISTAT		GENMASK(5, 4)
++#define MAX77705_CCISTAT_NOT_UFP	0
++#define MAX77705_CCISTAT_500MA		1
++#define MAX77705_CCISTAT_1500MA		2
++#define MAX77705_CCISTAT_3000MA		3
++#define MAX77705_CCSTAT			GENMASK(2, 0)
++#define MAX77705_CCSTAT_SINK		1	/* we are the sink (UFP) */
++
++/*
++ * Input current per source, from the Samsung SM-T570 battery tables
++ * (sec-battery cable-info and rp_current_rp*): SDP and unknown sources
++ * 475 mA, CDP 1.5 A, DCP 1.8 A, Type-C Rp 1.5 A / 3.0 A.
++ */
++#define MAX77705_ILIM_SDP_UA		475000
++#define MAX77705_ILIM_CDP_UA		1500000
++#define MAX77705_ILIM_DCP_UA		1800000
++#define MAX77705_ILIM_RP1500_UA		1500000
++#define MAX77705_ILIM_RP3000_UA		3000000
++
++/*
++ * As long as the battery temperature is not monitored, do not let a
++ * high-power source drive the charger harder than this. 0 = no cap.
++ */
++static unsigned int input_cap_ua = 1500000;
++module_param(input_cap_ua, uint, 0444);
++MODULE_PARM_DESC(input_cap_ua, "Cap on the advertised input current, uA (0 = none)");
++
++struct max77705_usbc {
++	struct device *dev;
++	struct regmap *regmap;
++	struct power_supply *psy;
++};
++
++struct max77705_usbc_state {
++	bool vbus;
++	unsigned int chgtyp;
++	unsigned int prchgtyp;
++	unsigned int ccistat;
++	unsigned int ccstat;
++};
++
++static int max77705_usbc_read_state(struct max77705_usbc *usbc,
++				    struct max77705_usbc_state *st)
++{
++	unsigned int bc, cc;
++	int ret;
++
++	ret = regmap_read(usbc->regmap, MAX77705_USBC_REG_BC_STATUS, &bc);
++	if (ret)
++		return ret;
++	ret = regmap_read(usbc->regmap, MAX77705_USBC_REG_CC_STATUS0, &cc);
++	if (ret)
++		return ret;
++
++	st->vbus = bc & MAX77705_VBUSDET;
++	st->chgtyp = FIELD_GET(MAX77705_CHGTYP, bc);
++	st->prchgtyp = FIELD_GET(MAX77705_PRCHGTYP, bc);
++	st->ccistat = FIELD_GET(MAX77705_CCISTAT, cc);
++	st->ccstat = FIELD_GET(MAX77705_CCSTAT, cc);
++
++	return 0;
++}
++
++static bool max77705_usbc_rp_high(const struct max77705_usbc_state *st)
++{
++	return st->ccstat == MAX77705_CCSTAT_SINK &&
++	       (st->ccistat == MAX77705_CCISTAT_1500MA ||
++		st->ccistat == MAX77705_CCISTAT_3000MA);
++}
++
++static int max77705_usbc_usb_type(const struct max77705_usbc_state *st)
++{
++	if (!st->vbus)
++		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	if (max77705_usbc_rp_high(st))
++		return POWER_SUPPLY_USB_TYPE_C;
++
++	switch (st->chgtyp) {
++	case MAX77705_CHGTYP_SDP:
++		return POWER_SUPPLY_USB_TYPE_SDP;
++	case MAX77705_CHGTYP_CDP:
++		return POWER_SUPPLY_USB_TYPE_CDP;
++	case MAX77705_CHGTYP_DCP:
++		return POWER_SUPPLY_USB_TYPE_DCP;
++	default:
++		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	}
++}
++
++/* What the attached source allows, before the cap */
++static int max77705_usbc_source_limit(const struct max77705_usbc_state *st)
++{
++	if (!st->vbus)
++		return 0;
++
++	/* A Type-C Rp above default current wins over BC1.2 (as stock) */
++	if (max77705_usbc_rp_high(st))
++		return st->ccistat == MAX77705_CCISTAT_3000MA ?
++		       MAX77705_ILIM_RP3000_UA : MAX77705_ILIM_RP1500_UA;
++
++	switch (st->chgtyp) {
++	case MAX77705_CHGTYP_CDP:
++		return MAX77705_ILIM_CDP_UA;
++	case MAX77705_CHGTYP_DCP:
++		return MAX77705_ILIM_DCP_UA;
++	default:
++		/* SDP, detection still running or timed out */
++		return MAX77705_ILIM_SDP_UA;
++	}
++}
++
++static int max77705_usbc_input_limit(const struct max77705_usbc_state *st)
++{
++	int ua = max77705_usbc_source_limit(st);
++
++	if (input_cap_ua)
++		ua = min_t(int, ua, input_cap_ua);
++
++	return ua;
++}
++
++static const enum power_supply_property max77705_usbc_props[] = {
++	POWER_SUPPLY_PROP_ONLINE,
++	POWER_SUPPLY_PROP_USB_TYPE,
++	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
++	POWER_SUPPLY_PROP_CURRENT_MAX,
++};
++
++static int max77705_usbc_get_property(struct power_supply *psy,
++				      enum power_supply_property psp,
++				      union power_supply_propval *val)
++{
++	struct max77705_usbc *usbc = power_supply_get_drvdata(psy);
++	struct max77705_usbc_state st;
++	int ret;
++
++	ret = max77705_usbc_read_state(usbc, &st);
++	if (ret)
++		return ret;
++
++	switch (psp) {
++	case POWER_SUPPLY_PROP_ONLINE:
++		val->intval = st.vbus;
++		break;
++	case POWER_SUPPLY_PROP_USB_TYPE:
++		val->intval = max77705_usbc_usb_type(&st);
++		break;
++	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
++		val->intval = max77705_usbc_input_limit(&st);
++		break;
++	case POWER_SUPPLY_PROP_CURRENT_MAX:
++		val->intval = max77705_usbc_source_limit(&st);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static const struct power_supply_desc max77705_usbc_psy_desc = {
++	.name = "max77705-usb",
++	.type = POWER_SUPPLY_TYPE_USB,
++	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
++		     BIT(POWER_SUPPLY_USB_TYPE_SDP) |
++		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
++		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
++		     BIT(POWER_SUPPLY_USB_TYPE_C),
++	.properties = max77705_usbc_props,
++	.num_properties = ARRAY_SIZE(max77705_usbc_props),
++	.get_property = max77705_usbc_get_property,
++};
++
++static void max77705_usbc_log_state(struct max77705_usbc *usbc)
++{
++	struct max77705_usbc_state st;
++
++	if (max77705_usbc_read_state(usbc, &st))
++		return;
++
++	dev_dbg(usbc->dev,
++		"vbus %d chgtyp %u prchgtyp %u ccstat %u ccistat %u -> %d uA\n",
++		st.vbus, st.chgtyp, st.prchgtyp, st.ccstat, st.ccistat,
++		max77705_usbc_input_limit(&st));
++}
++
++static irqreturn_t max77705_usbc_irq(int irq, void *data)
++{
++	struct max77705_usbc *usbc = data;
++	u8 ints[MAX77705_USBC_REG_VDM_INT - MAX77705_USBC_REG_UIC_INT + 1];
++	int ret;
++
++	/* reading UIC_INT..VDM_INT acknowledges them */
++	ret = regmap_bulk_read(usbc->regmap, MAX77705_USBC_REG_UIC_INT,
++			       ints, sizeof(ints));
++	if (ret)
++		return IRQ_NONE;
++
++	if ((ints[0] & (MAX77705_VBUSDETI | MAX77705_DCDTMOI | MAX77705_CHGTYPI)) ||
++	    (ints[1] & (MAX77705_CCISTATI | MAX77705_CCSTATI))) {
++		max77705_usbc_log_state(usbc);
++		power_supply_changed(usbc->psy);
++	}
++
++	return IRQ_HANDLED;
++}
++
++static const struct regmap_config max77705_usbc_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++	.max_register = MAX77705_USBC_REG_VDM_INT_M,
++};
++
++static int max77705_usbc_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct power_supply_config psy_cfg = {};
++	struct max77705_usbc *usbc;
++	unsigned int hw, fw, fw_minor;
++	u8 ints[MAX77705_USBC_REG_VDM_INT - MAX77705_USBC_REG_UIC_INT + 1];
++	int ret;
++
++	usbc = devm_kzalloc(dev, sizeof(*usbc), GFP_KERNEL);
++	if (!usbc)
++		return -ENOMEM;
++	usbc->dev = dev;
++
++	usbc->regmap = devm_regmap_init_i2c(client, &max77705_usbc_regmap_config);
++	if (IS_ERR(usbc->regmap))
++		return dev_err_probe(dev, PTR_ERR(usbc->regmap), "regmap init failed\n");
++
++	ret = regmap_read(usbc->regmap, MAX77705_USBC_REG_HW_REV, &hw);
++	if (!ret)
++		ret = regmap_read(usbc->regmap, MAX77705_USBC_REG_FW_REV, &fw);
++	if (!ret)
++		ret = regmap_read(usbc->regmap, MAX77705_USBC_REG_FW_MINOR, &fw_minor);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot read the USB-C block\n");
++
++	dev_info(dev, "HW rev 0x%02x, firmware %02x.%02x\n", hw, fw, fw_minor);
++
++	psy_cfg.drv_data = usbc;
++	psy_cfg.fwnode = dev_fwnode(dev);
++	usbc->psy = devm_power_supply_register(dev, &max77705_usbc_psy_desc, &psy_cfg);
++	if (IS_ERR(usbc->psy))
++		return dev_err_probe(dev, PTR_ERR(usbc->psy), "cannot register power supply\n");
++
++	max77705_usbc_log_state(usbc);
++
++	if (client->irq <= 0) {
++		dev_warn(dev, "no interrupt, attach changes will not be reported\n");
++		return 0;
++	}
++
++	/*
++	 * Drop stale events, then unmask only the detection results this
++	 * driver consumes: VBUS, BC1.2 type and DCD timeout; CC state and
++	 * Rp current. PD and VDM events stay masked.
++	 */
++	regmap_bulk_read(usbc->regmap, MAX77705_USBC_REG_UIC_INT, ints, sizeof(ints));
++	ret = regmap_write(usbc->regmap, MAX77705_USBC_REG_UIC_INT_M,
++			   (u8)~(MAX77705_VBUSDETI | MAX77705_DCDTMOI | MAX77705_CHGTYPI));
++	if (!ret)
++		ret = regmap_write(usbc->regmap, MAX77705_USBC_REG_CC_INT_M,
++				   (u8)~(MAX77705_CCISTATI | MAX77705_CCSTATI));
++	if (!ret)
++		ret = regmap_write(usbc->regmap, MAX77705_USBC_REG_PD_INT_M, 0xff);
++	if (!ret)
++		ret = regmap_write(usbc->regmap, MAX77705_USBC_REG_VDM_INT_M, 0xff);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot set interrupt masks\n");
++
++	ret = devm_request_threaded_irq(dev, client->irq, NULL, max77705_usbc_irq,
++					IRQF_ONESHOT, "max77705-usbc", usbc);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot request interrupt\n");
++
++	/* the state may have changed while the interrupt was not requested */
++	power_supply_changed(usbc->psy);
++
++	return 0;
++}
++
++static const struct of_device_id max77705_usbc_of_match[] = {
++	{ .compatible = "maxim,max77705-usbc" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, max77705_usbc_of_match);
++
++static struct i2c_driver max77705_usbc_driver = {
++	.driver = {
++		.name = "max77705-usbc",
++		.of_match_table = max77705_usbc_of_match,
++	},
++	.probe = max77705_usbc_probe,
++};
++module_i2c_driver(max77705_usbc_driver);
++
++MODULE_DESCRIPTION("Maxim MAX77705 USB-C/BC1.2 input power detection");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

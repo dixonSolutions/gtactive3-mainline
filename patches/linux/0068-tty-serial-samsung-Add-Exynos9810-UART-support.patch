@@ -1,0 +1,134 @@
+From d8db5ae90cf9320b402e26977e7223b424f346d9 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:47:19 +1100
+Subject: [PATCH 068/119] tty: serial: samsung: Add Exynos9810 UART support
+
+The Exynos9810 dedicated UARTs (UART_DBG, UART_BT) embed a USI v2
+wrapper with USI_CON/USI_OPTION at 0xc4/0xc8 but have no SW_CONF mux,
+so no exynos-usi parent node takes them out of reset. The bootloader
+leaves UART_BT with USI_CON.RESET set (0x108400c4 reads 0x1 on the Tab
+Active3), which keeps the port dead. Release the reset and set
+CLKREQ_ON in the port reset path, as Samsung's driver does in
+exynos_usi_init().
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/tty/serial/samsung_tty.c | 53 ++++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+diff --git a/drivers/tty/serial/samsung_tty.c b/drivers/tty/serial/samsung_tty.c
+index 63d0232df..5b7bf40b6 100644
+--- a/drivers/tty/serial/samsung_tty.c
++++ b/drivers/tty/serial/samsung_tty.c
+@@ -70,6 +70,11 @@ enum s3c24xx_port_type {
+ 	TYPE_APPLE_S5L,
+ };
+ 
++/* USI v2 wrapper registers embedded in some Exynos UARTs */
++#define EXYNOS_UART_USI_CON			0xc4
++#define EXYNOS_UART_USI_OPTION			0xc8
++#define EXYNOS_UART_USI_OPTION_CLKREQ_ON	BIT(1)
++
+ struct s3c24xx_uart_info {
+ 	const char		*name;
+ 	enum s3c24xx_port_type	type;
+@@ -90,6 +95,7 @@ struct s3c24xx_uart_info {
+ 
+ 	/* uart port features */
+ 	bool			has_divslot;
++	bool			has_usi_con;
+ };
+ 
+ struct s3c24xx_serial_drv_data {
+@@ -1750,6 +1756,18 @@ static void s3c24xx_serial_resetport(struct uart_port *port,
+ 	const struct s3c24xx_uart_info *info = s3c24xx_port_to_info(port);
+ 	u32 ucon = rd_regl(port, S3C2410_UCON);
+ 
++	/*
++	 * UARTs with an embedded USI v2 wrapper but no SW_CONF mux (so no
++	 * exynos-usi parent) come out of reset with USI_CON.RESET set, which
++	 * holds the port in reset. Release it and request the clock.
++	 */
++	if (info->has_usi_con) {
++		wr_regl(port, EXYNOS_UART_USI_CON, 0);
++		udelay(1);
++		wr_regl(port, EXYNOS_UART_USI_OPTION,
++			EXYNOS_UART_USI_OPTION_CLKREQ_ON);
++	}
++
+ 	ucon &= (info->clksel_mask | info->ucon_mask);
+ 	wr_regl(port, S3C2410_UCON, ucon | cfg->ucon);
+ 
+@@ -2492,6 +2510,34 @@ static const struct s3c24xx_serial_drv_data exynos8895_serial_drv_data = {
+ 	.fifosize = { 0 },
+ };
+ 
++static const struct s3c24xx_serial_drv_data exynos9810_serial_drv_data = {
++	.info = {
++		.name		= "Samsung Exynos9810 UART",
++		.type		= TYPE_S3C6400,
++		.port_type	= PORT_S3C6400,
++		.iotype		= UPIO_MEM,
++		.has_divslot	= true,
++		.has_usi_con	= true,
++		.rx_fifomask	= S5PV210_UFSTAT_RXMASK,
++		.rx_fifoshift	= S5PV210_UFSTAT_RXSHIFT,
++		.rx_fifofull	= S5PV210_UFSTAT_RXFULL,
++		.tx_fifofull	= S5PV210_UFSTAT_TXFULL,
++		.tx_fifomask	= S5PV210_UFSTAT_TXMASK,
++		.tx_fifoshift	= S5PV210_UFSTAT_TXSHIFT,
++		.def_clk_sel	= S3C2410_UCON_CLKSEL0,
++		.num_clks	= 1,
++		.clksel_mask	= 0,
++		.clksel_shift	= 0,
++	},
++	.def_cfg = {
++		.ucon		= S5PV210_UCON_DEFAULT,
++		.ufcon		= S5PV210_UFCON_DEFAULT,
++		.has_fracval	= 1,
++	},
++	/* samsung,uart-fifosize must be specified in the device tree. */
++	.fifosize = { 0 },
++};
++
+ static const struct s3c24xx_serial_drv_data gs101_serial_drv_data = {
+ 	.info = {
+ 		.name		= "Google GS101 UART",
+@@ -2523,6 +2569,7 @@ static const struct s3c24xx_serial_drv_data gs101_serial_drv_data = {
+ #define EXYNOS5433_SERIAL_DRV_DATA (&exynos5433_serial_drv_data)
+ #define EXYNOS850_SERIAL_DRV_DATA (&exynos850_serial_drv_data)
+ #define EXYNOS8895_SERIAL_DRV_DATA (&exynos8895_serial_drv_data)
++#define EXYNOS9810_SERIAL_DRV_DATA (&exynos9810_serial_drv_data)
+ #define GS101_SERIAL_DRV_DATA (&gs101_serial_drv_data)
+ 
+ #else
+@@ -2530,6 +2577,7 @@ static const struct s3c24xx_serial_drv_data gs101_serial_drv_data = {
+ #define EXYNOS5433_SERIAL_DRV_DATA NULL
+ #define EXYNOS850_SERIAL_DRV_DATA NULL
+ #define EXYNOS8895_SERIAL_DRV_DATA NULL
++#define EXYNOS9810_SERIAL_DRV_DATA NULL
+ #define GS101_SERIAL_DRV_DATA NULL
+ #endif
+ 
+@@ -2622,6 +2670,9 @@ static const struct platform_device_id s3c24xx_serial_driver_ids[] = {
+ 	}, {
+ 		.name		= "exynos8895-uart",
+ 		.driver_data	= (kernel_ulong_t)EXYNOS8895_SERIAL_DRV_DATA,
++	}, {
++		.name		= "exynos9810-uart",
++		.driver_data	= (kernel_ulong_t)EXYNOS9810_SERIAL_DRV_DATA,
+ 	},
+ 	{ },
+ };
+@@ -2647,6 +2698,8 @@ static const struct of_device_id s3c24xx_uart_dt_match[] = {
+ 		.data = GS101_SERIAL_DRV_DATA },
+ 	{ .compatible = "samsung,exynos8895-uart",
+ 		.data = EXYNOS8895_SERIAL_DRV_DATA },
++	{ .compatible = "samsung,exynos9810-uart",
++		.data = EXYNOS9810_SERIAL_DRV_DATA },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, s3c24xx_uart_dt_match);
+-- 
+2.56.0
+

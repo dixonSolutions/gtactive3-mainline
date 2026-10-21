@@ -1,0 +1,82 @@
+From 381644052712133e7c3ba0c9e3766eebdf1ba5d3 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:32:06 +1100
+Subject: [PATCH 109/119] arm64: dts: exynos: exynos9810: Add A-Box node and
+ UAIF pins
+
+A-Box SFR, SYSREG_AUD and CMU_AUD ranges from the stock DT
+(abox@0x17C50000) and the downstream CMUCAL tables, and the UAIF0-3 pin
+groups from the stock DT pinctrl@17C60000 (aud-i2sN-bus: function 2,
+pull-down).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../boot/dts/exynos/exynos9810-pinctrl.dtsi   | 25 +++++++++++++++++++
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi    | 15 +++++++++++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi b/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
+index 8d680d36e..9637aafba 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
+@@ -126,6 +126,31 @@ gpb2: gpb2-gpio-bank {
+ 		interrupt-controller;
+ 		#interrupt-cells = <2>;
+ 	};
++
++	/* A-Box UAIF0-3 (stock DT pinctrl@17C60000 aud-i2sN-bus) */
++	aud_i2s0_bus: aud-i2s0-bus-pins {
++		samsung,pins = "gpb0-1", "gpb0-2", "gpb0-3", "gpb0-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	aud_i2s1_bus: aud-i2s1-bus-pins {
++		samsung,pins = "gpb1-0", "gpb1-1", "gpb1-2", "gpb1-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	aud_i2s2_bus: aud-i2s2-bus-pins {
++		samsung,pins = "gpb1-4", "gpb1-5", "gpb1-6", "gpb1-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	aud_i2s3_bus: aud-i2s3-bus-pins {
++		samsung,pins = "gpb2-0", "gpb2-1", "gpb2-2", "gpb2-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
+ };
+ 
+ &pinctrl_chub {
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index f5d2901da..90edb27f1 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -604,6 +604,21 @@ gpu: gpu@17500000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * A-Box audio subsystem: SFR, SYSREG_AUD and CMU_AUD
++		 * (stock DT abox@0x17C50000, cmucal-sfr.c SFR_BLOCK(AUD)).
++		 */
++		abox: audio-controller@17c50000 {
++			compatible = "samsung,exynos9810-abox";
++			reg = <0x17c50000 0x10000>,
++			      <0x17c10000 0x1000>,
++			      <0x17c00000 0x8000>;
++			reg-names = "sfr", "sysreg", "cmu";
++			#sound-dai-cells = <1>;
++			samsung,pmu-syscon = <&pmu_system_controller>;
++			status = "disabled";
++		};
++
+ 		pinctrl_aud: pinctrl@17c60000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x17c60000 0x1000>;
+-- 
+2.56.0
+

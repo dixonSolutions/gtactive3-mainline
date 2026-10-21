@@ -1,0 +1,148 @@
+From 3c3bb468228384b3e51c5b7450a4a991035635b5 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:34:37 +1100
+Subject: [PATCH 08/13] configs: gtactive3wifi: Service the watchdog only at
+ boot steps
+
+With WATCHDOG_AUTOSTART the watchdog is serviced from schedule(), which
+udelay(), sleep, fastboot and the prompt all call, so a step that loops
+forever (a UFS poll without a timeout, fastboot without a host) would
+keep U-Boot alive and leave the tablet stranded. Drop autostart: the
+watchdog runs from entry (uniLoader, EXYNOS9810_EARLY_SAFETY, ~82 s) and
+the boot script reloads it ("kick") before each step: start, EFI boot
+manager, systemd-boot.
+
+When the Duranium boot fails, U-Boot now offers fastboot for one watchdog
+period before the reset to the bring-up Linux. "fastboot oem run:run
+keepalive" starts background servicing to keep U-Boot; the boot menu's
+Fastboot and UEFI entries do the same, since someone is holding the tablet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ board/samsung/exynos-mobile/gtactive3wifi.env | 46 ++++++++++++++++---
+ configs/gtactive3wifi_defconfig               |  2 +-
+ 2 files changed, 40 insertions(+), 8 deletions(-)
+
+diff --git a/board/samsung/exynos-mobile/gtactive3wifi.env b/board/samsung/exynos-mobile/gtactive3wifi.env
+index 86959736..a49ba24e 100644
+--- a/board/samsung/exynos-mobile/gtactive3wifi.env
++++ b/board/samsung/exynos-mobile/gtactive3wifi.env
+@@ -3,7 +3,8 @@
+  *   S-Boot -> uniLoader -> U-Boot (EFI) -> systemd-boot -> Duranium UKI
+  * uniLoader arms the cluster 0 watchdog before starting U-Boot and boots its
+  * embedded bring-up Linux after a watchdog reset. Every failure below ends in
+- * "run fallback", which fires that watchdog now.
++ * "run fallback", which fires that watchdog now, and any hang in the
++ * watchdog reset (nothing services it unless asked to, see "kick").
+  *
+  * No UART is wired out: the console is the display, input the keys.
+  */
+@@ -15,9 +16,12 @@ stderr=vidconsole
+ bootdelay=-2
+ bootmenu_delay=15
+ 
+-/* Hold Volume Up after the S-Boot warning screen for the boot menu */
++/*
++ * Hold Volume Up after the S-Boot warning screen for the boot menu; it
++ * picks entry 0 after bootmenu_delay s, well inside the watchdog period.
++ */
+ button_cmd_0_name=Volume Up
+-button_cmd_0=bootmenu ${bootmenu_delay}
++button_cmd_0=run kick; bootmenu ${bootmenu_delay}
+ 
+ /* Duranium image written raw to userdata (sda31), with its own GPT */
+ ud_part=31
+@@ -28,15 +32,29 @@ kernel_addr_r=0x90000000
+ wdt_handover=keep
+ wdt_handover_ms=80000
+ 
++/*
++ * The cluster 0 watchdog runs from U-Boot's entry (uniLoader and
++ * EXYNOS9810_EARLY_SAFETY arm ~82 s) and is not serviced in the background
++ * (no WATCHDOG_AUTOSTART): "kick" gives each boot step a fresh ~82 s, so a
++ * step that loops forever, even one that calls schedule(), still ends in
++ * the reset to the bring-up Linux. "keepalive" starts the driver's
++ * background servicing for interactive use (fastboot, menu, prompt).
++ */
++wdt_dev=watchdog@10050000
++kick=wdt dev ${wdt_dev} && wdt reset
++keepalive=wdt dev ${wdt_dev} && wdt start 60000
++
+ /* DECON_F HW_SW_TRIG_CONTROL: keep the bootloader framebuffer on screen */
+ bootcmd=mw.l 0x16030070 0x1281;
++	run kick;
+ 	run duranium;
+-	echo "gtactive3wifi: boot failed, bring-up Linux in 5 s";
+-	sleep 5;
++	echo "gtactive3wifi: boot failed";
++	run fastboot_window;
+ 	run fallback
+ 
+ ufs_scan=ufs init && scsi scan
+ 
++/* UFS has 4 KiB blocks; the blkmap disk inherits them (4 KiB-sector GPT) */
+ userdata_map=run ufs_scan;
+ 	if blkmap get root dev ud_dev; then
+ 		echo "blkmap root is device ${ud_dev}";
+@@ -52,14 +70,26 @@ duranium=echo "gtactive3wifi: userdata as a disk";
+ 	run userdata_map &&
+ 	part list blkmap ${ud_dev} &&
+ 	echo "gtactive3wifi: EFI boot manager" &&
++	run kick &&
+ 	bootefi bootmgr;
+ 	echo "gtactive3wifi: systemd-boot from blkmap ${ud_dev}:${esp_part}";
++	run kick;
+ 	load blkmap ${ud_dev}:${esp_part} ${kernel_addr_r} EFI/BOOT/BOOTAA64.EFI &&
+ 	bootefi ${kernel_addr_r}
+ 
++/*
++ * Fastboot for one watchdog period (~82 s), then the bring-up Linux.
++ * From the host: "fastboot oem run:run keepalive" keeps U-Boot running,
++ * "fastboot oem run:run fallback" goes to the bring-up Linux at once.
++ */
++fastboot_window=echo "gtactive3wifi: fastboot for ~80 s, then the bring-up Linux";
++	run ufs_scan;
++	run kick;
++	fastboot usb 0
++
+ /* Back to uniLoader's bring-up Linux: watchdog reset now */
+ fallback=echo "gtactive3wifi: watchdog reset to the bring-up Linux";
+-	wdt dev watchdog@10050000 && wdt expire;
++	wdt dev ${wdt_dev} && wdt expire;
+ 	run fallback_raw
+ 
+ /* The same without the driver: WTCNT=1, unmask the PMU reset, enable */
+@@ -74,7 +104,9 @@ fallback_raw=mw.l 0x10050000 0;
+ 	sleep 1;
+ 	reset
+ 
++/* Someone is holding the tablet: service the watchdog, no deadline */
+ fastbootcmd=echo "Fastboot Mode";
++	run keepalive;
+ 	run ufs_scan;
+ 	fastboot usb 0
+ 
+@@ -90,6 +122,6 @@ reboot_recovery=mw.l 0x14060808 0x12345678;
+ bootmenu_0=Boot postmarketOS Duranium=run duranium; run fallback
+ bootmenu_1=Bring-up Linux (USB console)=run fallback
+ bootmenu_2=Fastboot=run fastbootcmd
+-bootmenu_3=UEFI Maintenance Menu=eficonfig
++bootmenu_3=UEFI Maintenance Menu=run keepalive; eficonfig
+ bootmenu_4=Download Mode=run reboot_download
+ bootmenu_5=Reboot=reset
+diff --git a/configs/gtactive3wifi_defconfig b/configs/gtactive3wifi_defconfig
+index 7a488095..c5371960 100644
+--- a/configs/gtactive3wifi_defconfig
++++ b/configs/gtactive3wifi_defconfig
+@@ -91,7 +91,7 @@ CONFIG_EXYNOS_MOBILE_RAMLOG=y
+ CONFIG_MULTI_DTB_FIT=y
+ CONFIG_BUTTON_CMD=y
+ CONFIG_WDT=y
+-CONFIG_WATCHDOG_AUTOSTART=y
++# CONFIG_WATCHDOG_AUTOSTART is not set
+ CONFIG_WDT_EXYNOS=y
+ CONFIG_CMD_WDT=y
+ CONFIG_CMD_SETEXPR=y
+-- 
+2.56.0
+

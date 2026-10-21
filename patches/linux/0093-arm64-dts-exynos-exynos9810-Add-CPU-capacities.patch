@@ -1,0 +1,106 @@
+From 29d37b01a1302d6b48155e09948e39237d5dfe9f Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:54:59 +1100
+Subject: [PATCH 093/119] arm64: dts: exynos: exynos9810: Add CPU capacities
+
+Describe the relative performance of the two clusters so that the
+scheduler does not treat the Mongoose M3 cores like the Cortex-A55 ones
+once they are brought up.
+
+The values come from the energy model in the stock T570XXSFEYI1 device
+tree: the highest big-core capacity is 1024 at 2886 MHz and the highest
+little-core capacity is 198 at 1950 MHz, which is 0.3548 and 0.1015 per
+MHz, or 1024 and 293 normalised.
+
+While at it, document that the reg values follow the CPU numbering of
+Samsung's EL3 firmware rather than the MPIDRs, as the A55 cores report
+MPIDRs with the MT bit set and the core number in Aff1.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index f5d2901da..ece5a36fe 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -71,11 +71,19 @@ core3 {
+ 			};
+ 		};
+ 
++		/*
++		 * The reg values are the CPU numbers that Samsung's EL3 firmware
++		 * expects in PSCI CPU_ON (cluster << 8 | core), not the MPIDRs:
++		 * the Cortex-A55 cores report MPIDR 0x81000000 | core << 8.
++		 * Using the real MPIDRs would make CPU_ON(0x100) start the first
++		 * Mongoose core instead of the second A55.
++		 */
+ 		cpu0: cpu@0 {
+ 			device_type = "cpu";
+ 			compatible = "arm,cortex-a55";
+ 			reg = <0x0>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <293>;
+ 		};
+ 
+ 		cpu1: cpu@1 {
+@@ -83,6 +91,7 @@ cpu1: cpu@1 {
+ 			compatible = "arm,cortex-a55";
+ 			reg = <0x1>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <293>;
+ 		};
+ 
+ 		cpu2: cpu@2 {
+@@ -90,6 +99,7 @@ cpu2: cpu@2 {
+ 			compatible = "arm,cortex-a55";
+ 			reg = <0x2>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <293>;
+ 		};
+ 
+ 		cpu3: cpu@3 {
+@@ -97,6 +107,7 @@ cpu3: cpu@3 {
+ 			compatible = "arm,cortex-a55";
+ 			reg = <0x3>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <293>;
+ 		};
+ 
+ 		cpu4: cpu@100 {
+@@ -104,6 +115,7 @@ cpu4: cpu@100 {
+ 			compatible = "samsung,mongoose-m3";
+ 			reg = <0x100>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1024>;
+ 		};
+ 
+ 		cpu5: cpu@101 {
+@@ -111,6 +123,7 @@ cpu5: cpu@101 {
+ 			compatible = "samsung,mongoose-m3";
+ 			reg = <0x101>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1024>;
+ 		};
+ 
+ 		cpu6: cpu@102 {
+@@ -118,6 +131,7 @@ cpu6: cpu@102 {
+ 			compatible = "samsung,mongoose-m3";
+ 			reg = <0x102>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1024>;
+ 		};
+ 
+ 		cpu7: cpu@103 {
+@@ -125,6 +139,7 @@ cpu7: cpu@103 {
+ 			compatible = "samsung,mongoose-m3";
+ 			reg = <0x103>;
+ 			enable-method = "psci";
++			capacity-dmips-mhz = <1024>;
+ 		};
+ 	};
+ 
+-- 
+2.56.0
+

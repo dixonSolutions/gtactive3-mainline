@@ -1,0 +1,125 @@
+From 132c333130c3c744ca41b04a2234724526df2b80 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:34:26 +1100
+Subject: [PATCH 8/9] contrib: Drop mkboot-chain.sh, it lives in the
+ gtactive3-mainline repo
+
+The project packs its images with its own scripts (scripts/mkboot.sh, now
+scripts/mkboot-chain.sh); keep the uniLoader tree free of them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/mkboot-chain.sh | 101 ----------------------------------------
+ 1 file changed, 101 deletions(-)
+ delete mode 100755 contrib/mkboot-chain.sh
+
+diff --git a/contrib/mkboot-chain.sh b/contrib/mkboot-chain.sh
+deleted file mode 100755
+index d79e926..0000000
+--- a/contrib/mkboot-chain.sh
++++ /dev/null
+@@ -1,101 +0,0 @@
+-#!/bin/bash
+-# Package the SM-T570 safe EFI boot chain into a BOOT image:
+-#   uniLoader (BOOT) -> U-Boot (EFI) -> systemd-boot -> Duranium UKI
+-#   with the bring-up Linux (Image + DTB + initramfs) embedded as fallback.
+-# Same packing as scripts/mkboot.sh: uniLoader -> Android boot image v2 ->
+-# SEANDROIDENFORCE -> AVB hash footer.
+-#
+-# uniLoader boots the fallback Linux when RST_STAT bit 24 (cluster 0
+-# watchdog reset) is set or Volume Down is held; otherwise it arms the
+-# watchdog (~82 s), sets the Download-mode reboot reason and starts U-Boot.
+-#
+-#   MODE=chain     (default) U-Boot unless the board asks for the fallback
+-#   MODE=linux     always the fallback Linux (only records the decision)
+-#   MODE=wdt-test  always the fallback Linux, with the watchdog armed: the
+-#                  device must reset after ~82 s and come back to Linux with
+-#                  the reset recorded
+-#
+-# Environment: P (project root), UL (uniLoader tree), UBOOT (u-boot.bin),
+-# OUT (output directory). Writes $OUT/boot-chain-$MODE.img; never touches
+-# build/images/boot-mainline.img (that is what devd.sh flashes).
+-set -euo pipefail
+-
+-find_root() {
+-	local d
+-	d=$(cd "$(dirname "$0")" && pwd)
+-	while [ "$d" != / ]; do
+-		[ -e "$d/HARDWARE.md" ] && [ -e "$d/scripts/mkboot.sh" ] && { echo "$d"; return; }
+-		d=$(dirname "$d")
+-	done
+-	echo "mkboot-chain: cannot find the project root, set P=" >&2
+-	exit 1
+-}
+-
+-P=${P:-$(find_root)}
+-B=$P/build/bringup
+-UL=${UL:-$P/build/wt/uniloader}
+-UBOOT=${UBOOT:-$P/build/wt/u-boot-out/u-boot.bin}
+-OUT=${OUT:-$P/build/images}
+-MODE=${MODE:-chain}
+-LOCK=$P/build/kbuild.lock
+-
+-case $MODE in
+-	chain) DEF=0 ;;
+-	linux) DEF=1 ;;
+-	wdt-test) DEF=2 ;;
+-	*) echo "mkboot-chain: MODE must be chain, linux or wdt-test" >&2; exit 1 ;;
+-esac
+-
+-for f in "$B/arch/arm64/boot/Image" \
+-	 "$B/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dtb" \
+-	 "$B/usr/gen_init_cpio" "$P/build/initramfs.list" "$UBOOT" \
+-	 "$P/firmware/stock/boot-unpacked/dtb" "$P/firmware/keys/avb_rsa4096.pem"; do
+-	[ -e "$f" ] || { echo "mkboot-chain: missing $f" >&2; exit 1; }
+-done
+-
+-# U-Boot must be an arm64 Image ("ARM\x64" at 0x38): uniLoader checks it too
+-if [ "$(dd if="$UBOOT" bs=1 skip=56 count=4 2>/dev/null)" != "$(printf 'ARM\x64')" ]; then
+-	echo "mkboot-chain: $UBOOT has no arm64 Image header" >&2
+-	exit 1
+-fi
+-
+-mkdir -p "$OUT"
+-IMG=$OUT/boot-chain-$MODE.img
+-
+-# Ramdisk for the fallback Linux (same contents as the built-in initramfs)
+-"$B/usr/gen_init_cpio" "$P/build/initramfs.list" | gzip -9 > "$OUT/ramdisk-chain.cpio.gz"
+-
+-cp "$B/arch/arm64/boot/Image" "$UL/blob/Image"
+-cp "$B/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dtb" "$UL/blob/dtb"
+-cp "$OUT/ramdisk-chain.cpio.gz" "$UL/blob/ramdisk"
+-cp "$UBOOT" "$UL/blob/u-boot.bin"
+-
+-MK="make -s -C $UL ARCH=aarch64 CROSS_COMPILE=aarch64-linux-gnu-"
+-flock "$LOCK" sh -c "
+-	$MK gtactive3wifi_chain_defconfig &&
+-	sed -i 's/^CONFIG_CHAINLOAD_DEFAULT=.*/CONFIG_CHAINLOAD_DEFAULT=$DEF/' $UL/.config &&
+-	nice -n 19 $MK -j6"
+-grep -q "^CONFIG_CHAINLOAD_DEFAULT=$DEF\$" "$UL/.config" || {
+-	echo "mkboot-chain: CONFIG_CHAINLOAD_DEFAULT did not stick" >&2; exit 1; }
+-
+-# Header values copied from the stock T570XXSFEYI1 recovery/boot image
+-mkbootimg --header_version 2 \
+-	--kernel "$UL/uniLoader" \
+-	--ramdisk "$OUT/ramdisk-chain.cpio.gz" \
+-	--dtb "$P/firmware/stock/boot-unpacked/dtb" \
+-	--base 0x10000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 \
+-	--tags_offset 0x00000100 --dtb_offset 0x00000000 --pagesize 2048 \
+-	--os_version 13.0.0 --os_patch_level 2025-10 --board SRPTF17A015 \
+-	--cmdline "" \
+-	-o "$IMG"
+-printf 'SEANDROIDENFORCE' >> "$IMG"
+-
+-# BOOT is hash-checked by the stock vbmeta; the unlocked bootloader warns and
+-# continues on a mismatch. Keep an AVB footer so the image looks like a boot image.
+-avbtool add_hash_footer --image "$IMG" \
+-	--partition_name boot --partition_size 61865984 \
+-	--algorithm SHA256_RSA4096 --key "$P/firmware/keys/avb_rsa4096.pem" \
+-	--rollback_index 0
+-
+-ls -l "$UL/uniLoader" "$IMG"
+-sha256sum "$IMG"
+-- 
+2.56.0
+

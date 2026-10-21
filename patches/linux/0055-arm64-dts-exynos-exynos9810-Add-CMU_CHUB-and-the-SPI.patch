@@ -1,0 +1,138 @@
+From 2b7efebe6879fb2a59fd846e4da69dc05fb43ed2 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:41:13 +1100
+Subject: [PATCH 055/119] arm64: dts: exynos: exynos9810: Add CMU_CHUB and the
+ SPI21 USI
+
+Add the CHUB clock controller, the CHUB system registers and the USI01
+block of the CHUB, which is used as SPI21, together with its pins.
+
+Addresses, interrupt and pins come from the stock Samsung device tree:
+SPI21 at 0x13ae0000 (GIC SPI 105, 64 byte FIFO), SW_CONF of USI_CHUB01
+at 0x13a13004 and the bus pins gph0-4..6 (function 2, pull-up). CMU_TOP
+is not described yet, so its CHUB bus output is a fixed clock at the
+rate the bootloader programs (PLL_SHARED2 800 MHz / 2 / 2 = 200 MHz).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../boot/dts/exynos/exynos9810-pinctrl.dtsi   | 14 +++++
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi    | 58 +++++++++++++++++++
+ 2 files changed, 72 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi b/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
+index 135ac2cb4..8d680d36e 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
+@@ -144,6 +144,20 @@ gph1: gph1-gpio-bank {
+ 		interrupt-controller;
+ 		#interrupt-cells = <2>;
+ 	};
++
++	spi21_bus: spi21-bus-pins {
++		samsung,pins = "gph0-4", "gph0-5", "gph0-6";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	spi21_cs: spi21-cs-pins {
++		samsung,pins = "gph0-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
+ };
+ 
+ &pinctrl_cmgp {
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 7a9230ae2..3657b018a 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -6,6 +6,7 @@
+  * Copyright (c) 2024 Maksym Holovach <nergzd@nergzd723.xyz>
+  */
+ 
++#include <dt-bindings/clock/samsung,exynos9810.h>
+ #include <dt-bindings/interrupt-controller/arm-gic.h>
+ #include <dt-bindings/soc/samsung,exynos-usi.h>
+ 
+@@ -141,6 +142,17 @@ oscclk: osc-clock {
+ 		clock-output-names = "oscclk";
+ 	};
+ 
++	/*
++	 * Stand-in for the CMU_TOP CHUB bus output until CMU_TOP is supported:
++	 * PLL_SHARED2 (800 MHz) / 2 / 2, as programmed by the bootloader.
++	 */
++	clk_cmu_chub_bus: clock-cmu-chub-bus {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <200000000>;
++		clock-output-names = "dout_cmu_chub_bus";
++	};
++
+ 	pmu-a55 {
+ 		compatible = "arm,cortex-a55-pmu";
+ 		interrupts = <GIC_SPI 144 IRQ_TYPE_LEVEL_HIGH>,
+@@ -430,12 +442,58 @@ pinctrl_vts: pinctrl@13880000 {
+ 			reg = <0x13880000 0x1000>;
+ 		};
+ 
++		cmu_chub: clock-controller@13a00000 {
++			compatible = "samsung,exynos9810-cmu-chub";
++			reg = <0x13a00000 0x8000>;
++			#clock-cells = <1>;
++
++			clocks = <&oscclk>, <&clk_cmu_chub_bus>;
++			clock-names = "oscclk", "bus";
++		};
++
++		sysreg_chub: syscon@13a10000 {
++			compatible = "samsung,exynos9810-chub-sysreg", "syscon";
++			reg = <0x13a10000 0x10000>;
++		};
++
+ 		pinctrl_chub: pinctrl@13a80000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x13a80000 0x1000>;
+ 			interrupts = <GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>;
+ 		};
+ 
++		usi_chub01: usi@13ae00c0 {
++			compatible = "samsung,exynos9810-usi",
++				     "samsung,exynos850-usi";
++			reg = <0x13ae00c0 0x20>;
++			samsung,sysreg = <&sysreg_chub 0x3004>;
++			samsung,mode = <USI_MODE_SPI>;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			ranges;
++			clocks = <&cmu_chub CLK_DOUT_CHUB_BUS>,
++				 <&cmu_chub CLK_GOUT_CHUB_USI_CHUB01_IPCLK>;
++			clock-names = "pclk", "ipclk";
++			status = "disabled";
++
++			spi_21: spi@13ae0000 {
++				compatible = "samsung,exynos9810-spi",
++					     "samsung,exynos850-spi";
++				reg = <0x13ae0000 0x30>;
++				interrupts = <GIC_SPI 105 IRQ_TYPE_LEVEL_HIGH>;
++				clocks = <&cmu_chub CLK_DOUT_CHUB_BUS>,
++					 <&cmu_chub CLK_GOUT_CHUB_USI_CHUB01_IPCLK>;
++				clock-names = "spi", "spi_busclk0";
++				pinctrl-0 = <&spi21_bus>;
++				pinctrl-names = "default";
++				num-cs = <1>;
++				samsung,spi-src-clk = <0>;
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
+ 		pinctrl_alive: pinctrl@14050000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x14050000 0x1000>;
+-- 
+2.56.0
+

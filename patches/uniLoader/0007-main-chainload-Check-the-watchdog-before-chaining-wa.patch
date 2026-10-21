@@ -1,0 +1,302 @@
+From 96a2f4151e8e34ac037c0bfdd2cb603d09f00cc0 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:34:26 +1100
+Subject: [PATCH 7/9] main: chainload: Check the watchdog before chaining, wait
+ for it in the test
+
+Nothing catches a hang of the chained bootloader if the board watchdog is
+not really armed. gtactive3wifi now reads back WTCON and both PMU gates and
+waits for WTCNT to tick after arming; otherwise it sets CHAIN_R_WDT_FAIL and
+the embedded Linux boots instead. chainload() also checks the reason again
+after the last arm, right before the jump.
+
+CHAINLOAD_DEFAULT=2 used to arm the watchdog and boot the embedded Linux,
+whose init then serviced the watchdog itself, so no reset ever came. Now a
+new board hook, wdt_test(), arms it and waits for the reset; it returns
+only if the counter reloads or stops without a reset, and the embedded
+Linux then boots with CHAIN_R_WDT_FAIL recorded. A run that finds the
+previous one still waiting (a reset without RST_STAT bit 24) does not test
+again, so that the test cannot loop; a reset with the bit marks the record
+CHAIN_STAGE_WDT_PASSED.
+
+When the fallback is picked at once (watchdog reset, key), the record of
+the failed boot is kept and only the new fb_count/fb_reason/fb_rst_stat
+fields are updated.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Kconfig                             |  9 ++---
+ board/samsung/board-gtactive3wifi.c | 56 +++++++++++++++++++++++++----
+ include/board.h                     |  4 +++
+ include/main/chainload.h            | 15 +++++---
+ main/chainload.c                    | 42 +++++++++++++++++++++-
+ 5 files changed, 111 insertions(+), 15 deletions(-)
+
+diff --git a/Kconfig b/Kconfig
+index e950db3..2ce2155 100644
+--- a/Kconfig
++++ b/Kconfig
+@@ -122,7 +122,7 @@ menu "Building options"
+ 		  not map. 0 disables it.
+ 
+ 	config CHAINLOAD_DEFAULT
+-		int "Default payload (0 chained, 1 Linux, 2 Linux + armed watchdog)"
++		int "Default payload (0 chained, 1 Linux, 2 watchdog test)"
+ 		depends on CHAINLOAD
+ 		range 0 2
+ 		default 0
+@@ -130,9 +130,10 @@ menu "Building options"
+ 		  0: boot the chained bootloader unless the board asks for the
+ 		     fallback.
+ 		  1: always boot the embedded Linux (records the decision only).
+-		  2: always boot the embedded Linux, but arm the board watchdog as
+-		     for the chained bootloader, to test that a watchdog reset
+-		     comes back to the fallback.
++		  2: watchdog test: arm the board watchdog as for the chained
++		     bootloader and wait for it to reset the SoC (board
++		     wdt_test hook); the next boot then picks the embedded Linux.
++		     If no reset comes, boot the embedded Linux at once.
+ 
+ endmenu
+ 
+diff --git a/board/samsung/board-gtactive3wifi.c b/board/samsung/board-gtactive3wifi.c
+index 465f21f..41ac1d5 100644
+--- a/board/samsung/board-gtactive3wifi.c
++++ b/board/samsung/board-gtactive3wifi.c
+@@ -62,10 +62,16 @@ static void reboot_reason_download(void)
+ /*
+  * S-Boot leaves this watchdog running with its reset masked. Reload it,
+  * then let it reset the SoC: S-Boot boots BOOT again and we see RST_STAT
+- * bit 24.
++ * bit 24. Then check that it really is armed: both PMU gates open and the
++ * counter moving (one tick is 256 * 128 / 26 MHz, ~1.3 ms). If not, ask
++ * for the fallback Linux: nothing would catch a hang of the chained
++ * bootloader.
+  */
+ static void wdt_arm(struct chain_info *ci)
+ {
++	uint32_t c0;
++	int i, moved = 0;
++
+ 	wr(WTCON, 0);
+ 	wr(WTDAT, 0xffff);
+ 	wr(WTCNT, 0xffff);
+@@ -74,6 +80,14 @@ static void wdt_arm(struct chain_info *ci)
+ 	wr(PMU_WDT_MASK_RESET, rd(PMU_WDT_MASK_RESET) & ~CL0_WDTRESET);
+ 	ci->wdt_ctrl = rd(WTCON);
+ 	ci->reason |= CHAIN_N_WDT_ARMED;
++
++	c0 = rd(WTCNT);
++	for (i = 0; i < 2000000 && !moved; i++)
++		moved = rd(WTCNT) != c0;
++	if (!moved || ci->wdt_ctrl != WTCON_ARMED ||
++	    (rd(PMU_WDT_DISABLE) & CL0_WDTRESET) ||
++	    (rd(PMU_WDT_MASK_RESET) & CL0_WDTRESET))
++		ci->reason |= CHAIN_R_WDT_FAIL;
+ }
+ 
+ /* Back to the state S-Boot leaves: running, reset masked and auto-disabled */
+@@ -115,11 +129,40 @@ static void gtactive3wifi_chain_arm(struct chain_info *ci)
+ static void gtactive3wifi_fallback_arm(struct chain_info *ci)
+ {
+ 	reboot_reason_download();
+-	/* CONFIG_CHAINLOAD_DEFAULT=2 tests the watchdog path, once */
+-	if (CONFIG_CHAINLOAD_DEFAULT == 2 && !(ci->reason & (CHAIN_R_WDT_RESET | CHAIN_R_KEY)))
+-		wdt_arm(ci);
+-	else
+-		wdt_disarm(ci);
++	wdt_disarm(ci);
++}
++
++/*
++ * CONFIG_CHAINLOAD_DEFAULT=2: arm as for the chained bootloader and wait
++ * for the reset. Returns only if the counter ran out (or stopped) without
++ * resetting the SoC, so that the test itself can never leave us hanging.
++ */
++static void gtactive3wifi_wdt_test(struct chain_info *ci)
++{
++	uint32_t c, last, low = 0xffff;
++	unsigned long same = 0;
++
++	gtactive3wifi_chain_arm(ci);
++	if (ci->reason & CHAIN_R_WDT_FAIL)
++		return;
++
++	last = rd(WTCNT);
++	for (;;) {
++		c = rd(WTCNT);
++		if (c < low)
++			low = c;
++		/* reloaded from WTDAT after reaching 0: no reset happened */
++		if (low < 0x100 && c > 0x8000)
++			return;
++		if (c == last) {
++			/* about 10 s of reads without a tick: stopped */
++			if (++same > 100000000UL)
++				return;
++		} else {
++			same = 0;
++			last = c;
++		}
++	}
+ }
+ #endif
+ 
+@@ -145,6 +188,7 @@ struct board_data board_ops = {
+ 		.chain_select = gtactive3wifi_chain_select,
+ 		.chain_arm = gtactive3wifi_chain_arm,
+ 		.fallback_arm = gtactive3wifi_fallback_arm,
++		.wdt_test = gtactive3wifi_wdt_test,
+ #endif
+ 	},
+ 	.devices = gtactive3wifi_devices,
+diff --git a/include/board.h b/include/board.h
+index 50a5d49..775e32b 100644
+--- a/include/board.h
++++ b/include/board.h
+@@ -23,10 +23,14 @@ struct board_ops {
+ 	 *               once as a guard before anything that could hang, and
+ 	 *               again right before jumping to the chained bootloader.
+ 	 * fallback_arm: last call before booting the fallback Linux.
++	 * wdt_test:     CHAINLOAD_DEFAULT=2: arm the recovery mechanism and
++	 *               wait for it to reset the SoC; returns only if it
++	 *               did not.
+ 	 */
+ 	int (*chain_select)(struct chain_info *ci);
+ 	void (*chain_arm)(struct chain_info *ci);
+ 	void (*fallback_arm)(struct chain_info *ci);
++	void (*wdt_test)(struct chain_info *ci);
+ };
+ 
+ struct board_data {
+diff --git a/include/main/chainload.h b/include/main/chainload.h
+index 3279c70..9091f68 100644
+--- a/include/main/chainload.h
++++ b/include/main/chainload.h
+@@ -20,12 +20,15 @@
+ #define CHAIN_STAGE_CHECKED	2	/* FDT and payload checked */
+ #define CHAIN_STAGE_FALLBACK	3	/* forced fallback Linux */
+ #define CHAIN_STAGE_JUMP	4	/* jumping to the chained bootloader */
++#define CHAIN_STAGE_WDT_TEST	5	/* CHAINLOAD_DEFAULT=2: waiting for the reset */
++#define CHAIN_STAGE_WDT_PASSED	6	/* ... and it came, with RST_STAT bit set */
+ 
+ /* chain_info.reason: bits below 8 select the fallback, the others are notes */
+ #define CHAIN_R_WDT_RESET	(1 << 0)	/* last reset was the watchdog */
+ #define CHAIN_R_KEY		(1 << 1)	/* fallback key held */
+ #define CHAIN_R_FORCED		(1 << 2)	/* CONFIG_CHAINLOAD_DEFAULT != 0 */
+ #define CHAIN_R_BAD_PAYLOAD	(1 << 3)	/* no arm64 Image header, or too big */
++#define CHAIN_R_WDT_FAIL	(1 << 4)	/* watchdog not armed / did not reset */
+ #define CHAIN_R_FALLBACK_MASK	0xff
+ #define CHAIN_N_PREV_FDT_BAD	(1 << 8)	/* x0 was not a usable FDT */
+ #define CHAIN_N_NO_BOOTLOADER	(1 << 9)	/* no androidboot.bootloader= */
+@@ -33,9 +36,10 @@
+ 
+ /*
+  * Boot decision record, written at CONFIG_CHAINLOAD_HANDOFF_ADDR. All
+- * fields are 32 bit so it reads back with a plain register dump. It is not
+- * touched when the board picks the fallback (watchdog reset, key), so after
+- * a watchdog reset it still describes the boot that failed.
++ * fields are 32 bit so it reads back with a plain register dump. When the
++ * board picks the fallback at once (watchdog reset, key) only the fb_*
++ * fields are updated, so after a watchdog reset the rest still describes
++ * the boot that failed.
+  */
+ struct chain_info {
+ 	uint32_t magic;
+@@ -58,7 +62,10 @@ struct chain_info {
+ 	uint32_t fdt_passed_hi;
+ 	uint32_t wdt_ctrl;	/* board: watchdog control after arming */
+ 	uint32_t stage;		/* CHAIN_STAGE_*: how far the last run got */
+-	uint32_t reserved[4];
++	uint32_t fb_count;	/* fallbacks picked at once (kept over runs) */
++	uint32_t fb_reason;	/* reason of the last of them */
++	uint32_t fb_rst_stat;	/* reset status then */
++	uint32_t reserved;
+ 	char bootloader[32];	/* androidboot.bootloader= value */
+ };
+ 
+diff --git a/main/chainload.c b/main/chainload.c
+index 565dc3f..5e2fe27 100644
+--- a/main/chainload.c
++++ b/main/chainload.c
+@@ -117,6 +117,7 @@ void chainload(void *dt, void *prev_fdt, void *load_addr)
+ 	unsigned long size = (unsigned long)&chain_size;
+ 	void *fdt_src = dt;
+ 	unsigned long fdt_len;
++	uint32_t prev_stage = 0;
+ 
+ 	memset(&ci, 0, sizeof(ci));
+ 
+@@ -126,6 +127,16 @@ void chainload(void *dt, void *prev_fdt, void *load_addr)
+ 	 * leave the record of the failed boot alone.
+ 	 */
+ 	if (board_ops.ops.chain_select && !board_ops.ops.chain_select(&ci)) {
++		/* Only note it in the record of the failed boot */
++		if (CONFIG_CHAINLOAD_HANDOFF_ADDR && rec->magic == CHAIN_INFO_MAGIC &&
++		    rec->version == CHAIN_INFO_VERSION) {
++			rec->fb_count++;
++			rec->fb_reason = ci.reason;
++			rec->fb_rst_stat = ci.rst_stat;
++			if (rec->stage == CHAIN_STAGE_WDT_TEST && (ci.reason & CHAIN_R_WDT_RESET))
++				rec->stage = CHAIN_STAGE_WDT_PASSED;
++			dcache_clean_range((unsigned long)rec, sizeof(*rec));
++		}
+ 		if (board_ops.ops.fallback_arm)
+ 			board_ops.ops.fallback_arm(&ci);
+ 		printk(KERN_INFO, "chainload: fallback Linux (reason 0x%x, reset 0x%x)\n",
+@@ -143,8 +154,11 @@ void chainload(void *dt, void *prev_fdt, void *load_addr)
+ 	ci.boot_count = 1;
+ 	/* DRAM keeps its contents over a warm reset: count the runs */
+ 	if (CONFIG_CHAINLOAD_HANDOFF_ADDR && rec->magic == CHAIN_INFO_MAGIC &&
+-	    rec->version == CHAIN_INFO_VERSION)
++	    rec->version == CHAIN_INFO_VERSION) {
+ 		ci.boot_count = rec->boot_count + 1;
++		ci.fb_count = rec->fb_count;
++		prev_stage = rec->stage;
++	}
+ 	ci.hw_rev = ~0U;
+ 	ci.prev_fdt_lo = (unsigned long)prev_fdt;
+ 	ci.prev_fdt_hi = (unsigned long)prev_fdt >> 32;
+@@ -174,6 +188,24 @@ void chainload(void *dt, void *prev_fdt, void *load_addr)
+ 		ci.reason |= CHAIN_R_BAD_PAYLOAD;
+ 	record_commit(&ci, CHAIN_STAGE_CHECKED);
+ 
++	/*
++	 * Watchdog test: the reset brings us back with RST_STAT set. If the
++	 * previous run was still waiting, the reset came without RST_STAT (or
++	 * was not ours): do not test again, or we would loop.
++	 */
++	if (CONFIG_CHAINLOAD_DEFAULT == 2 && prev_stage == CHAIN_STAGE_WDT_TEST) {
++		ci.reason |= CHAIN_R_WDT_FAIL;
++		printk(KERN_INFO, "chainload: reset during the watchdog test without RST_STAT bit\n");
++	}
++	if (CONFIG_CHAINLOAD_DEFAULT == 2 && board_ops.ops.wdt_test &&
++	    !(ci.reason & CHAIN_R_WDT_FAIL)) {
++		record_commit(&ci, CHAIN_STAGE_WDT_TEST);
++		printk(KERN_INFO, "chainload: watchdog test, waiting for the reset (~82 s)\n");
++		board_ops.ops.wdt_test(&ci);
++		ci.reason |= CHAIN_R_WDT_FAIL;
++		printk(KERN_INFO, "chainload: the watchdog did NOT reset the SoC\n");
++	}
++
+ 	if (ci.reason & CHAIN_R_FALLBACK_MASK) {
+ 		ci.decision = CHAIN_BOOT_FALLBACK;
+ 		if (board_ops.ops.fallback_arm)
+@@ -210,6 +242,14 @@ void chainload(void *dt, void *prev_fdt, void *load_addr)
+ 	/* 5. Full watchdog timeout for the chained bootloader */
+ 	if (board_ops.ops.chain_arm)
+ 		board_ops.ops.chain_arm(&ci);
++	if (ci.reason & CHAIN_R_FALLBACK_MASK) {
++		ci.decision = CHAIN_BOOT_FALLBACK;
++		if (board_ops.ops.fallback_arm)
++			board_ops.ops.fallback_arm(&ci);
++		record_commit(&ci, CHAIN_STAGE_FALLBACK);
++		printk(KERN_INFO, "chainload: fallback Linux (reason 0x%x)\n", ci.reason);
++		return;
++	}
+ 	record_commit(&ci, CHAIN_STAGE_JUMP);
+ 
+ 	load_kernel_and_jump((void *)fdt_dst, 0, 0, 0, (void *)entry);
+-- 
+2.56.0
+

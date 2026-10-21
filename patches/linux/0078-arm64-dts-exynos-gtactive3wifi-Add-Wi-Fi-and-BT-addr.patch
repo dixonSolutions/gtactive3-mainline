@@ -1,0 +1,64 @@
+From 9d37efe615b52e9dca6709d45500526184e4d527 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:22:36 +1100
+Subject: [PATCH 078/119] arm64: dts: exynos: gtactive3wifi: Add Wi-Fi and BT
+ address placeholders
+
+Add zeroed local-mac-address and local-bd-address properties and
+wifi0/bluetooth0 aliases, so the per-unit addresses stored on EFS can be
+filled in at install time. While they stay zero the drivers keep the
+nvram/controller address.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts     | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 588545911..2748a3c7c 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -328,6 +328,8 @@ clk_usi_50m: clock-usi-50m {
+ 	aliases {
+ 		/* the debug console's i2cr/i2cw use /dev/i2c-0 */
+ 		i2c0 = &hsi2c_40;
++		bluetooth0 = &bluetooth;
++		wifi0 = &wifi;
+ 	};
+ };
+ 
+@@ -977,9 +979,15 @@ pcie@0,0 {
+ 			#size-cells = <2>;
+ 			ranges;
+ 
+-			wifi@0,0 {
++			wifi: wifi@0,0 {
+ 				compatible = "pci14e4,4475";
+ 				reg = <0x10000 0x0 0x0 0x0 0x0>;
++				/*
++				 * Per-unit address (EFS wifi/.mac.info), filled
++				 * in at install time. While it stays zero the
++				 * firmware uses the nvram macaddr.
++				 */
++				local-mac-address = [00 00 00 00 00 00];
+ 			};
+ 		};
+ 	};
+@@ -994,8 +1002,13 @@ serial_1: serial@10840000 {
+ 		pinctrl-0 = <&uart1_bus &uart1_rxd>;
+ 		pinctrl-names = "default";
+ 
+-		bluetooth {
++		bluetooth: bluetooth {
+ 			compatible = "brcm,bcm4375-bt";
++			/*
++			 * Per-unit address (EFS bluetooth/bt_addr), filled in
++			 * at install time; zero keeps the controller's own.
++			 */
++			local-bd-address = [00 00 00 00 00 00];
+ 			shutdown-gpios = <&gpm43 0 GPIO_ACTIVE_HIGH>;
+ 			device-wakeup-gpios = <&gpg2 0 GPIO_ACTIVE_HIGH>;
+ 			host-wakeup-gpios = <&gpa2 3 GPIO_ACTIVE_HIGH>;
+-- 
+2.56.0
+

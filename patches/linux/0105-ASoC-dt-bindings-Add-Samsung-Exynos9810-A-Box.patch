@@ -1,0 +1,109 @@
+From 95fb5ee1c171ffe6897dc1f2bee8059dd1db6038 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:31:39 +1100
+Subject: [PATCH 105/119] ASoC: dt-bindings: Add Samsung Exynos9810 A-Box
+
+Describe the Exynos9810 A-Box audio subsystem when Linux drives its UAIF
+ports and DMA engines directly. Register ranges from the stock DT
+(abox@0x17C50000: sfr 0x17c50000, sysreg 0x17c10000) and CMU_AUD
+(0x17c00000, downstream cmucal-sfr.c SFR_BLOCK(AUD)).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../sound/samsung,exynos9810-abox.yaml        | 84 +++++++++++++++++++
+ 1 file changed, 84 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/sound/samsung,exynos9810-abox.yaml
+
+diff --git a/Documentation/devicetree/bindings/sound/samsung,exynos9810-abox.yaml b/Documentation/devicetree/bindings/sound/samsung,exynos9810-abox.yaml
+new file mode 100644
+index 000000000..36ef4a4c7
+--- /dev/null
++++ b/Documentation/devicetree/bindings/sound/samsung,exynos9810-abox.yaml
+@@ -0,0 +1,84 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/sound/samsung,exynos9810-abox.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Samsung Exynos9810 A-Box audio subsystem
++
++maintainers:
++  - dixonSolutions <dixonsolutions@users.noreply.github.com>
++
++description:
++  The A-Box is the Exynos9810 audio subsystem. It has a Cortex-A7 DSP, read
++  and write DMA engines, sample rate converters, a mixer and four UAIF
++  I2S/TDM ports. This binding describes it when Linux drives the UAIF ports
++  and the DMA engines directly, without the DSP firmware. Each UAIF port is
++  a DAI, selected by the single cell of the DAI specifier.
++
++allOf:
++  - $ref: dai-common.yaml#
++
++properties:
++  compatible:
++    const: samsung,exynos9810-abox
++
++  reg:
++    minItems: 1
++    items:
++      - description: A-Box SFR
++      - description: SYSREG_AUD
++      - description: CMU_AUD, only used with samsung,cmu-bringup
++
++  reg-names:
++    minItems: 1
++    items:
++      - const: sfr
++      - const: sysreg
++      - const: cmu
++
++  clocks:
++    maxItems: 8
++
++  clock-names:
++    maxItems: 8
++
++  power-domains:
++    maxItems: 1
++
++  '#sound-dai-cells':
++    const: 1
++
++  samsung,pmu-syscon:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: PMU system controller, used to release the A-Box pad retention.
++
++  samsung,cmu-bringup:
++    type: boolean
++    description:
++      There is no CMU_AUD clock provider. The driver programs PLL_AUD and the
++      UAIF bit clock dividers itself through the "cmu" register range.
++
++  samsung,dtzpc-smc:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description:
++      Address passed to the EL3 monitor to restore the AUD block's TrustZone
++      protection after power-up (the downstream "need_smc" value).
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - '#sound-dai-cells'
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    audio-controller@17c50000 {
++        compatible = "samsung,exynos9810-abox";
++        reg = <0x17c50000 0x10000>, <0x17c10000 0x1000>, <0x17c00000 0x8000>;
++        reg-names = "sfr", "sysreg", "cmu";
++        #sound-dai-cells = <1>;
++        samsung,cmu-bringup;
++    };
+-- 
+2.56.0
+

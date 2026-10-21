@@ -1,0 +1,111 @@
+From 185434938bc59798a988037761666ae5915aae55 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:32:06 +1100
+Subject: [PATCH 107/119] ASoC: dt-bindings: Add Samsung Galaxy Tab Active3
+ audio
+
+The sound card of the Galaxy Tab Active3: RT5665 on A-Box UAIF0 and
+RT5510 on UAIF1 (stock dtbo-4.dts sound node, uaif@0 and uaif@1).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../sound/samsung,gtactive3-audio.yaml        | 87 +++++++++++++++++++
+ 1 file changed, 87 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/sound/samsung,gtactive3-audio.yaml
+
+diff --git a/Documentation/devicetree/bindings/sound/samsung,gtactive3-audio.yaml b/Documentation/devicetree/bindings/sound/samsung,gtactive3-audio.yaml
+new file mode 100644
+index 000000000..05dd4ee31
+--- /dev/null
++++ b/Documentation/devicetree/bindings/sound/samsung,gtactive3-audio.yaml
+@@ -0,0 +1,87 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/sound/samsung,gtactive3-audio.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Samsung Galaxy Tab Active3 audio complex
++
++maintainers:
++  - dixonSolutions <dixonsolutions@users.noreply.github.com>
++
++description:
++  RT5665 headset codec on A-Box UAIF0 and RT5510 speaker amplifier on
++  A-Box UAIF1 of the Exynos9810.
++
++properties:
++  compatible:
++    const: samsung,gtactive3-audio
++
++  model:
++    $ref: /schemas/types.yaml#/definitions/string
++    description: User specified audio sound card name
++
++  audio-routing:
++    $ref: /schemas/types.yaml#/definitions/non-unique-string-array
++    description:
++      List of sink/source pairs. Board widgets are "Headphones", "Speaker",
++      "Headset Mic", "Main Mic" and "Sub Mic".
++
++patternProperties:
++  "^(headset|speaker)-dai-link$":
++    type: object
++    additionalProperties: false
++    properties:
++      cpu:
++        type: object
++        additionalProperties: false
++        properties:
++          sound-dai:
++            maxItems: 1
++        required:
++          - sound-dai
++      codec:
++        type: object
++        additionalProperties: false
++        properties:
++          sound-dai:
++            maxItems: 1
++        required:
++          - sound-dai
++    required:
++      - cpu
++      - codec
++
++required:
++  - compatible
++  - headset-dai-link
++  - speaker-dai-link
++
++additionalProperties: false
++
++examples:
++  - |
++    sound {
++        compatible = "samsung,gtactive3-audio";
++        model = "Galaxy Tab Active3";
++        audio-routing = "Headphones", "HPOL", "Headphones", "HPOR",
++                        "Speaker", "OUTP", "Speaker", "OUTN";
++
++        headset-dai-link {
++            cpu {
++                sound-dai = <&abox 0>;
++            };
++            codec {
++                sound-dai = <&rt5665 0>;
++            };
++        };
++
++        speaker-dai-link {
++            cpu {
++                sound-dai = <&abox 1>;
++            };
++            codec {
++                sound-dai = <&rt5510>;
++            };
++        };
++    };
+-- 
+2.56.0
+

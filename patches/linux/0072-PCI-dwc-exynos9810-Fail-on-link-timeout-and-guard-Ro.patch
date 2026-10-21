@@ -1,0 +1,141 @@
+From 2afa3fd929d3ff209c652e7cb497c0e32d66d289 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 17:34:52 +1100
+Subject: [PATCH 072/119] PCI: dwc: exynos9810: Fail on link timeout and guard
+ Root Port config
+
+Three fixes for paths where the link is down:
+
+- start_link() returned 0 after the last link-up retry and relied on
+  dw_pcie_wait_for_link() to fail the probe. That only returns -ETIMEDOUT
+  for some LTSSM states: in Detect.Quiet/Active (no endpoint answering,
+  the likely first-bring-up failure) it returns -ENODEV, and in
+  Polling it returns -EIO. dw_pcie_host_init() then registers the bus
+  anyway, with the link down. Return -ETIMEDOUT so that the probe fails
+  and the controller is powered off and isolated again.
+
+- The default DWC root bus ops (dw_pcie_own_conf_map_bus() with
+  pci_generic_config_read/write) touch DBI directly and bypass the
+  read_dbi/write_dbi hooks, so Root Port config accesses from the PCI
+  core skipped the RX elecidle/NCLK guard that the vendor driver applies
+  to every own-config access (pci-exynos.c:1462-1584). With the link
+  down that access can stall the bus. Install root bus ops that go
+  through the hooks.
+
+- The interrupt handler claimed the IRQ whenever any raw pulse, level or
+  special status bit was set. Level and special sources are never
+  enabled, so a stuck raw bit made every interrupt look handled and
+  defeated the spurious-IRQ detector. Only claim enabled pulse events.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pci/controller/dwc/pcie-exynos9810.c | 63 ++++++++++++++++++--
+ 1 file changed, 59 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/pci/controller/dwc/pcie-exynos9810.c b/drivers/pci/controller/dwc/pcie-exynos9810.c
+index c41ae370c..f01469a67 100644
+--- a/drivers/pci/controller/dwc/pcie-exynos9810.c
++++ b/drivers/pci/controller/dwc/pcie-exynos9810.c
+@@ -224,6 +224,48 @@ static void exynos9810_pcie_write_dbi(struct dw_pcie *pci, void __iomem *base,
+ 	spin_unlock_irqrestore(&ep->dbi_lock, flags);
+ }
+ 
++/*
++ * The default DWC root bus ops (dw_pcie_own_conf_map_bus() plus
++ * pci_generic_config_read/write) access DBI directly, bypassing the
++ * read_dbi/write_dbi hooks and with them the RX elecidle guard. Route them
++ * through the hooks so that config accesses to the Root Port stay safe
++ * while the link is down (before link-up, or after a link-down event).
++ */
++static int exynos9810_pcie_rd_own_conf(struct pci_bus *bus, unsigned int devfn,
++				       int where, int size, u32 *val)
++{
++	struct dw_pcie_rp *pp = bus->sysdata;
++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
++
++	if (PCI_SLOT(devfn) > 0) {
++		PCI_SET_ERROR_RESPONSE(val);
++		return PCIBIOS_DEVICE_NOT_FOUND;
++	}
++
++	*val = dw_pcie_read_dbi(pci, where, size);
++
++	return PCIBIOS_SUCCESSFUL;
++}
++
++static int exynos9810_pcie_wr_own_conf(struct pci_bus *bus, unsigned int devfn,
++				       int where, int size, u32 val)
++{
++	struct dw_pcie_rp *pp = bus->sysdata;
++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
++
++	if (PCI_SLOT(devfn) > 0)
++		return PCIBIOS_DEVICE_NOT_FOUND;
++
++	dw_pcie_write_dbi(pci, where, size, val);
++
++	return PCIBIOS_SUCCESSFUL;
++}
++
++static struct pci_ops exynos9810_pcie_root_ops = {
++	.read = exynos9810_pcie_rd_own_conf,
++	.write = exynos9810_pcie_wr_own_conf,
++};
++
+ static void exynos9810_pcie_set_linked(struct exynos9810_pcie *ep, bool linked)
+ {
+ 	unsigned long flags;
+@@ -365,8 +407,9 @@ static void exynos9810_pcie_bringup(struct exynos9810_pcie *ep)
+ static irqreturn_t exynos9810_pcie_irq(int irq, void *arg)
+ {
+ 	struct exynos9810_pcie *ep = arg;
+-	u32 pulse, level, special;
++	u32 pulse, level, special, en;
+ 
++	en = elbi_readl(ep, ELBI_IRQ_EN_PULSE);
+ 	pulse = elbi_readl(ep, ELBI_IRQ_PULSE);
+ 	elbi_writel(ep, pulse, ELBI_IRQ_PULSE);
+ 	level = elbi_readl(ep, ELBI_IRQ_LEVEL);
+@@ -382,9 +425,12 @@ static irqreturn_t exynos9810_pcie_irq(int irq, void *arg)
+ 
+ 	/*
+ 	 * INTx is wired straight to this GIC line too (stock interrupt-map),
+-	 * so the endpoint driver shares it; only claim our own events.
++	 * so the endpoint driver shares it. Level and special sources are
++	 * all disabled; only claim enabled pulse events so that a stuck,
++	 * unexpected source ends up in the spurious-IRQ detector instead of
++	 * an endless storm.
+ 	 */
+-	return (pulse | level | special) ? IRQ_HANDLED : IRQ_NONE;
++	return (pulse & en) ? IRQ_HANDLED : IRQ_NONE;
+ }
+ 
+ static void exynos9810_pcie_power_off(struct exynos9810_pcie *ep)
+@@ -413,6 +459,9 @@ static int exynos9810_pcie_host_init(struct dw_pcie_rp *pp)
+ 	/* No MSI: INTx only, like the vendor configuration (use-msi = "false") */
+ 	pp->use_imsi_rx = false;
+ 
++	/* Root bus config accesses must go through the guarded DBI hooks */
++	pp->bridge->ops = &exynos9810_pcie_root_ops;
++
+ 	if (ep->vpcie) {
+ 		ret = regulator_enable(ep->vpcie);
+ 		if (ret) {
+@@ -523,7 +572,13 @@ static int exynos9810_pcie_start_link(struct dw_pcie *pci)
+ 			exynos9810_pcie_print_history(ep);
+ 			/* leave DBI accessible for the core's error path */
+ 			pcs_rmw(ep, PCS_RX_ELECIDLE, 0, RX_ELECIDLE_IGNORE);
+-			return 0;	/* dw_pcie_wait_for_link() reports it */
++			/*
++			 * Fail the probe here. Returning 0 would let
++			 * dw_pcie_wait_for_link() return -ENODEV/-EIO for a
++			 * link stuck in Detect/Polling, and the core would
++			 * then register the bus with the link down.
++			 */
++			return -ETIMEDOUT;
+ 		}
+ 
+ 		gpiod_set_value_cansleep(ep->perst, 1);
+-- 
+2.56.0
+
