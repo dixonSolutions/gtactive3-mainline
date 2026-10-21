@@ -562,7 +562,7 @@ static void serve(int c)
 	unsigned int v;
 
 	wr(c, "SM-T570 mainline bring-up console. Commands: dmesg, peek ADDR, dump ADDR N, "
-	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, ulog, reboot [download|recovery|normal]\n> ");
+	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, evread PATH [N] [SECS], ulog, reboot [download|recovery|normal]\n> ");
 	for (;;) {
 		r = read(c, line + n, 1);
 		if (r <= 0) return;
@@ -688,6 +688,44 @@ static void serve(int c)
 			snprintf(fbuf, sizeof(fbuf), "%s\n", rr == 0 ? "ok" : rr == -17 ? "already loaded" : "FAILED");
 			wr(c, fbuf);
 			if (rr && rr != -17) { snprintf(fbuf, sizeof(fbuf), "errno %d\n", -rr); wr(c, fbuf); }
+		} else if (!strncmp(line, "evread ", 7)) {
+			/*
+			 * evread PATH [N] [SECS]: print up to N (default 64) input
+			 * events from an evdev node, giving up after SECS (default 5)
+			 * seconds without an event, so the console never blocks.
+			 */
+			char *sp = strchr(line + 7, ' ');
+			struct input_event ie;
+			struct pollfd pfd;
+			long n = 64, secs = 5, k;
+			const char *e;
+
+			if (sp) {
+				*sp++ = 0;
+				n = parse_num(sp, &e);
+				while (*e == ' ') e++;
+				if (*e) secs = parse_num(e, 0);
+			}
+			pfd.fd = open(line + 7, O_RDONLY | O_NONBLOCK);
+			pfd.events = POLLIN;
+			if (pfd.fd < 0) { wr(c, "error\n"); goto prompt; }
+			if (ioctl(pfd.fd, EVIOCGNAME(sizeof(fbuf)), fbuf) > 0) {
+				fbuf[sizeof(fbuf) - 1] = 0;
+				wr(c, "name: "); wr(c, fbuf); wr(c, "\n");
+			}
+			for (k = 0; k < n; ) {
+				if (poll(&pfd, 1, secs * 1000) <= 0) { wr(c, "timeout\n"); break; }
+				while (k < n && read(pfd.fd, &ie, sizeof(ie)) == sizeof(ie)) {
+					char eb[64];
+
+					snprintf(eb, sizeof(eb), "%ld.%06ld %x %x %d\n",
+						 (long)ie.input_event_sec, (long)ie.input_event_usec,
+						 ie.type, ie.code, ie.value);
+					wr(c, eb);
+					k++;
+				}
+			}
+			close(pfd.fd);
 		} else if (!strncmp(line, "rmmod ", 6)) {
 			int rr = __nolibc_syscall2(__NR_delete_module, line + 6, 0x800 /* O_NONBLOCK */);
 			snprintf(fbuf, sizeof(fbuf), rr ? "FAILED errno %d\n" : "ok\n", -rr);
@@ -847,6 +885,8 @@ int main(void)
 	load_module("/lib/modules/regmap-i2c.ko");
 	load_module("/lib/modules/max77705.ko");
 	load_module("/lib/modules/max77705_charger.ko");
+	load_module("/lib/modules/simple-mfd-i2c.ko");
+	load_module("/lib/modules/max77705-hwmon.ko");
 	load_module("/lib/modules/max17042_battery.ko");
 
 	/*
