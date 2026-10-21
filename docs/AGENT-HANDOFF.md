@@ -91,15 +91,15 @@ reboot [download|recovery|normal]. pstore: `/sys/fs/pstore/console-ramoops-0`.
 | MAX77705 charger + fuel gauge (simple-mfd-i2c) + hwmon | works; **USB-C/BC1.2 input detection** (max77705_usbc_psy, drv/power) feeds the charger's input limit (SDP 475 mA on the laptop port: the battery drains ~50-130 mA under load, watch it); driver caps fast charge at 1.5 A; battery temp 29.5 °C reads |
 | Panfrost (Mali-G72 0x6221 r0p1) | probes, runs jobs; GPU power-domain link dropped while CONFIG_PM=n |
 | UFS after U-Boot | **root cause of the hung Duranium initrd**: U-Boot's exynos UFS driver makes the FMP SMC that sets DESCTYPE 3 (128-byte PRDT entries, needed for U-Boot's own transfers after its host reset). Linux without inline crypto used 16-byte entries -> every multi-entry PRDT read at the wrong stride -> IS.SBFES bus faults. Fix: CONFIG_SCSI_UFS_CRYPTO=y + BLK_INLINE_ENCRYPTION (Linux sets the same format itself; AES-256-XTS keyslots appear). Also a 32-bit UFS DMA mask like Samsung's (harmless). Asking the SMC for DESCTYPE 0 in U-Boot breaks U-Boot's DMA entirely. |
-| Wi-Fi (BCM4375 B1, PCIe ch0) | **works**: PCIe Gen2 x1 link, [14e4:4475], brcmfmac fw 18.41.117, wlan0 scans 2.4+5 GHz. Connect test needs the laptop's network: `scripts/wifi-push-creds` (user runs it; passphrase never printed), then `scripts/wifi-test connect` |
+| Wi-Fi (BCM4375 B1, PCIe ch0) | **works with WPA2-PSK** (user's network): needed brcmfmac to write host_cap (IPC API version) into the shared area, else the 18.41 firmware never consumed RX buffers (no EAPOL). DHCP, DNS, HTTP ok; some loss at -80 dBm. Creds: `scripts/wifi-push-creds --cache` (user ran it) -> build/secrets/{wpa_supplicant.conf,wifi.nmconnection}; tests: `scripts/wifi-test`, /run/wpa.sh + /run/route.sh pattern (console `run` passes few args, use scripts) |
 | Bluetooth (BCM4375 on UART_BT) | **works**: hci0, BCM4375B1 SEMCO, patch RAM build 0171 |
 | Audio (A-Box + RT5665 + RT5510) | card registers, headset jack input, both PCMs stream (pcm-tone, 48 kHz); audibility not yet confirmed by a human |
 | S Pen (Wacom W9019, HSI2C_23) | **works**: input "Wacom W9019 Digitizer" 17222x10764 |
 | NFC (S3FWRN5, HSI2C_20) | nfc0 registers (load rfkill first); NCI init untested |
-| Vibrator, flash LED (RT8547), hall sensor | drivers bind; hall polarity correct (open = 1) |
+| Vibrator, flash LED (RT8547), hall sensor | drivers bind; vibrator polarity confirmed by the user (low = off); "vibrating like crazy" in GNOME was haptic feedback on bogus touches (fixed by the touch fix); hall polarity correct (open = 1) |
 | Grip sensor (A96T3x6, HSI2C_34) | bus now 100 kHz (10 kHz could not be divided); needs S2MPS18 LDO40 (read-only PMIC) |
 | SM5504 pogo MUIC | probe fails: no USB role switch on dwc3 yet |
-| Touch (SPI21, Himax HX83102E) | **chip detected (ID 83102e)** after byte-wide bus access + burst like Samsung's driver; IRQ fires; idle frames fail the plain checksum, needs a real finger test |
+| Touch (SPI21, Himax HX83102E) | **works** (user-tested drags): byte-wide bus access + burst for the ID; event frames sometimes start one byte early (in the dummy byte) -> read it too and pick the alignment with a valid checksum (0 bad frames in 1400); SPI at 10 MHz (at 7 MHz MISO sampled 1 bit late after re-probe) |
 | Keys | Home/Back/Recent/Power/Vol+ work. **Vol− and Active: gpa0-4/5 never change level even when held** (user confirmed) → wired elsewhere on hw_rev 4 |
 | Big cores, cameras, sensors (BCM4773 hub), GPS, fingerprint | not done (cameras/sensors/FP blocked, see docs/re locally) |
 
@@ -194,6 +194,23 @@ else set INFORM3=download, arm the cluster-0 watchdog (~82 s), jump to U-Boot.
   firmware + HALs, GNSS, fingerprint): `firmware/re-targets/INDEX.md`.
 - T570-family GPL kernel: `build/ref/gtactive3cs` (lineage-12.1);
   Galaxy S9 downstream: `src/samsung-9810-ref`.
+
+## Duranium boot status (2026-10-22 00:30)
+
+GNOME initial-setup screens appeared on the panel (user saw them) with
+image 14 (kernel r2). Issues found and fixed on the way:
+- UFS FMP PRDT format after U-Boot -> SCSI_UFS_CRYPTO=y
+- systemd-repart EBUSY mounting the new LUKS root -> BLK_DEV_WRITE_MOUNTED=y
+- in the booted system only sshd listened (no key) -> sockets IgnoreOnIsolate
+  + duranium-debug-sockets.service; dev key: build/secrets/duranium-dev-ed25519
+  (public half via local extra tree build/duranium-extra, never committed),
+  `ssh -i build/secrets/duranium-dev-ed25519 root@fe80::57:aff:fe00:1%enp0s20f0u5`
+- Wi-Fi profile baked as /usr/lib/NetworkManager/system-connections/wifi-dev.nmconnection
+  (local extra tree only). Build with:
+  `MKOSI_CONTAINER_ARGS="-v $X:$X:ro" SKIP_APKS=1 UI=gnome sh contrib/samsung-gtactive3wifi/build-image.sh --extra-tree=$X`
+- If locked out of a booted Duranium: ask the user for Power+VolDown 10 s, then
+  VolUp+VolDown while plugging USB = Download mode (devd flashes boot-mainline.img;
+  keep that = boot-good.img while testing).
 
 ## Next steps, in order
 

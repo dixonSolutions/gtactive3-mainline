@@ -13,8 +13,11 @@
 # printed) so later tests can push them again after a reflash.
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
-NM=0
-if [ "${1:-}" = "--nm" ]; then NM=1; shift; fi
+NM=0 CACHE=0
+case "${1:-}" in
+--cache) CACHE=1; shift ;;	# write both cached forms, push nothing
+--nm) NM=1; shift ;;
+esac
 CON=${1:-$(nmcli -t -f NAME,TYPE con show --active | awk -F: '$2=="802-11-wireless"{print $1; exit}')}
 [ -n "$CON" ] || { echo "no active Wi-Fi connection" >&2; exit 1; }
 
@@ -29,6 +32,7 @@ wpa-psk|sae) ;;
 *) echo "key management '$KM' not handled (only wpa-psk / sae)" >&2; exit 1 ;;
 esac
 
+write_conf() {
 if [ $NM = 0 ]; then
 	{
 		echo "ctrl_interface=/run/wpa_supplicant"
@@ -57,10 +61,17 @@ else
 	} > "$T"
 	REMOTE="/etc/NetworkManager/system-connections/$SSID.nmconnection"
 fi
-unset PSK
 mkdir -p -m 700 "$P/build/secrets"
 if [ $NM = 0 ]; then cp "$T" "$P/build/secrets/wpa_supplicant.conf"
 else cp "$T" "$P/build/secrets/wifi.nmconnection"; fi
+}
+if [ $CACHE = 1 ]; then
+	NM=0; write_conf; NM=1; write_conf; unset PSK
+	echo "cached '$SSID' ($KM) in build/secrets/ (wpa_supplicant.conf, wifi.nmconnection)"
+	exit 0
+fi
+write_conf
+unset PSK
 flock "$P/build/tab.lock" "$P/scripts/tab-put" "$T" "$REMOTE" >/dev/null
 if [ $NM = 1 ]; then
 	# NetworkManager ignores keyfiles that others can read
