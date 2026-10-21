@@ -562,7 +562,7 @@ static void serve(int c)
 	unsigned int v;
 
 	wr(c, "SM-T570 mainline bring-up console. Commands: dmesg, peek ADDR, dump ADDR N, "
-	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, evread PATH [N] [SECS], ulog, reboot [download|recovery|normal]\n> ");
+	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, run PATH [ARGS], insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, evread PATH [N] [SECS], ulog, reboot [download|recovery|normal]\n> ");
 	for (;;) {
 		r = read(c, line + n, 1);
 		if (r <= 0) return;
@@ -748,6 +748,45 @@ static void serve(int c)
 			char *val = strchr(line + 6, ' ');
 			if (!val) { wr(c, "usage: write PATH VALUE\n"); }
 			else { *val++ = 0; wr(c, writefile(line + 6, val) ? "error\n" : "ok\n"); }
+		} else if (!strncmp(line, "run ", 4)) {
+			/*
+			 * run PATH [ARGS]: start a test program (uploaded with put),
+			 * output to this connection, killed after 60 s.
+			 */
+			char *av[9], *p = line + 4;
+			int na = 0, st = 0, pid, w = 0, t;
+
+			while (*p && na < 8) {
+				while (*p == ' ') *p++ = 0;
+				if (!*p) break;
+				av[na++] = p;
+				while (*p && *p != ' ') p++;
+			}
+			av[na] = 0;
+			if (!na) { wr(c, "usage: run PATH [ARGS]\n"); goto prompt; }
+			chmod(av[0], 0755);
+			pid = fork();
+			if (pid == 0) {
+				char *envp[] = { "PATH=/", 0 };
+
+				dup2(c, 1);
+				dup2(c, 2);
+				execve(av[0], av, envp);
+				_exit(127);
+			}
+			for (t = 0; pid > 0 && t < 600; t++) {
+				w = waitpid(pid, &st, WNOHANG);
+				if (w) break;
+				usleep(100000);
+			}
+			if (pid > 0 && !w) {
+				kill(pid, 9);
+				waitpid(pid, &st, 0);
+				wr(c, "run: killed after 60 s\n");
+			}
+			snprintf(fbuf, sizeof(fbuf), pid < 0 ? "run: fork failed\n" :
+				 "run: exit %d signal %d\n", (st >> 8) & 0xff, st & 0x7f);
+			wr(c, fbuf);
 		} else if (!strncmp(line, "reboot", 6)) {
 			const char *m = line[6] == ' ' ? line + 7 : "normal";
 			wr(c, "rebooting\n");
@@ -888,6 +927,15 @@ int main(void)
 	load_module("/lib/modules/simple-mfd-i2c.ko");
 	load_module("/lib/modules/max77705-hwmon.ko");
 	load_module("/lib/modules/max17042_battery.ko");
+	/*
+	 * Safety: no battery temperature input yet (the NTC is on an ADC we
+	 * have no driver for), so never charge faster than 1.5 A.
+	 */
+	writefile("/sys/class/power_supply/max77705-charger/constant_charge_current", "1500000");
+
+	/* bundle 3 (tested 2026-10-21): panfrost on the Mali-G72, G3D left on by S-Boot */
+	load_module("/lib/modules/gpu-sched.ko");
+	load_module("/lib/modules/panfrost.ko");
 
 	/*
 	 * Hardware watchdog (cluster 0, 30 s), kicked from the main loop below:

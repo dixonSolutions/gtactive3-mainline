@@ -1,0 +1,106 @@
+From 9ff7cbb0a969f93303790ac673d7d6224ca6561c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:15:36 +1100
+Subject: [PATCH 51/64] power: supply: max77705: Fix the charge and input
+ current setters
+
+Both writable properties go through max77705_set_integer(), which
+divides the clamped value by the step size. That does not match the
+register encodings, which the getters in the same file decode
+correctly:
+
+- CHG_CC is a 6-bit field, 50 mA per step, up to 0x3f = 3.15 A. The
+  setter clamps to the 3.2 A input maximum, so writing 3.2 A gives
+  code 0x40, which regmap_field_write() masks to 0, i.e. 100 mA.
+- CHGIN_ILIM encodes (code + 1) * 25 mA. The setter omits the -1, so
+  every write lands one step (25 mA) high: 500 mA reads back as
+  525 mA. Writing 3.2 A gives code 0x80, which is masked to 0, i.e.
+  100 mA.
+
+Replace the helper with two setters that use the right range and
+encoding for each field, the same conversion the Samsung vendor driver
+uses.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/max77705_charger.c | 37 +++++++++++++++----------
+ include/linux/power/max77705_charger.h  |  2 ++
+ 2 files changed, 24 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/power/supply/max77705_charger.c b/drivers/power/supply/max77705_charger.c
+index 0c16f7403..a71d0f74c 100644
+--- a/drivers/power/supply/max77705_charger.c
++++ b/drivers/power/supply/max77705_charger.c
+@@ -150,15 +150,30 @@ static int max77705_get_online(struct regmap *regmap, int *val)
+ 	return 0;
+ }
+ 
+-static int max77705_set_integer(struct max77705_charger_data *chg, enum max77705_field_idx fidx,
+-				unsigned int clamp_min, unsigned int clamp_max,
+-				unsigned int div, int val)
++/*
++ * CHG_CC (CNFG_02[5:0]): 50 mA per step, 0x00-0x02 = 100 mA, 0x3f = 3.15 A.
++ * CHGIN_ILIM (CNFG_09[6:0]): (code + 1) * 25 mA, 0x00-0x03 = 100 mA,
++ * 0x7f = 3.2 A. These are the inverses of max77705_get_charge_current() and
++ * max77705_get_input_current().
++ */
++static int max77705_set_charge_current(struct max77705_charger_data *chg, int uA)
++{
++	unsigned int regval;
++
++	regval = clamp_val(uA, MAX77705_CURRENT_CHG_MIN, MAX77705_CURRENT_CHG_MAX) /
++		 MAX77705_CURRENT_CHG_STEP;
++
++	return regmap_field_write(chg->rfield[MAX77705_CHG_CC_LIM], regval);
++}
++
++static int max77705_set_input_current(struct max77705_charger_data *chg, int uA)
+ {
+ 	unsigned int regval;
+ 
+-	regval = clamp_val(val, clamp_min, clamp_max) / div;
++	regval = clamp_val(uA, MAX77705_CURRENT_CHGIN_MIN, MAX77705_CURRENT_CHGIN_MAX) /
++		 MAX77705_CURRENT_CHGIN_STEP - 1;
+ 
+-	return regmap_field_write(chg->rfield[fidx], regval);
++	return regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], regval);
+ }
+ 
+ static int max77705_check_battery(struct max77705_charger_data *chg, int *val)
+@@ -449,18 +464,10 @@ static int max77705_set_property(struct power_supply *psy,
+ 
+ 	switch (psp) {
+ 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
+-		err = max77705_set_integer(chg, MAX77705_CHG_CC_LIM,
+-					   MAX77705_CURRENT_CHGIN_MIN,
+-					   MAX77705_CURRENT_CHGIN_MAX,
+-					   MAX77705_CURRENT_CHG_STEP,
+-					   val->intval);
++		err = max77705_set_charge_current(chg, val->intval);
+ 		break;
+ 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+-		err = max77705_set_integer(chg, MAX77705_CHG_CHGIN_LIM,
+-					   MAX77705_CURRENT_CHGIN_MIN,
+-					   MAX77705_CURRENT_CHGIN_MAX,
+-					   MAX77705_CURRENT_CHGIN_STEP,
+-					   val->intval);
++		err = max77705_set_input_current(chg, val->intval);
+ 		break;
+ 	default:
+ 		err = -EINVAL;
+diff --git a/include/linux/power/max77705_charger.h b/include/linux/power/max77705_charger.h
+index b3950ce06..948b3b36d 100644
+--- a/include/linux/power/max77705_charger.h
++++ b/include/linux/power/max77705_charger.h
+@@ -130,6 +130,8 @@
+ #define MAX77705_CURRENT_CHG_STEP	50000
+ #define MAX77705_CURRENT_CHGIN_MIN	100000
+ #define MAX77705_CURRENT_CHGIN_MAX	3200000
++#define MAX77705_CURRENT_CHG_MIN	100000
++#define MAX77705_CURRENT_CHG_MAX	3150000
+ 
+ enum max77705_field_idx {
+ 	MAX77705_CHGPROT,
+-- 
+2.56.0
+

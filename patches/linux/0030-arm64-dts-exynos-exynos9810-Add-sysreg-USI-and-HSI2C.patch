@@ -1,7 +1,7 @@
 From e4ba5aa65f891d92a5d89c4bb4c7bb7f455e9be2 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:10:00 +1100
-Subject: [PATCH 30/38] arm64: dts: exynos: exynos9810: Add sysreg, USI and
+Subject: [PATCH 30/64] arm64: dts: exynos: exynos9810: Add sysreg, USI and
  HSI2C nodes
 
 Describe the CMGP, PERIC0 and PERIC1 system registers, which hold the

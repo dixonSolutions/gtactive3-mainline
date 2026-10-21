@@ -1,7 +1,7 @@
 From 52e42a7357f6dcd28427664ba82c83c757804615 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:42:24 +1100
-Subject: [PATCH 10/38] watchdog: s3c2410_wdt: Add Exynos9810 support
+Subject: [PATCH 10/64] watchdog: s3c2410_wdt: Add Exynos9810 support
 
 Exynos9810 has a watchdog per CPU cluster at 0x10050000 (cluster 0,
 Cortex-A55) and 0x10060000 (cluster 1, Mongoose M3). The PMU gates

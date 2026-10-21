@@ -1,0 +1,42 @@
+From 1708bbd554a08c47c6726346450988b6dffee4d0 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:13:05 +1100
+Subject: [PATCH 49/64] power: supply: max17042: Handle a missing or deferred
+ IRQ on platform probe
+
+When the fuel gauge is instantiated as an MFD cell (MAX77705 through
+simple-mfd-i2c), max17042_platform_probe() hands whatever
+platform_get_irq() returned straight to max17042_probe(), which only
+tests it for non-zero. A negative errno therefore reaches
+devm_request_threaded_irq(), fails with "Failed to get IRQ", and the
+gauge silently runs without alerts. That includes -EPROBE_DEFER when
+the interrupt parent's domain is not registered yet.
+
+Use platform_get_irq_optional(), propagate -EPROBE_DEFER and treat any
+other error as "no interrupt", like the I2C path does with irq == 0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/max17042_battery.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/power/supply/max17042_battery.c b/drivers/power/supply/max17042_battery.c
+index 505a68c26..d6d7f4278 100644
+--- a/drivers/power/supply/max17042_battery.c
++++ b/drivers/power/supply/max17042_battery.c
+@@ -1595,7 +1595,11 @@ static int max17042_platform_probe(struct platform_device *pdev)
+ 	device_set_of_node_from_dev(dev, dev->parent);
+ 
+ 	id = platform_get_device_id(pdev);
+-	irq = platform_get_irq(pdev, 0);
++	irq = platform_get_irq_optional(pdev, 0);
++	if (irq == -EPROBE_DEFER)
++		return irq;
++	if (irq < 0)
++		irq = 0;
+ 
+ 	return max17042_probe(i2c, dev, irq, id->driver_data);
+ }
+-- 
+2.56.0
+

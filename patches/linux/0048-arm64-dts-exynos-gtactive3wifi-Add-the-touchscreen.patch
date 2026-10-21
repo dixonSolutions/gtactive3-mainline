@@ -1,0 +1,81 @@
+From 15fedf5d8a0c6055eb1b9c59559dc22d78120c7c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:41:14 +1100
+Subject: [PATCH 48/64] arm64: dts: exynos: gtactive3wifi: Add the touchscreen
+
+The touch part of the Himax HX83102E TDDI panel controller is connected
+to SPI21 with a GPIO chip select (gph0-7), its interrupt on gpa1-0
+(falling edge) and its reset on gpg0-6, all taken from the stock
+hw_rev 4 device tree overlay. The stock driver uses SPI mode 3 at 7 MHz.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 48 +++++++++++++++++++
+ 1 file changed, 48 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 55806182f..d3e7b3cb9 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -212,6 +212,20 @@ max77705_irq: max77705-irq-pins {
+ 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+ 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+ 	};
++
++	touch_irq: touch-irq-pins {
++		samsung,pins = "gpa1-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++};
++
++&pinctrl_peric0 {
++	touch_rst: touch-rst-pins {
++		samsung,pins = "gpg0-6";
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
+ };
+ 
+ &pinctrl_peric1 {
+@@ -786,3 +800,37 @@ fuel-gauge@36 {
+ 		power-supplies = <&max77705_charger>;
+ 	};
+ };
++
++&spi_21 {
++	/* Software chip select, as in the stock firmware */
++	cs-gpios = <&gph0 7 GPIO_ACTIVE_LOW>;
++	pinctrl-0 = <&spi21_bus &spi21_cs>;
++	status = "okay";
++
++	/*
++	 * Touch part of the Himax HX83102E TDDI panel controller. It is
++	 * powered with the panel and runs firmware from its own flash.
++	 * Coordinates are reported in the panel's native portrait
++	 * orientation; use touchscreen-swapped-x-y / touchscreen-inverted-x/y
++	 * to match a rotated display.
++	 */
++	touchscreen@0 {
++		compatible = "himax,hx83102e";
++		reg = <0>;
++		spi-max-frequency = <7000000>;
++		spi-cpha;
++		spi-cpol;
++		interrupt-parent = <&gpa1>;
++		interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
++		reset-gpios = <&gpg0 6 GPIO_ACTIVE_LOW>;
++		pinctrl-0 = <&touch_irq &touch_rst>;
++		pinctrl-names = "default";
++		touchscreen-size-x = <1200>;
++		touchscreen-size-y = <1920>;
++	};
++};
++
++&usi_chub01 {
++	/* SPI21: touchscreen */
++	status = "okay";
++};
+-- 
+2.56.0
+

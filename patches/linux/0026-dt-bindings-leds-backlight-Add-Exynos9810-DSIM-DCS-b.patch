@@ -1,7 +1,7 @@
 From a26a1ecf8a6fdbe13c4b443161cdb26bb76adc46 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:08:03 +1100
-Subject: [PATCH 26/38] dt-bindings: leds: backlight: Add Exynos9810 DSIM DCS
+Subject: [PATCH 26/64] dt-bindings: leds: backlight: Add Exynos9810 DSIM DCS
  backlight
 
 Panels such as the Himax HX83102E in the Galaxy Tab Active3 drive the

@@ -1,0 +1,92 @@
+From dfa049d1404d36283a09c46d7adefd04d0797eb5 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:04:30 +1100
+Subject: [PATCH 56/64] dt-bindings: power: pd-samsung: Add Exynos9810 power
+ domains
+
+Exynos9810 domains use a 4-bit LOCAL_PWR_CFG like Exynos5433, and the
+secure monitor has to save/restore the domain's D-TZPC around each
+power cycle (samsung,dtzpc). The embedded G3D domain additionally needs
+CMU_G3D, because the G3D PLL and user mux are parked on the oscillator
+while it is off.
+
+Values from Samsung's Exynos9810 PMUCAL tables
+(cal-if/exynos9810/flexpmu_cal_local_exynos9810.h:475-496) and the stock
+SM-T570 device tree (pd-embedded_g3d@14064040, need_smc = 0x17410204).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/power/pd-samsung.yaml | 39 ++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/power/pd-samsung.yaml b/Documentation/devicetree/bindings/power/pd-samsung.yaml
+index 9c2c51133..fb26d60df 100644
+--- a/Documentation/devicetree/bindings/power/pd-samsung.yaml
++++ b/Documentation/devicetree/bindings/power/pd-samsung.yaml
+@@ -21,9 +21,16 @@ properties:
+     enum:
+       - samsung,exynos4210-pd
+       - samsung,exynos5433-pd
++      - samsung,exynos9810-pd
++      - samsung,exynos9810-g3d-pd
+ 
+   reg:
+-    maxItems: 1
++    minItems: 1
++    items:
++      - description: PMU <domain>_CONFIGURATION/_STATUS registers
++      - description:
++          CMU_G3D, whose PLL and user mux are parked on the oscillator while
++          the embedded G3D domain is off (samsung,exynos9810-g3d-pd only)
+ 
+   clocks:
+     deprecated: true
+@@ -44,11 +51,33 @@ properties:
+   power-domains:
+     maxItems: 1
+ 
++  samsung,dtzpc:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description:
++      Address of the domain's D-TZPC registers. The secure monitor saves them
++      before the domain is powered off and restores them after it is powered
++      on again (SiP call 0x82000410), as Samsung's kernel does for every
++      Exynos9810 domain that has a "need_smc" address.
++
+ required:
+   - compatible
+   - "#power-domain-cells"
+   - reg
+ 
++if:
++  properties:
++    compatible:
++      contains:
++        const: samsung,exynos9810-g3d-pd
++then:
++  properties:
++    reg:
++      minItems: 2
++else:
++  properties:
++    reg:
++      maxItems: 1
++
+ unevaluatedProperties: false
+ 
+ examples:
+@@ -66,3 +95,11 @@ examples:
+         #power-domain-cells = <0>;
+         label = "MFC";
+     };
++
++    g3d_pd: power-domain@14064040 {
++        compatible = "samsung,exynos9810-g3d-pd";
++        reg = <0x14064040 0x20>, <0x17400000 0x200>;
++        #power-domain-cells = <0>;
++        label = "G3D";
++        samsung,dtzpc = <0x17410204>;
++    };
+-- 
+2.56.0
+

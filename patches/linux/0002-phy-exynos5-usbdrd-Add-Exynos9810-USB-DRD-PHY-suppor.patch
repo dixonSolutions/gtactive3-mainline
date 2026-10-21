@@ -1,7 +1,7 @@
 From c7e94f256cdd7e7bab5c87b9f0ef9b66031f892c Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 13:53:36 +1100
-Subject: [PATCH 02/38] phy: exynos5-usbdrd: Add Exynos9810 USB DRD PHY support
+Subject: [PATCH 02/64] phy: exynos5-usbdrd: Add Exynos9810 USB DRD PHY support
 
 The Exynos9810 USB DRD controller uses the same USBCON register layout
 as Exynos850 (LINKCTRL 0x04, CLKRST 0x20, UTMI 0x50, HSP 0x54, ...),

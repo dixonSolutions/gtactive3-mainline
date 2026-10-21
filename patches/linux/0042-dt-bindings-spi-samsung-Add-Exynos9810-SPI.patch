@@ -1,0 +1,30 @@
+From fc43ac746bb69f51aa87edb2aa2fcbad12f96c46 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:55:08 +1100
+Subject: [PATCH 42/64] dt-bindings: spi: samsung: Add Exynos9810 SPI
+
+Exynos9810 SPI controllers are USIv2 based and compatible with the
+Exynos850 ones (64 byte FIFO on the CHUB instances, input clock divided
+by 4), so add a compatible with the Exynos850 fallback. Instances with a
+different FIFO depth use the "fifo-depth" property.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Documentation/devicetree/bindings/spi/samsung,spi.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/spi/samsung,spi.yaml b/Documentation/devicetree/bindings/spi/samsung,spi.yaml
+index 1ce8b2770..8893483e3 100644
+--- a/Documentation/devicetree/bindings/spi/samsung,spi.yaml
++++ b/Documentation/devicetree/bindings/spi/samsung,spi.yaml
+@@ -28,6 +28,7 @@ properties:
+       - items:
+           - enum:
+               - samsung,exynos8895-spi
++              - samsung,exynos9810-spi
+               - samsung,exynosautov920-spi
+           - const: samsung,exynos850-spi
+       - const: samsung,exynos7-spi
+-- 
+2.56.0
+

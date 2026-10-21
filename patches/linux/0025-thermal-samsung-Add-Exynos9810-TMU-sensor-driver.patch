@@ -1,7 +1,7 @@
 From a3a7d3e9f4a5620fffe6c94b5b97e3966d0a6b12 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:54:22 +1100
-Subject: [PATCH 25/38] thermal: samsung: Add Exynos9810 TMU sensor driver
+Subject: [PATCH 25/64] thermal: samsung: Add Exynos9810 TMU sensor driver
 
 The Exynos9810 TMUs are set up and enabled by the bootloader and the
 ACPM firmware (CONTROL = 0x9503 on an SM-T570 under mainline: CORE_EN

@@ -1,0 +1,30 @@
+From 126f124e6da6efc8e1b067dd1301ac96e25e4b78 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:55:09 +1100
+Subject: [PATCH 43/64] dt-bindings: soc: samsung: exynos-sysreg: Add
+ Exynos9810 CHUB sysreg
+
+Add a compatible for the CHUB system register block of Exynos9810, which
+contains the SW_CONF registers of the CHUB USI blocks. It has no gate
+clock in CMU_CHUB, only a Q-channel that the bootloader leaves forced on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml   | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml b/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
+index 983cd1571..28f914592 100644
+--- a/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
++++ b/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
+@@ -35,6 +35,7 @@ properties:
+               - samsung,exynos8895-fsys1-sysreg
+               - samsung,exynos8895-peric0-sysreg
+               - samsung,exynos8895-peric1-sysreg
++              - samsung,exynos9810-chub-sysreg
+               - samsung,exynos9810-cmgp-sysreg
+               - samsung,exynos9810-peric0-sysreg
+               - samsung,exynos9810-peric1-sysreg
+-- 
+2.56.0
+

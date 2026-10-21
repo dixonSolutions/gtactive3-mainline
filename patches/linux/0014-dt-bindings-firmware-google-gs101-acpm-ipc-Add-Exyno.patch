@@ -1,7 +1,7 @@
 From 00653739faffdcdf8ecd335aac5d52100dc7244d Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:48:08 +1100
-Subject: [PATCH 14/38] dt-bindings: firmware: google,gs101-acpm-ipc: Add
+Subject: [PATCH 14/64] dt-bindings: firmware: google,gs101-acpm-ipc: Add
  Exynos9810
 
 Exynos9810 runs an older ACPM firmware with the same shared memory

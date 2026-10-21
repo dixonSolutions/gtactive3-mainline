@@ -1,7 +1,7 @@
 From f0e08c62a59bf2979e540aa282e81fdfe0d5bfbf Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:08:33 +1100
-Subject: [PATCH 29/38] arm64: dts: exynos: gtactive3wifi: Add DCS backlight
+Subject: [PATCH 29/64] arm64: dts: exynos: gtactive3wifi: Add DCS backlight
 
 The stock DTBO has no backlight IC for this board: brightness is DCS
 0x51 to the HX83102E on both DSI links, DSIM0 at 0x16080000 and DSIM1

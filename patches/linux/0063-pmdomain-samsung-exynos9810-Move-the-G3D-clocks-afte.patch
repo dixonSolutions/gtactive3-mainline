@@ -1,0 +1,99 @@
+From 2352414191f118d774583af5064233cbb6b9f31e Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:15:26 +1100
+Subject: [PATCH 63/64] pmdomain: samsung: exynos9810: Move the G3D clocks
+ after power-on
+
+The SM-T570 GPL kernel (the tablet's own vendor tree) orders
+embedded_g3d_on differently from the Galaxy S9 tree the first version
+was based on: it writes EMBEDDED_G3D_CONFIGURATION = 0xf, waits for the
+status, and only then sets PLL_CON2_PLL_G3D = 0x30000003 and moves
+PLL_G3D and the GPU user mux from the oscillator to the PLL. The power-off
+order is the same in both trees.
+
+Follow the T570 order: replace the pre_on hook with a post_on hook that
+runs after the status poll and before the D-TZPC restore SMC, matching
+pmucal_local_enable(), which runs the whole sequence and then the SMC.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pmdomain/samsung/exynos-pm-domains.c | 24 +++++++++++---------
+ 1 file changed, 13 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/pmdomain/samsung/exynos-pm-domains.c b/drivers/pmdomain/samsung/exynos-pm-domains.c
+index 2a42be8fb..43dc90a4d 100644
+--- a/drivers/pmdomain/samsung/exynos-pm-domains.c
++++ b/drivers/pmdomain/samsung/exynos-pm-domains.c
+@@ -27,8 +27,8 @@ struct exynos_pm_domain_config {
+ 	u32 local_pwr_cfg;
+ 	/* Status poll timeout, 0 means the historical 1 ms */
+ 	u32 timeout_us;
+-	/* Optional hooks around the PMU write, e.g. to park clocks */
+-	void (*pre_on)(struct exynos_pm_domain *pd);
++	/* Optional hooks after the PMU write, e.g. to (un)park clocks */
++	void (*post_on)(struct exynos_pm_domain *pd);
+ 	void (*post_off)(struct exynos_pm_domain *pd);
+ };
+ 
+@@ -107,13 +107,13 @@ static int exynos_pd_power_on(struct generic_pm_domain *domain)
+ 		container_of(domain, struct exynos_pm_domain, pd);
+ 	int ret;
+ 
+-	if (pd->cfg && pd->cfg->pre_on)
+-		pd->cfg->pre_on(pd);
+-
+ 	ret = exynos_pd_power(domain, true);
+ 	if (ret)
+ 		return ret;
+ 
++	if (pd->cfg && pd->cfg->post_on)
++		pd->cfg->post_on(pd);
++
+ 	ret = exynos_pd_dtzpc(pd, EXYNOS_PD_DTZPC_RESTORE);
+ 	if (ret) {
+ 		/*
+@@ -151,9 +151,11 @@ static int exynos_pd_power_off(struct generic_pm_domain *domain)
+ 
+ /*
+  * Exynos9810 embedded G3D: CMU_G3D stays powered, but Samsung's PMUCAL
+- * switches the G3D PLL and the GPU user mux to the oscillator while the
+- * domain is off and back before it is powered on
+- * (cal-if/exynos9810/flexpmu_cal_local_exynos9810.h, embedded_g3d_on/off).
++ * switches the G3D PLL and the GPU user mux to the oscillator once the
++ * domain is off, and back once it is on again. The SM-T570 kernel
++ * (cal-if/exynos9810/flexpmu_cal_local_exynos9810.h, embedded_g3d_on/off)
++ * powers the domain up on the oscillator and only then moves to the PLL;
++ * the older Galaxy S9 tables switched the clocks first.
+  */
+ #define EXYNOS9810_CMU_G3D_PLL_CON0_MUX_USER	0x100
+ #define EXYNOS9810_CMU_G3D_PLL_CON0_PLL		0x140
+@@ -162,7 +164,7 @@ static int exynos_pd_power_off(struct generic_pm_domain *domain)
+ #define EXYNOS9810_CMU_G3D_PLL_CON2_ON		0x30000003
+ #define EXYNOS9810_CMU_G3D_PLL_CON2_OFF		0x10000001
+ 
+-static void exynos9810_g3d_pre_on(struct exynos_pm_domain *pd)
++static void exynos9810_g3d_post_on(struct exynos_pm_domain *pd)
+ {
+ 	void __iomem *cmu = pd->cmu;
+ 	u32 val;
+@@ -208,7 +210,7 @@ static const struct exynos_pm_domain_config exynos9810_cfg = {
+ static const struct exynos_pm_domain_config exynos9810_g3d_cfg = {
+ 	.local_pwr_cfg		= 0xf,
+ 	.timeout_us		= 10000,
+-	.pre_on			= exynos9810_g3d_pre_on,
++	.post_on		= exynos9810_g3d_post_on,
+ 	.post_off		= exynos9810_g3d_post_off,
+ };
+ 
+@@ -261,7 +263,7 @@ static int exynos_pd_probe(struct platform_device *pdev)
+ 	if (!pd->base)
+ 		return -ENODEV;
+ 
+-	if (pm_domain_cfg->pre_on || pm_domain_cfg->post_off) {
++	if (pm_domain_cfg->post_on || pm_domain_cfg->post_off) {
+ 		pd->cmu = of_iomap(np, 1);
+ 		if (!pd->cmu) {
+ 			iounmap(pd->base);
+-- 
+2.56.0
+

@@ -1,7 +1,7 @@
 From 0217e457db861cd676a9558266f0e204e31b503a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:52:41 +1100
-Subject: [PATCH 38/38] arm64: dts: exynos: gtactive3wifi: Keep the panel node
+Subject: [PATCH 38/64] arm64: dts: exynos: gtactive3wifi: Keep the panel node
  from blocking simpledrm
 
 The framebuffer's "panel" phandle is parsed by fw_devlink (parse_panel

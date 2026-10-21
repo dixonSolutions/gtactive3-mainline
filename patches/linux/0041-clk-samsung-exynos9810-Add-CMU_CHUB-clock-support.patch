@@ -1,0 +1,244 @@
+From 4fb1aa38465e484caf9e057af4b36f00c2839b4c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:54:50 +1100
+Subject: [PATCH 41/64] clk: samsung: exynos9810: Add CMU_CHUB clock support
+
+Add a clock driver for the CHUB CMU of the Exynos9810 SoC, covering the
+bus, I2C and USI muxes, dividers and gates. CMU_CHUB is fed by CMU_TOP,
+which is not described yet, so its "bus" input is taken from the device
+tree.
+
+The register offsets and the clock tree are taken from Samsung's CMUCAL
+tables for Exynos9810. On the Galaxy Tab Active3 the bootloader leaves
+the USI01 divider at /1 (200 MHz), which would run SPI21 at 50 MHz; the
+divider has to be controlled to talk to the touchscreen.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/clk/samsung/Makefile         |   1 +
+ drivers/clk/samsung/clk-exynos9810.c | 201 +++++++++++++++++++++++++++
+ 2 files changed, 202 insertions(+)
+ create mode 100644 drivers/clk/samsung/clk-exynos9810.c
+
+diff --git a/drivers/clk/samsung/Makefile b/drivers/clk/samsung/Makefile
+index b3c4ef4e0..c5462f7e0 100644
+--- a/drivers/clk/samsung/Makefile
++++ b/drivers/clk/samsung/Makefile
+@@ -25,6 +25,7 @@ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos7870.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos7885.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos850.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos8895.o
++obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos9810.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos990.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynosautov9.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynosautov920.o
+diff --git a/drivers/clk/samsung/clk-exynos9810.c b/drivers/clk/samsung/clk-exynos9810.c
+new file mode 100644
+index 000000000..ec81411e8
+--- /dev/null
++++ b/drivers/clk/samsung/clk-exynos9810.c
+@@ -0,0 +1,201 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Common Clock Framework support for the Exynos9810 SoC.
++ *
++ * Register layout and clock tree are taken from Samsung's GPL CMUCAL tables
++ * for Exynos9810 (cmucal-sfr.c / cmucal-node.c).
++ */
++
++#include <linux/clk-provider.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#include <dt-bindings/clock/samsung,exynos9810.h>
++
++#include "clk.h"
++#include "clk-exynos-arm64.h"
++
++/* NOTE: Must be equal to the last clock ID increased by one */
++#define CLKS_NR_CHUB	(CLK_GOUT_CHUB_RSTNSYNC_USI01 + 1)
++
++/* ---- CMU_CHUB ------------------------------------------------------------ */
++
++/* Register Offset definitions for CMU_CHUB (0x13a00000) */
++#define PLL_CON0_MUX_CLKCMU_CHUB_BUS_USER				0x0100
++#define PLL_CON2_MUX_CLKCMU_CHUB_BUS_USER				0x0108
++#define PLL_CON0_MUX_CLKCMU_CHUB_DLL_BUS_USER				0x0120
++#define PLL_CON2_MUX_CLKCMU_CHUB_DLL_BUS_USER				0x0128
++#define CLK_CON_MUX_MUX_CLK_CHUB_BUS					0x1004
++#define CLK_CON_MUX_MUX_CLK_CHUB_I2C					0x1008
++#define CLK_CON_MUX_MUX_CLK_CHUB_USI00					0x100c
++#define CLK_CON_MUX_MUX_CLK_CHUB_USI01					0x1010
++#define CLK_CON_DIV_DIV_CLK_CHUB_BUS					0x1800
++#define CLK_CON_DIV_DIV_CLK_CHUB_I2C					0x1804
++#define CLK_CON_DIV_DIV_CLK_CHUB_USI00					0x1808
++#define CLK_CON_DIV_DIV_CLK_CHUB_USI01					0x180c
++#define CLK_CON_GAT_GATE_CLK_CHUB_I2C					0x200c
++#define CLK_CON_GAT_GATE_CLK_CHUB_USI00					0x2010
++#define CLK_CON_GAT_GATE_CLK_CHUB_USI01					0x2014
++#define CLK_CON_GAT_GOUT_BLK_CHUB_UID_I2C_CHUB00_IPCLKPORT_IPCLK	0x2058
++#define CLK_CON_GAT_GOUT_BLK_CHUB_UID_I2C_CHUB01_IPCLKPORT_IPCLK	0x2060
++#define CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_I2C_IPCLKPORT_CLK	0x208c
++#define CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_USI00_IPCLKPORT_CLK	0x2090
++#define CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_USI01_IPCLKPORT_CLK	0x2094
++#define CLK_CON_GAT_GOUT_BLK_CHUB_UID_USI_CHUB00_IPCLKPORT_IPCLK	0x20a8
++#define CLK_CON_GAT_GOUT_BLK_CHUB_UID_USI_CHUB01_IPCLKPORT_IPCLK	0x20b0
++
++static const unsigned long chub_clk_regs[] __initconst = {
++	PLL_CON0_MUX_CLKCMU_CHUB_BUS_USER,
++	PLL_CON2_MUX_CLKCMU_CHUB_BUS_USER,
++	PLL_CON0_MUX_CLKCMU_CHUB_DLL_BUS_USER,
++	PLL_CON2_MUX_CLKCMU_CHUB_DLL_BUS_USER,
++	CLK_CON_MUX_MUX_CLK_CHUB_BUS,
++	CLK_CON_MUX_MUX_CLK_CHUB_I2C,
++	CLK_CON_MUX_MUX_CLK_CHUB_USI00,
++	CLK_CON_MUX_MUX_CLK_CHUB_USI01,
++	CLK_CON_DIV_DIV_CLK_CHUB_BUS,
++	CLK_CON_DIV_DIV_CLK_CHUB_I2C,
++	CLK_CON_DIV_DIV_CLK_CHUB_USI00,
++	CLK_CON_DIV_DIV_CLK_CHUB_USI01,
++	CLK_CON_GAT_GATE_CLK_CHUB_I2C,
++	CLK_CON_GAT_GATE_CLK_CHUB_USI00,
++	CLK_CON_GAT_GATE_CLK_CHUB_USI01,
++	CLK_CON_GAT_GOUT_BLK_CHUB_UID_I2C_CHUB00_IPCLKPORT_IPCLK,
++	CLK_CON_GAT_GOUT_BLK_CHUB_UID_I2C_CHUB01_IPCLKPORT_IPCLK,
++	CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_I2C_IPCLKPORT_CLK,
++	CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_USI00_IPCLKPORT_CLK,
++	CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_USI01_IPCLKPORT_CLK,
++	CLK_CON_GAT_GOUT_BLK_CHUB_UID_USI_CHUB00_IPCLKPORT_IPCLK,
++	CLK_CON_GAT_GOUT_BLK_CHUB_UID_USI_CHUB01_IPCLKPORT_IPCLK,
++};
++
++/* List of parent clocks for Muxes in CMU_CHUB */
++PNAME(mout_chub_bus_user_p)	= { "clk_rco_chub", "dout_cmu_chub_bus" };
++PNAME(mout_chub_dll_bus_user_p)	= { "clk_rco_chub", "gout_clkcmu_apm_dll_chub" };
++PNAME(mout_chub_bus_p)		= { "mout_chub_bus_user",
++				    "mout_chub_dll_bus_user" };
++PNAME(mout_chub_i2c_p)		= { "clk_rco_chub", "mout_chub_bus" };
++PNAME(mout_chub_usi00_p)	= { "clk_rco_chub", "mout_chub_bus" };
++PNAME(mout_chub_usi01_p)	= { "clk_rco_chub", "mout_chub_bus" };
++
++/* CHUB internal RC oscillator, 26 MHz nominal according to CMUCAL */
++static const struct samsung_fixed_rate_clock chub_fixed_clks[] __initconst = {
++	FRATE(CLK_RCO_CHUB, "clk_rco_chub", NULL, 0, 26000000),
++};
++
++static const struct samsung_mux_clock chub_mux_clks[] __initconst = {
++	MUX(CLK_MOUT_CHUB_BUS_USER, "mout_chub_bus_user", mout_chub_bus_user_p,
++	    PLL_CON0_MUX_CLKCMU_CHUB_BUS_USER, 4, 1),
++	MUX(CLK_MOUT_CHUB_DLL_BUS_USER, "mout_chub_dll_bus_user",
++	    mout_chub_dll_bus_user_p,
++	    PLL_CON0_MUX_CLKCMU_CHUB_DLL_BUS_USER, 4, 1),
++	MUX(CLK_MOUT_CHUB_BUS, "mout_chub_bus", mout_chub_bus_p,
++	    CLK_CON_MUX_MUX_CLK_CHUB_BUS, 0, 1),
++	MUX(CLK_MOUT_CHUB_I2C, "mout_chub_i2c", mout_chub_i2c_p,
++	    CLK_CON_MUX_MUX_CLK_CHUB_I2C, 0, 1),
++	MUX(CLK_MOUT_CHUB_USI00, "mout_chub_usi00", mout_chub_usi00_p,
++	    CLK_CON_MUX_MUX_CLK_CHUB_USI00, 0, 1),
++	MUX(CLK_MOUT_CHUB_USI01, "mout_chub_usi01", mout_chub_usi01_p,
++	    CLK_CON_MUX_MUX_CLK_CHUB_USI01, 0, 1),
++};
++
++static const struct samsung_div_clock chub_div_clks[] __initconst = {
++	DIV(CLK_DOUT_CHUB_BUS, "dout_chub_bus", "mout_chub_bus",
++	    CLK_CON_DIV_DIV_CLK_CHUB_BUS, 0, 4),
++	DIV(CLK_DOUT_CHUB_I2C, "dout_chub_i2c", "gout_chub_i2c",
++	    CLK_CON_DIV_DIV_CLK_CHUB_I2C, 0, 4),
++	DIV(CLK_DOUT_CHUB_USI00, "dout_chub_usi00", "gout_chub_usi00",
++	    CLK_CON_DIV_DIV_CLK_CHUB_USI00, 0, 4),
++	DIV(CLK_DOUT_CHUB_USI01, "dout_chub_usi01", "gout_chub_usi01",
++	    CLK_CON_DIV_DIV_CLK_CHUB_USI01, 0, 4),
++};
++
++static const struct samsung_gate_clock chub_gate_clks[] __initconst = {
++	GATE(CLK_GOUT_CHUB_I2C, "gout_chub_i2c", "mout_chub_i2c",
++	     CLK_CON_GAT_GATE_CLK_CHUB_I2C, 21, 0, 0),
++	GATE(CLK_GOUT_CHUB_USI00, "gout_chub_usi00", "mout_chub_usi00",
++	     CLK_CON_GAT_GATE_CLK_CHUB_USI00, 21, 0, 0),
++	GATE(CLK_GOUT_CHUB_USI01, "gout_chub_usi01", "mout_chub_usi01",
++	     CLK_CON_GAT_GATE_CLK_CHUB_USI01, 21, 0, 0),
++	GATE(CLK_GOUT_CHUB_I2C_CHUB00_IPCLK, "gout_chub_i2c_chub00_ipclk",
++	     "dout_chub_i2c",
++	     CLK_CON_GAT_GOUT_BLK_CHUB_UID_I2C_CHUB00_IPCLKPORT_IPCLK,
++	     21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_CHUB_I2C_CHUB01_IPCLK, "gout_chub_i2c_chub01_ipclk",
++	     "dout_chub_i2c",
++	     CLK_CON_GAT_GOUT_BLK_CHUB_UID_I2C_CHUB01_IPCLKPORT_IPCLK,
++	     21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_CHUB_USI_CHUB00_IPCLK, "gout_chub_usi_chub00_ipclk",
++	     "dout_chub_usi00",
++	     CLK_CON_GAT_GOUT_BLK_CHUB_UID_USI_CHUB00_IPCLKPORT_IPCLK,
++	     21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_CHUB_USI_CHUB01_IPCLK, "gout_chub_usi_chub01_ipclk",
++	     "dout_chub_usi01",
++	     CLK_CON_GAT_GOUT_BLK_CHUB_UID_USI_CHUB01_IPCLKPORT_IPCLK,
++	     21, CLK_SET_RATE_PARENT, 0),
++	/*
++	 * The reset synchronizers of the USI/I2C blocks have no consumer in
++	 * the device tree, but the IPs do not work without them.
++	 */
++	GATE(CLK_GOUT_CHUB_RSTNSYNC_I2C, "gout_chub_rstnsync_i2c",
++	     "dout_chub_i2c",
++	     CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_I2C_IPCLKPORT_CLK,
++	     21, CLK_IGNORE_UNUSED, 0),
++	GATE(CLK_GOUT_CHUB_RSTNSYNC_USI00, "gout_chub_rstnsync_usi00",
++	     "dout_chub_usi00",
++	     CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_USI00_IPCLKPORT_CLK,
++	     21, CLK_IGNORE_UNUSED, 0),
++	GATE(CLK_GOUT_CHUB_RSTNSYNC_USI01, "gout_chub_rstnsync_usi01",
++	     "dout_chub_usi01",
++	     CLK_CON_GAT_GOUT_BLK_CHUB_UID_RSTNSYNC_CLK_CHUB_USI01_IPCLKPORT_CLK,
++	     21, CLK_IGNORE_UNUSED, 0),
++};
++
++static const struct samsung_cmu_info chub_cmu_info __initconst = {
++	.mux_clks		= chub_mux_clks,
++	.nr_mux_clks		= ARRAY_SIZE(chub_mux_clks),
++	.div_clks		= chub_div_clks,
++	.nr_div_clks		= ARRAY_SIZE(chub_div_clks),
++	.gate_clks		= chub_gate_clks,
++	.nr_gate_clks		= ARRAY_SIZE(chub_gate_clks),
++	.fixed_clks		= chub_fixed_clks,
++	.nr_fixed_clks		= ARRAY_SIZE(chub_fixed_clks),
++	.nr_clk_ids		= CLKS_NR_CHUB,
++	.clk_regs		= chub_clk_regs,
++	.nr_clk_regs		= ARRAY_SIZE(chub_clk_regs),
++	.clk_name		= "bus",
++};
++
++static int __init exynos9810_cmu_probe(struct platform_device *pdev)
++{
++	const struct samsung_cmu_info *info;
++	struct device *dev = &pdev->dev;
++
++	info = of_device_get_match_data(dev);
++	exynos_arm64_register_cmu(dev, dev->of_node, info);
++
++	return 0;
++}
++
++static const struct of_device_id exynos9810_cmu_of_match[] = {
++	{
++		.compatible = "samsung,exynos9810-cmu-chub",
++		.data = &chub_cmu_info,
++	},
++	{ }
++};
++
++static struct platform_driver exynos9810_cmu_driver __refdata = {
++	.driver = {
++		.name = "exynos9810-cmu",
++		.of_match_table = exynos9810_cmu_of_match,
++		.suppress_bind_attrs = true,
++	},
++	.probe = exynos9810_cmu_probe,
++};
++
++static int __init exynos9810_cmu_init(void)
++{
++	return platform_driver_register(&exynos9810_cmu_driver);
++}
++core_initcall(exynos9810_cmu_init);
+-- 
+2.56.0
+
