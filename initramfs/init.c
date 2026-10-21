@@ -155,6 +155,38 @@ static int poke(unsigned long phys, unsigned int val)
 	return 0;
 }
 
+/* U-Boot's RAM console log (CONFIG_EXYNOS_MOBILE_RAMLOG): { "ULOG", len, text } */
+#define ULOG_BASE	0x8ff100000UL
+#define ULOG_SIZE	0x100000UL
+
+static void ulog_print(int c)
+{
+	volatile unsigned int *hdr;
+	unsigned int len;
+	char *p;
+
+	if (devmem < 0)
+		devmem = open("/dev/mem", O_RDWR | O_SYNC);
+	p = devmem < 0 ? MAP_FAILED :
+		mmap(0, ULOG_SIZE, PROT_READ, MAP_SHARED, devmem, ULOG_BASE);
+	if (p == MAP_FAILED) {
+		wr(c, "ulog: cannot map\n");
+		return;
+	}
+	hdr = (volatile unsigned int *)p;
+	len = hdr[1];
+	if (hdr[0] != 0x474f4c55 || len > ULOG_SIZE - 8) {
+		char b[64];
+
+		snprintf(b, sizeof(b), "ulog: no log (magic %x len %x)\n", hdr[0], len);
+		wr(c, b);
+	} else {
+		write(c, p + 8, len);
+		wr(c, "\n");
+	}
+	munmap(p, ULOG_SIZE);
+}
+
 static void arm_download_on_reset(void)
 {
 	if (poke(PMU_BASE + PMU_INFORM2, SEC_POWER_RESET) ||
@@ -527,7 +559,7 @@ static void serve(int c)
 	unsigned int v;
 
 	wr(c, "SM-T570 mainline bring-up console. Commands: dmesg, peek ADDR, dump ADDR N, "
-	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, reboot [download|recovery|normal]\n> ");
+	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, ulog, reboot [download|recovery|normal]\n> ");
 	for (;;) {
 		r = read(c, line + n, 1);
 		if (r <= 0) return;
@@ -542,6 +574,8 @@ static void serve(int c)
 			unsigned long a = parse_num(line + 5, 0);
 			if (peek(a, &v)) wr(c, "error\n");
 			else { hex32(b, v); wr(c, b); wr(c, "\n"); }
+		} else if (!strcmp(line, "ulog")) {
+			ulog_print(c);
 		} else if (!strncmp(line, "dump ", 5)) {
 			/* dump ADDR COUNT: COUNT 32-bit registers */
 			const char *e;

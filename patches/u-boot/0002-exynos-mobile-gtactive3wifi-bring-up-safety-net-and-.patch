@@ -1,0 +1,239 @@
+From 348b01f7a7480f72438460dcc0f27e74685aa835 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:26:57 +1100
+Subject: [PATCH 2/2] exynos-mobile: gtactive3wifi: bring-up safety net and RAM
+ console log
+
+- EXYNOS9810_EARLY_SAFETY: at entry set the S-Boot reboot reason to
+  Download mode and start the cluster 0 watchdog (~82 s) with its reset
+  unmasked, so a hang or panic recovers without touching the device.
+- EXYNOS_MOBILE_RAMLOG: copy all console output to RAM at 0x8ff100000
+  through a board_console_tap() hook, readable after the reset.
+- gtactive3wifi.env: display console, 9810 PMU reboot reasons; the
+  shared env pokes 9820 addresses and wants a serial console.
+- Do not require a serial console (none is wired out) and reset via PSCI.
+  Without this U-Boot panics in serial_init and cannot reset.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm/lib/save_prev_bl_data.c              | 40 +++++++++++++++++++
+ board/samsung/exynos-mobile/Kconfig           | 18 +++++++++
+ board/samsung/exynos-mobile/exynos-mobile.c   | 39 ++++++++++++++++++
+ board/samsung/exynos-mobile/gtactive3wifi.env | 27 +++++++++++++
+ common/console.c                              |  8 ++++
+ configs/gtactive3wifi_defconfig               |  5 +++
+ 6 files changed, 137 insertions(+)
+ create mode 100644 board/samsung/exynos-mobile/gtactive3wifi.env
+
+diff --git a/arch/arm/lib/save_prev_bl_data.c b/arch/arm/lib/save_prev_bl_data.c
+index 4357acae..602fd9d6 100644
+--- a/arch/arm/lib/save_prev_bl_data.c
++++ b/arch/arm/lib/save_prev_bl_data.c
+@@ -16,6 +16,43 @@
+ 
+ static ulong reg0 __section(".data");
+ 
++#if IS_ENABLED(CONFIG_EXYNOS9810_EARLY_SAFETY)
++#define EXYNOS9810_PMU			0x14060000UL
++#define EXYNOS9810_WDT_CL0		0x10050000UL
++
++static inline void w32(unsigned long addr, u32 val)
++{
++	*(volatile u32 *)addr = val;
++}
++
++static inline u32 r32(unsigned long addr)
++{
++	return *(volatile u32 *)addr;
++}
++
++/*
++ * Exynos 9810 safety net, armed before anything else can hang. There is no
++ * stack yet, so this only touches registers.
++ *  - Reboot reason (INFORM2/INFORM3): any software reset or panic lands in
++ *    Download mode.
++ *  - Cluster 0 watchdog: 26 MHz / 256 / 128 with 0xffff counts, ~82 s. Its
++ *    reset is masked and auto-disabled in the PMU by S-Boot (bit 24 of
++ *    0x40c and 0x408); a watchdog reset boots the BOOT partition again.
++ */
++static inline void exynos9810_early_safety(void)
++{
++	w32(EXYNOS9810_PMU + 0x808, 0x12345678);
++	w32(EXYNOS9810_PMU + 0x80c, 0x12345671);
++
++	w32(EXYNOS9810_WDT_CL0 + 0x0, 0);
++	w32(EXYNOS9810_WDT_CL0 + 0x4, 0xffff);
++	w32(EXYNOS9810_WDT_CL0 + 0x8, 0xffff);
++	w32(EXYNOS9810_WDT_CL0 + 0x0, (0xff << 8) | (3 << 3) | (1 << 5) | (1 << 0));
++	w32(EXYNOS9810_PMU + 0x408, r32(EXYNOS9810_PMU + 0x408) & ~(1U << 24));
++	w32(EXYNOS9810_PMU + 0x40c, r32(EXYNOS9810_PMU + 0x40c) & ~(1U << 24));
++}
++#endif
++
+ /**
+  * Save x0 register value, assuming previous bootloader set it to
+  * point on loaded fdt or (for older linux kernels)atags.
+@@ -23,6 +60,9 @@ static ulong reg0 __section(".data");
+ void save_boot_params(ulong r0)
+ {
+ 	reg0 = r0;
++#if IS_ENABLED(CONFIG_EXYNOS9810_EARLY_SAFETY)
++	exynos9810_early_safety();
++#endif
+ 	save_boot_params_ret();
+ }
+ 
+diff --git a/board/samsung/exynos-mobile/Kconfig b/board/samsung/exynos-mobile/Kconfig
+index ed7d16b8..4907f8d6 100644
+--- a/board/samsung/exynos-mobile/Kconfig
++++ b/board/samsung/exynos-mobile/Kconfig
+@@ -15,4 +15,22 @@ config SYS_CONFIG_NAME
+ config SYS_VENDOR
+ 	default "samsung"
+ 
++config EXYNOS9810_EARLY_SAFETY
++	bool "Arm Download-mode reboot reason and watchdog at entry (Exynos 9810)"
++	help
++	  For bring-up: right at entry, make any reset land in Download mode
++	  and start the cluster 0 watchdog (~82 s), so a hang recovers
++	  without touching the device.
++
++config EXYNOS_MOBILE_RAMLOG
++	bool "Copy console output to RAM"
++	help
++	  Keep everything printed on the console in a RAM buffer at
++	  EXYNOS_MOBILE_RAMLOG_ADDR, so the next OS can read it after a reset.
++
++config EXYNOS_MOBILE_RAMLOG_ADDR
++	hex "RAM console log address"
++	depends on EXYNOS_MOBILE_RAMLOG
++	default 0x8ff100000
++
+ endif # TARGET_EXYNOS_MOBILE
+diff --git a/board/samsung/exynos-mobile/exynos-mobile.c b/board/samsung/exynos-mobile/exynos-mobile.c
+index 3bf54a74..8554a4f3 100644
+--- a/board/samsung/exynos-mobile/exynos-mobile.c
++++ b/board/samsung/exynos-mobile/exynos-mobile.c
+@@ -428,6 +428,45 @@ int board_init(void)
+ 	return 0;
+ }
+ 
++#if IS_ENABLED(CONFIG_EXYNOS_MOBILE_RAMLOG)
++/*
++ * RAM console log: { magic, length, text... } at CONFIG_EXYNOS_MOBILE_RAMLOG_ADDR.
++ * Each byte is cleaned to the point of coherency, so the log survives a
++ * watchdog reset whether or not the data cache is on yet.
++ */
++#define RAMLOG_MAGIC	0x474f4c55	/* "ULOG" */
++#define RAMLOG_SIZE	0x100000
++
++static int ramlog_started __section(".data");
++
++static void ramlog_clean(volatile void *p)
++{
++	asm volatile("dc civac, %0" : : "r"(p) : "memory");
++}
++
++void board_console_tap(const char c)
++{
++	volatile u32 *hdr = (volatile u32 *)CONFIG_EXYNOS_MOBILE_RAMLOG_ADDR;
++	volatile char *buf = (volatile char *)(hdr + 2);
++	u32 len;
++
++	if (!ramlog_started) {
++		ramlog_started = 1;
++		hdr[0] = RAMLOG_MAGIC;
++		hdr[1] = 0;
++		ramlog_clean(hdr);
++	}
++	len = hdr[1];
++	if (len >= RAMLOG_SIZE - 8)
++		return;
++	buf[len] = c;
++	ramlog_clean(&buf[len]);
++	hdr[1] = len + 1;
++	ramlog_clean(hdr);
++	asm volatile("dsb sy" : : : "memory");
++}
++#endif
++
+ 
+ /*
+  * Galaxy Tab Active3: the MAX77705 USB-C controller leaves its D+/D- switch
+diff --git a/board/samsung/exynos-mobile/gtactive3wifi.env b/board/samsung/exynos-mobile/gtactive3wifi.env
+new file mode 100644
+index 00000000..6214f2f3
+--- /dev/null
++++ b/board/samsung/exynos-mobile/gtactive3wifi.env
+@@ -0,0 +1,27 @@
++/* Galaxy Tab Active3 (SM-T570): no UART is wired out, use the display. */
++stdin=button-kbd
++stdout=vidconsole
++stderr=vidconsole
++
++bootdelay=0
++bootcmd=echo "gtactive3wifi: starting fastboot";
++	fastboot usb 0
++
++fastbootcmd=echo "Fastboot Mode";
++	fastboot usb 0
++
++/* Exynos 9810 PMU INFORM3 reboot reasons (Samsung sec_reboot) */
++reboot_download=mw.l 0x14060808 0x12345678;
++	mw.l 0x1406080c 0x12345671;
++	reset
++
++reboot_recovery=mw.l 0x14060808 0x12345678;
++	mw.l 0x1406080c 0x12345674;
++	reset
++
++bootmenu_0=Continue Boot=boot
++bootmenu_1=Enter Fastboot Mode=run fastbootcmd
++bootmenu_2=UEFI Maintenance Menu=eficonfig
++bootmenu_3=Reboot=reset
++bootmenu_4=Download Mode=run reboot_download
++bootmenu_5=Recovery=run reboot_recovery
+diff --git a/common/console.c b/common/console.c
+index 48586fd2..dafea373 100644
+--- a/common/console.c
++++ b/common/console.c
+@@ -708,8 +708,14 @@ static inline void pre_console_puts(const char *s) {}
+ static inline void print_pre_console_buffer(int flushpoint) {}
+ #endif
+ 
++/* Lets a board keep a copy of all console output, e.g. in RAM. */
++__weak void board_console_tap(const char c)
++{
++}
++
+ void putc(const char c)
+ {
++	board_console_tap(c);
+ 	if (!gd)
+ 		return;
+ 
+@@ -751,6 +757,8 @@ void putc(const char c)
+ 
+ void puts(const char *s)
+ {
++	for (const char *t = s; *t; t++)
++		board_console_tap(*t);
+ 	if (!gd)
+ 		return;
+ 
+diff --git a/configs/gtactive3wifi_defconfig b/configs/gtactive3wifi_defconfig
+index 090e89cc..0d5931f9 100644
+--- a/configs/gtactive3wifi_defconfig
++++ b/configs/gtactive3wifi_defconfig
+@@ -83,3 +83,8 @@ CONFIG_HEXDUMP=y
+ # CONFIG_TOOLS_FIT_SIGNATURE is not set
+ # CONFIG_PSCI_RESET is not set
+ # CONFIG_DISPLAY_CPUINFO is not set
++CONFIG_ENV_SOURCE_FILE="gtactive3wifi"
++# CONFIG_REQUIRE_SERIAL_CONSOLE is not set
++CONFIG_SYSRESET_PSCI=y
++CONFIG_EXYNOS9810_EARLY_SAFETY=y
++CONFIG_EXYNOS_MOBILE_RAMLOG=y
+-- 
+2.56.0
+

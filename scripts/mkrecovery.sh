@@ -9,7 +9,7 @@ OUT=$P/build/images
 mkdir -p "$OUT"
 
 # Ramdisk for uniLoader (same contents as the built-in initramfs)
-"$B/usr/gen_init_cpio" "$P/configs/initramfs.list" | gzip -9 > "$OUT/ramdisk.cpio.gz"
+"$B/usr/gen_init_cpio" "$P/build/initramfs.list" | gzip -9 > "$OUT/ramdisk.cpio.gz"
 
 cp "$B/arch/arm64/boot/Image" "$U/blob/Image"
 cp "$B/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dtb" "$U/blob/dtb"

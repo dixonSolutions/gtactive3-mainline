@@ -1,7 +1,7 @@
 From 1010c679db607d3539f52e2d03ceeedb8f349992 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 13:53:37 +1100
-Subject: [PATCH 3/7] arm64: dts: exynos: Add initial support for Samsung
+Subject: [PATCH 3/8] arm64: dts: exynos: Add initial support for Samsung
  Galaxy Tab Active3
 
 Add a device tree for the Wi-Fi Galaxy Tab Active3 (SM-T570), based on

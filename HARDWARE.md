@@ -93,3 +93,5 @@ back gpg3-0, recent gpg3-1, "Active" key gpa0-5.
   before link startup, lane count read before per-lane PCS writes, **PA_TxTrailingClocks 0x64** (0x10 fails).
 - Clocks as left by S-Boot: PLL_SHARED4 = 666.25 MHz; FSYS0 bus 333.125 MHz; UFS_EMBD (UniPro) 166.5625 MHz.
 - Link: HS-G3 rate B x2, FAST_MODE.
+- HSI2C_40 pins: **SDA = gpm15-0, SCL = gpm14-0** (found by the bit-bang probe: MAX77705 @0x66 ACKs).
+  MAX77705 CONTROL1 reads back 0x09 (COM_USB) after the switch command.

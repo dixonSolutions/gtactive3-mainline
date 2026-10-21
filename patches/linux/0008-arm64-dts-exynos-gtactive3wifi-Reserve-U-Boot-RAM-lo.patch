@@ -1,0 +1,30 @@
+From f34e7b04239b00d5bbaa8df842ba1b9605b494b3 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:26:57 +1100
+Subject: [PATCH 8/8] arm64: dts: exynos: gtactive3wifi: Reserve U-Boot RAM log
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 71cef428b..edbbecdea 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -116,6 +116,12 @@ ramoops@8ff000000 {
+ 			record-size = <0x20000>;
+ 			pmsg-size = <0x10000>;
+ 		};
++
++		/* bring-up: U-Boot's console log (CONFIG_EXYNOS_MOBILE_RAMLOG) */
++		uboot-log@8ff100000 {
++			reg = <0x8 0xff100000 0x100000>;
++			no-map;
++		};
+ 	};
+ };
+ 
+-- 
+2.56.0
+
