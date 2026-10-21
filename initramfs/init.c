@@ -1,0 +1,747 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Bring-up init for the SM-T570 mainline port. Built with the kernel's nolibc.
+ *
+ *  1. Arms "reboot into Download mode" in the PMU, so any reset (panic, bus
+ *     error, watchdog) lands where the host can flash the next build.
+ *  2. Prints what the kernel found to the framebuffer console.
+ *  3. Forces the USB clock gates on, loads the USB PHY/DWC3 modules and
+ *     creates a USB NCM network gadget.
+ *  4. Serves a tiny line-based debug console on TCP port 23 over IPv6
+ *     link-local: dmesg, peek/poke of physical registers, reboot.
+ *  5. If no USB host configures the gadget within the timeout, reboots into
+ *     Download mode so the host can flash the next attempt.
+ */
+#include <linux/input.h>
+#include <linux/reboot.h>
+#include <linux/in6.h>
+#include <linux/socket.h>
+#include <linux/sockios.h>
+#include <linux/if.h>
+#include <linux/i2c.h>
+#include <linux/i2c-dev.h>
+
+#define PMU_BASE	0x14060000UL
+#define PMU_INFORM2	0x0808
+#define PMU_INFORM3	0x080c
+#define SEC_POWER_RESET		0x12345678
+#define SEC_REASON_DOWNLOAD	0x12345671
+
+#define CMU_TOP_BASE	0x1a240000UL
+#define CMU_FSYS0_BASE	0x11000000UL
+#define GATE_CG_VAL	(1u << 21)
+#define GATE_MANUAL	(1u << 20)
+
+#define USB_TIMEOUT_S	60
+
+static int con = 1;
+/* status for the timing side channel: see main() */
+static int st_max, st_gadget;
+static int kmsg = -1;
+static int devmem = -1;
+static char logbuf[1 << 17];
+
+/* ---------- output helpers ---------- */
+
+static void wr(int fd, const char *s) { write(fd, s, strlen(s)); }
+static void out(const char *s)
+{
+	static char line[256];
+	static int len;
+
+	wr(con, s);
+	/* mirror complete lines into the kernel log (and so into pstore) */
+	for (; *s; s++) {
+		if (*s != '\n' && len < (int)sizeof(line) - 8) { line[len++] = *s; continue; }
+		if (kmsg >= 0 && len) {
+			char rec[272] = "<6>init: ";
+			memcpy(rec + 9, line, len);
+			write(kmsg, rec, 9 + len);
+		}
+		len = 0;
+	}
+}
+
+static void hex32(char *b, unsigned long v)
+{
+	static const char d[] = "0123456789abcdef";
+	int i;
+
+	b[0] = '0'; b[1] = 'x';
+	for (i = 0; i < 8; i++)
+		b[2 + i] = d[(v >> (28 - 4 * i)) & 0xf];
+	b[10] = 0;
+}
+
+static void outhex(const char *label, unsigned long v)
+{
+	char b[12];
+
+	hex32(b, v);
+	out(label); out(b); out("\n");
+}
+
+static void cat(const char *label, const char *path, int max)
+{
+	char buf[512];
+	int fd = open(path, O_RDONLY), n;
+
+	out(label);
+	if (fd < 0) { out("(unavailable)\n"); return; }
+	n = read(fd, buf, max < (int)sizeof(buf) - 1 ? max : (int)sizeof(buf) - 1);
+	close(fd);
+	if (n < 0) n = 0;
+	buf[n] = 0;
+	out(buf);
+	if (n && buf[n - 1] != '\n') out("\n");
+}
+
+static int readfile(const char *path, char *buf, int len)
+{
+	int fd = open(path, O_RDONLY), n;
+
+	if (fd < 0) return -1;
+	n = read(fd, buf, len - 1);
+	close(fd);
+	if (n < 0) n = 0;
+	buf[n] = 0;
+	return n;
+}
+
+static int writefile(const char *path, const char *s)
+{
+	int fd = open(path, O_WRONLY), r;
+
+	if (fd < 0) return -1;
+	r = write(fd, s, strlen(s));
+	close(fd);
+	return r < 0 ? -1 : 0;
+}
+
+/* ---------- physical register access through /dev/mem ---------- */
+
+static volatile unsigned int *map_reg(unsigned long phys)
+{
+	unsigned long page = phys & ~0xfffUL;
+	void *p;
+
+	if (devmem < 0)
+		devmem = open("/dev/mem", O_RDWR | O_SYNC);
+	if (devmem < 0)
+		return 0;
+	p = mmap(0, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, devmem, page);
+	if (p == MAP_FAILED)
+		return 0;
+	return (volatile unsigned int *)((char *)p + (phys & 0xfff));
+}
+
+static int peek(unsigned long phys, unsigned int *val)
+{
+	volatile unsigned int *r = map_reg(phys);
+
+	if (!r) return -1;
+	*val = *r;
+	munmap((void *)((unsigned long)r & ~0xfffUL), 0x1000);
+	return 0;
+}
+
+static int poke(unsigned long phys, unsigned int val)
+{
+	volatile unsigned int *r = map_reg(phys);
+
+	if (!r) return -1;
+	*r = val;
+	munmap((void *)((unsigned long)r & ~0xfffUL), 0x1000);
+	return 0;
+}
+
+static void arm_download_on_reset(void)
+{
+	if (poke(PMU_BASE + PMU_INFORM2, SEC_POWER_RESET) ||
+	    poke(PMU_BASE + PMU_INFORM3, SEC_REASON_DOWNLOAD))
+		out("WARNING: could not arm Download mode on reset (/dev/mem)\n");
+	else
+		out("Any reset now goes to Download mode.\n");
+}
+
+static void force_gate(const char *name, unsigned long phys)
+{
+	unsigned int v = 0, w = 0;
+	char b[12];
+
+	if (peek(phys, &v)) { out(name); out(": unreadable\n"); return; }
+	poke(phys, v | GATE_CG_VAL | GATE_MANUAL);
+	peek(phys, &w);
+	out("  "); out(name); out(": "); hex32(b, v); out(b);
+	out(" -> "); hex32(b, w); out(b); out("\n");
+}
+
+/* ---------- kernel log ---------- */
+
+static int klog_read(void)
+{
+	int n = __nolibc_syscall3(__NR_syslog, 3 /* READ_ALL */, logbuf, sizeof(logbuf) - 1);
+
+	if (n < 0) n = 0;
+	logbuf[n] = 0;
+	return n;
+}
+
+static void klog_summary(void)
+{
+	char *line = logbuf, *end;
+	int shown = 0;
+
+	if (klog_read() <= 0) { out("(kernel log unavailable)\n"); return; }
+	out("Kernel log (CPU / USB / errors):\n");
+	while (line && *line && shown < 14) {
+		end = strchr(line, '\n');
+		if (end) *end = 0;
+		if (strstr(line, "CPU") || strstr(line, "psci") || strstr(line, "fail") ||
+		    strstr(line, "error") || strstr(line, "usb") || strstr(line, "dwc3") ||
+		    strstr(line, "phy")) {
+			char *msg = strchr(line, ']');
+			out("  ");
+			out(msg ? msg + 2 : line);
+			out("\n");
+			shown++;
+		}
+		line = end ? end + 1 : 0;
+	}
+}
+
+static void reboot_to(const char *mode)
+{
+	out("\nRestarting to ");
+	out(mode);
+	out(" mode...\n");
+	__nolibc_syscall0(__NR_sync);
+	__nolibc_syscall4(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+			  LINUX_REBOOT_CMD_RESTART2, mode);
+}
+
+/* ---------- MAX77705: route USB D+/D- to the AP ---------- */
+
+#define MAX77705_USBC_ADDR	0x25	/* USB-C / MUIC block */
+#define MAX77705_OPCODE_WRITE	0x21
+#define MAX77705_OPCODE_END	0x41
+#define MAX77705_CMD_CTRL1_W	0x06	/* COMMAND_CONTROL1_WRITE */
+#define MAX77705_COM_USB	0x09	/* COMP2SW = COMN1SW = USB */
+
+/*
+ * The bootloader leaves the MAX77705 data switch open after a warm boot with
+ * the cable already attached; Samsung's MUIC driver writes COM_USB at boot.
+ */
+static void max77705_com_to_usb(void)
+{
+	unsigned char cmd[3] = { MAX77705_OPCODE_WRITE, MAX77705_CMD_CTRL1_W, MAX77705_COM_USB };
+	unsigned char end[2] = { MAX77705_OPCODE_END, 0x00 };
+	int fd, i;
+
+	for (i = 0; i < 30; i++) {
+		fd = open("/dev/i2c-0", O_RDWR);
+		if (fd >= 0) break;
+		usleep(100000);
+	}
+	if (fd < 0) { out("  MAX77705: no /dev/i2c-0\n"); st_max = 0; return; }
+	if (ioctl(fd, I2C_SLAVE, MAX77705_USBC_ADDR) < 0) {
+		out("  MAX77705: I2C_SLAVE failed\n");
+	} else if (write(fd, cmd, sizeof(cmd)) != sizeof(cmd) ||
+		   write(fd, end, sizeof(end)) != sizeof(end)) {
+		out("  MAX77705: switch write FAILED (no ACK)\n");
+		st_max = 1;
+	} else {
+		out("  MAX77705: data switch -> USB\n");
+		st_max = 2;
+	}
+	close(fd);
+}
+
+/* ---------- bit-banged I2C on the HSI2C_40 pins (gpm14-0 / gpm15-0) ----------
+ *
+ * The HSI2C_40 controller times out after the bootloader (USI/clock state not
+ * fully known yet), but the MAX77705 only needs a few bytes. Drive the two bus
+ * pins as open-drain GPIOs through the CMGP pin controller: "0" = output low,
+ * "1" = input (released, pulled up by the board). Never drives a line high.
+ */
+#define PINCTRL_CMGP	0x14220000UL
+#define GPM14_OFF	0x180
+#define GPM15_OFF	0x1a0
+
+static volatile unsigned int *cmgp;
+static unsigned int bb_sda, bb_scl;
+
+#define CON(o)	cmgp[(o) / 4]
+#define DAT(o)	cmgp[((o) + 4) / 4]
+
+static void bb_delay(void) { for (int i = 0; i < 80; i++) (void)CON(GPM14_OFF); }
+static void bb_rel(unsigned int o) { CON(o) = CON(o) & ~0xfu; }
+static void bb_low(unsigned int o) { DAT(o) = DAT(o) & ~1u; CON(o) = (CON(o) & ~0xfu) | 1u; }
+static int bb_get(unsigned int o) { return DAT(o) & 1; }
+
+static void bb_scl_rel(void)
+{
+	bb_rel(bb_scl);
+	for (int i = 0; i < 2000 && !bb_get(bb_scl); i++)	/* clock stretching */
+		bb_delay();
+}
+
+static void bb_start(void) { bb_rel(bb_sda); bb_scl_rel(); bb_delay(); bb_low(bb_sda); bb_delay(); bb_low(bb_scl); bb_delay(); }
+static void bb_stop(void) { bb_low(bb_sda); bb_delay(); bb_scl_rel(); bb_delay(); bb_rel(bb_sda); bb_delay(); }
+
+static int bb_bit(int b)	/* write bit b, return the line as sampled */
+{
+	if (b) bb_rel(bb_sda); else bb_low(bb_sda);
+	bb_delay();
+	bb_scl_rel();
+	bb_delay();
+	b = bb_get(bb_sda);
+	bb_low(bb_scl);
+	bb_delay();
+	return b;
+}
+
+static int bb_byte(int v)	/* returns 1 on ACK */
+{
+	for (int i = 7; i >= 0; i--) bb_bit((v >> i) & 1);
+	return !bb_bit(1);
+}
+
+static int bb_rbyte(int ack)
+{
+	int v = 0;
+
+	for (int i = 0; i < 8; i++) v = (v << 1) | bb_bit(1);
+	bb_bit(!ack);
+	return v;
+}
+
+static int bb_write(int addr, const unsigned char *b, int n)
+{
+	int ok;
+
+	bb_start();
+	ok = bb_byte(addr << 1);
+	for (int i = 0; ok && i < n; i++) ok = bb_byte(b[i]);
+	bb_stop();
+	return ok;
+}
+
+static int bb_read(int addr, int reg, unsigned char *b, int n)
+{
+	int ok;
+
+	bb_start();
+	ok = bb_byte(addr << 1) && bb_byte(reg);
+	if (ok) {
+		bb_start();	/* repeated start */
+		ok = bb_byte((addr << 1) | 1);
+		for (int i = 0; ok && i < n; i++) b[i] = bb_rbyte(i + 1 < n);
+	}
+	bb_stop();
+	return ok;
+}
+
+/* MAX77705 USB-C block: route D+/D- to the AP (Samsung COMMAND_CONTROL1_WRITE) */
+static void max77705_bitbang(void)
+{
+	static const unsigned char sw[3] = { 0x21, 0x06, 0x09 }, end[2] = { 0x41, 0x00 };
+	static const unsigned char rq[2] = { 0x21, 0x05 };
+	unsigned int con14, con15, pud14, pud15;
+	unsigned char rb[4] = { 0 };
+	volatile unsigned int *base;
+	char b[12];
+	int map;
+
+	base = map_reg(PINCTRL_CMGP);
+	if (!base) { out("  bitbang: cannot map pin controller\n"); return; }
+	cmgp = base;
+	con14 = CON(GPM14_OFF); con15 = CON(GPM15_OFF);
+	pud14 = cmgp[(GPM14_OFF + 8) / 4]; pud15 = cmgp[(GPM15_OFF + 8) / 4];
+	cmgp[(GPM14_OFF + 8) / 4] = pud14 & ~0xfu;	/* board pull-ups only */
+	cmgp[(GPM15_OFF + 8) / 4] = pud15 & ~0xfu;
+	bb_rel(GPM14_OFF); bb_rel(GPM15_OFF);
+	bb_delay(); bb_delay();
+	out("  bitbang: idle lines gpm14="); out(bb_get(GPM14_OFF) ? "1" : "0");
+	out(" gpm15="); out(bb_get(GPM15_OFF) ? "1\n" : "0\n");
+
+	/* find which pin is SDA by probing the MAX77705 PMIC block at 0x66 */
+	for (map = 0; map < 2; map++) {
+		bb_sda = map ? GPM15_OFF : GPM14_OFF;
+		bb_scl = map ? GPM14_OFF : GPM15_OFF;
+		if (bb_write(0x66, 0, 0)) break;
+	}
+	if (map == 2) {
+		out("  bitbang: no ACK from 0x66 on either pin order\n");
+		st_max = 0;
+	} else {
+		out(map ? "  bitbang: SDA=gpm15 SCL=gpm14, 0x66 ACK\n" : "  bitbang: SDA=gpm14 SCL=gpm15, 0x66 ACK\n");
+		if (bb_write(0x25, sw, 3) && bb_write(0x25, end, 2)) {
+			out("  MAX77705: data switch -> USB (bit-banged)\n");
+			st_max = 2;
+		} else {
+			out("  MAX77705: USB-C block 0x25 NACK\n");
+			st_max = 1;
+		}
+		/* read CONTROL1 back for the log */
+		if (bb_write(0x25, rq, 2) && bb_write(0x25, end, 2)) {
+			usleep(20000);
+			if (bb_read(0x25, 0x51, rb, 3)) {
+				out("  MAX77705 CONTROL1 read:");
+				for (int i = 0; i < 3; i++) { hex32(b, rb[i]); out(" "); out(b + 8); }
+				out("\n");
+			}
+		}
+	}
+	/* hand the pins back to the HSI2C function */
+	CON(GPM14_OFF) = con14; CON(GPM15_OFF) = con15;
+	cmgp[(GPM14_OFF + 8) / 4] = pud14; cmgp[(GPM15_OFF + 8) / 4] = pud15;
+	munmap((void *)((unsigned long)base & ~0xfffUL), 0x1000);
+}
+
+/* ---------- USB gadget ---------- */
+
+static int load_module(const char *path)
+{
+	int fd = open(path, O_RDONLY), r;
+
+	if (fd < 0) { out("  missing "); out(path); out("\n"); return -1; }
+	r = __nolibc_syscall3(__NR_finit_module, fd, "", 0);
+	close(fd);
+	out("  insmod "); out(path); out(r == 0 || r == -17 ? ": ok\n" : ": FAILED\n");
+	return r;
+}
+
+static int find_udc(char *name, int len)
+{
+	char buf[4096];
+	int fd = open("/sys/class/udc", O_RDONLY | O_DIRECTORY), n;
+	struct linux_dirent64 *d;
+
+	if (fd < 0) return -1;
+	n = __nolibc_syscall3(__NR_getdents64, fd, buf, sizeof(buf));
+	close(fd);
+	for (int off = 0; off < n; off += d->d_reclen) {
+		d = (struct linux_dirent64 *)(buf + off);
+		if (d->d_name[0] == '.') continue;
+		strncpy(name, d->d_name, len - 1);
+		name[len - 1] = 0;
+		return 0;
+	}
+	return -1;
+}
+
+#define G "/sys/kernel/config/usb_gadget/g1"
+
+static int setup_gadget(char *udc, int udclen)
+{
+	int i;
+
+	for (i = 0; i < 50 && find_udc(udc, udclen); i++)
+		usleep(100000);
+	if (i == 50) { out("  no USB device controller appeared\n"); return -1; }
+	out("  UDC: "); out(udc); out("\n");
+
+	mkdir("/sys/kernel/config", 0755);
+	mount("configfs", "/sys/kernel/config", "configfs", 0, 0);
+	mkdir(G, 0755);
+	writefile(G "/idVendor", "0x1d6b");	/* Linux Foundation */
+	writefile(G "/idProduct", "0x0104");	/* Multifunction composite gadget */
+	writefile(G "/bcdDevice", "0x0001");
+	mkdir(G "/strings/0x409", 0755);
+	writefile(G "/strings/0x409/manufacturer", "Samsung");
+	writefile(G "/strings/0x409/product", "Galaxy Tab Active3 (mainline bring-up)");
+	writefile(G "/strings/0x409/serialnumber", "gtactive3-bringup");
+	mkdir(G "/configs/c.1", 0755);
+	mkdir(G "/configs/c.1/strings/0x409", 0755);
+	writefile(G "/configs/c.1/strings/0x409/configuration", "NCM");
+	mkdir(G "/functions/ncm.usb0", 0755);
+	/* fixed MACs so the IPv6 link-local addresses never change */
+	writefile(G "/functions/ncm.usb0/dev_addr", "02:57:0a:00:00:01");
+	writefile(G "/functions/ncm.usb0/host_addr", "02:57:0a:00:00:02");
+	symlink(G "/functions/ncm.usb0", G "/configs/c.1/ncm.usb0");
+	if (writefile(G "/UDC", udc)) { out("  binding gadget to UDC failed\n"); return -1; }
+	out("  gadget bound\n");
+	return 0;
+}
+
+static void ifup(const char *ifname)
+{
+	struct ifreq ifr;
+	int s = __nolibc_syscall3(__NR_socket, AF_INET6, 2 /* SOCK_DGRAM */, 0);
+
+	if (s < 0) { out("  no socket for ifup\n"); return; }
+	memset(&ifr, 0, sizeof(ifr));
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+	ioctl(s, SIOCGIFFLAGS, &ifr);
+	ifr.ifr_flags |= IFF_UP;
+	out(ioctl(s, SIOCSIFFLAGS, &ifr) ? "  ifup failed\n" : "  usb0 up (fe80::57:aff:fe00:1)\n");
+	close(s);
+}
+
+/* ---------- debug console on TCP/23 ---------- */
+
+static unsigned long parse_num(const char *s, const char **end)
+{
+	unsigned long v = 0;
+
+	while (*s == ' ') s++;
+	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+		s += 2;
+		for (;; s++) {
+			int c = *s;
+			if (c >= '0' && c <= '9') v = v * 16 + c - '0';
+			else if (c >= 'a' && c <= 'f') v = v * 16 + c - 'a' + 10;
+			else if (c >= 'A' && c <= 'F') v = v * 16 + c - 'A' + 10;
+			else break;
+		}
+	} else {
+		while (*s >= '0' && *s <= '9') v = v * 10 + *s++ - '0';
+	}
+	if (end) *end = s;
+	return v;
+}
+
+/* i2c-dev helpers for the console: raw write, and write-then-read */
+static int i2c_xfer(int addr, unsigned char *wbuf, int wlen, unsigned char *rbuf, int rlen)
+{
+	struct i2c_msg msgs[2];
+	struct i2c_rdwr_ioctl_data d;
+	int fd = open("/dev/i2c-0", O_RDWR), n = 0, r;
+
+	if (fd < 0) return -1;
+	if (wlen) { msgs[n].addr = addr; msgs[n].flags = 0; msgs[n].len = wlen; msgs[n].buf = wbuf; n++; }
+	if (rlen) { msgs[n].addr = addr; msgs[n].flags = I2C_M_RD; msgs[n].len = rlen; msgs[n].buf = rbuf; n++; }
+	d.msgs = msgs;
+	d.nmsgs = n;
+	r = ioctl(fd, I2C_RDWR, &d);
+	close(fd);
+	return r < 0 ? -1 : 0;
+}
+
+static void serve(int c)
+{
+	char line[256], b[12];
+	int n = 0, r;
+	unsigned int v;
+
+	wr(c, "SM-T570 mainline bring-up console. Commands: dmesg, peek ADDR, "
+	      "poke ADDR VAL, cat PATH, write PATH VALUE, i2cw ADDR B.., i2cr ADDR REG N, reboot [download|recovery|normal]\n> ");
+	for (;;) {
+		r = read(c, line + n, 1);
+		if (r <= 0) return;
+		if (line[n] == '\r') continue;
+		if (line[n] != '\n' && n < (int)sizeof(line) - 2) { n++; continue; }
+		line[n] = 0;
+		n = 0;
+		if (!strcmp(line, "dmesg")) {
+			r = klog_read();
+			write(c, logbuf, r);
+		} else if (!strncmp(line, "peek ", 5)) {
+			unsigned long a = parse_num(line + 5, 0);
+			if (peek(a, &v)) wr(c, "error\n");
+			else { hex32(b, v); wr(c, b); wr(c, "\n"); }
+		} else if (!strncmp(line, "poke ", 5)) {
+			const char *e;
+			unsigned long a = parse_num(line + 5, &e);
+			unsigned long val = parse_num(e, 0);
+			wr(c, poke(a, val) ? "error\n" : "ok\n");
+		} else if (!strncmp(line, "cat ", 4)) {
+			static char fb[8192];
+			r = readfile(line + 4, fb, sizeof(fb));
+			if (r < 0) wr(c, "error\n"); else write(c, fb, r);
+		} else if (!strncmp(line, "i2cw ", 5) || !strncmp(line, "i2cr ", 5)) {
+			/* i2cw ADDR B0 B1 ...  |  i2cr ADDR REG N */
+			unsigned char wb[40], rb[64];
+			const char *e = line + 5;
+			int addr = parse_num(e, &e), nw = 0, nr = 0, k;
+
+			if (line[3] == 'w') {
+				while (*e && nw < 40) { while (*e == ' ') e++; if (!*e) break; wb[nw++] = parse_num(e, &e); }
+			} else {
+				wb[nw++] = parse_num(e, &e);
+				nr = parse_num(e, &e);
+				if (nr > 64) nr = 64;
+			}
+			if (i2c_xfer(addr, wb, nw, rb, nr)) wr(c, "i2c error (no ACK?)\n");
+			else if (!nr) wr(c, "ok\n");
+			else {
+				for (k = 0; k < nr; k++) { hex32(b, rb[k]); wr(c, b + 8); wr(c, k + 1 < nr ? " " : "\n"); }
+			}
+		} else if (!strncmp(line, "write ", 6)) {
+			char *val = strchr(line + 6, ' ');
+			if (!val) { wr(c, "usage: write PATH VALUE\n"); }
+			else { *val++ = 0; wr(c, writefile(line + 6, val) ? "error\n" : "ok\n"); }
+		} else if (!strncmp(line, "reboot", 6)) {
+			const char *m = line[6] == ' ' ? line + 7 : "normal";
+			wr(c, "rebooting\n");
+			close(c);
+			reboot_to(m);
+		} else if (line[0]) {
+			wr(c, "unknown command\n");
+		}
+		wr(c, "> ");
+	}
+}
+
+static int listen23(void)
+{
+	struct sockaddr_in6 a;
+	int one = 1;
+	int s = __nolibc_syscall3(__NR_socket, AF_INET6, 1 /* SOCK_STREAM */, 0);
+
+	if (s < 0) return -1;
+	__nolibc_syscall5(__NR_setsockopt, s, 1 /* SOL_SOCKET */, 2 /* SO_REUSEADDR */, &one, sizeof(one));
+	memset(&a, 0, sizeof(a));
+	a.sin6_family = AF_INET6;
+	a.sin6_port = (23 >> 8) | ((23 & 0xff) << 8);
+	if (__nolibc_syscall3(__NR_bind, s, &a, sizeof(a)) ||
+	    __nolibc_syscall2(__NR_listen, s, 2)) {
+		close(s);
+		return -1;
+	}
+	return s;
+}
+
+/* ---------- keys ---------- */
+
+static const char *keyname(int code)
+{
+	switch (code) {
+	case KEY_POWER: return "POWER";
+	case KEY_VOLUMEUP: return "VOLUME UP";
+	case KEY_VOLUMEDOWN: return "VOLUME DOWN";
+	case KEY_HOMEPAGE: return "HOME";
+	case KEY_BACK: return "BACK";
+	case KEY_APPSELECT: return "RECENT APPS";
+	case KEY_PROG1: return "ACTIVE KEY";
+	default: return "other";
+	}
+}
+
+int main(void)
+{
+	char udc[64] = "", path[128];
+	int host_seen = 0;
+	struct input_event ev;
+	int keys, lsock, i;
+
+	mkdir("/proc", 0755); mkdir("/sys", 0755); mkdir("/dev", 0755);
+	mount("proc", "/proc", "proc", 0, 0);
+	mount("sysfs", "/sys", "sysfs", 0, 0);
+	mount("devtmpfs", "/dev", "devtmpfs", 0, 0);
+
+	i = open("/dev/tty0", O_WRONLY);
+	if (i >= 0) con = i;
+	kmsg = open("/dev/kmsg", O_WRONLY);
+	mkdir("/sys/fs/pstore", 0755);
+	mount("pstore", "/sys/fs/pstore", "pstore", 0, 0);
+
+	out("\n\n==============================================\n");
+	out("  Galaxy Tab Active3 - mainline Linux is alive\n");
+	out("==============================================\n\n");
+	arm_download_on_reset();
+	cat("Kernel:   ", "/proc/version", 200);
+	cat("CPUs:     ", "/sys/devices/system/cpu/online", 32);
+	cat("Board:    ", "/sys/firmware/devicetree/base/model", 64);
+	cat("Memory:   ", "/proc/meminfo", 28);
+	klog_summary();
+
+	out("\nUSB bring-up:\n");
+	force_gate("CMU_TOP GATE_CLKCMU_FSYS0_USB30DRD", CMU_TOP_BASE + 0x2064);
+	force_gate("FSYS0 GOUT_USB30DRD_REF_CLK", CMU_FSYS0_BASE + 0x206c);
+	/*
+	 * HSI2C_40 sits in a USI block whose USI_CON[0] reset stays asserted
+	 * after the bootloader; Samsung's driver clears it before any transfer.
+	 * TODO: describe the USI wrapper in DT instead (exynos-usi).
+	 */
+	{
+		unsigned int mux = 0, div = 0;
+		char b[12];
+
+		/* USI_03_CMGP (hsi2c@14360000) into I2C mode: SYSREG_CMGP SW_CONF */
+		poke(0x14212030UL, 0x4);
+		/* CMU_CMGP gates for USI_CMGP03 */
+		force_gate("CMGP GATE_CLK_USI_CMGP03", 0x14200000UL + 0x2014);
+		force_gate("CMGP USI_CMGP03 IPCLK", 0x14200000UL + 0x20a8);
+		force_gate("CMGP USI_CMGP03 PCLK", 0x14200000UL + 0x20ac);
+		force_gate("CMGP RSTNSYNC USI_CMGP03", 0x14200000UL + 0x2074);
+		peek(0x14200000UL + 0x1018, &mux);
+		peek(0x14200000UL + 0x1814, &div);
+		hex32(b, mux); out("  USI_CMGP03 mux "); out(b);
+		hex32(b, div); out(" div "); out(b); out("\n");
+		/* release the USI reset */
+		poke(0x14360000UL + 0xc4, 0);
+	}
+	max77705_bitbang();
+	load_module("/lib/modules/phy-exynos5-usbdrd.ko");
+	load_module("/lib/modules/dwc3.ko");
+	load_module("/lib/modules/dwc3-exynos.ko");
+	if (!setup_gadget(udc, sizeof(udc))) {
+		st_gadget = 1;
+		ifup("usb0");
+	}
+
+	lsock = listen23();
+	out(lsock < 0 ? "  debug console: FAILED\n" : "  debug console on port 23\n");
+	out("\nVOLUME UP = restart into Download mode.\n");
+
+	keys = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
+	if (lsock >= 0)
+		__nolibc_syscall3(__NR_fcntl, lsock, 4 /* F_SETFL */, O_NONBLOCK);
+
+	for (i = 0;; i++) {
+		int c;
+
+		if (keys >= 0 && read(keys, &ev, sizeof(ev)) == sizeof(ev) &&
+		    ev.type == EV_KEY && ev.value == 1) {
+			out("Key: "); out(keyname(ev.code)); out("\n");
+			if (ev.code == KEY_VOLUMEUP)
+				reboot_to("download");
+		}
+		if (lsock >= 0) {
+			c = __nolibc_syscall4(__NR_accept4, lsock, 0, 0, 0);
+			if (c >= 0) {
+				out("Host connected to debug console.\n");
+				host_seen = 1;
+				serve(c);
+				close(c);
+			}
+		}
+		/* not enumerated yet: drop and re-assert the D+ pull-up every 8 s */
+		if (!host_seen && udc[0] && i && i % 80 == 0) {
+			char st[32] = "";
+
+			snprintf(path, sizeof(path), "/sys/class/udc/%s/state", udc);
+			readfile(path, st, sizeof(st));
+			if (!strstr(st, "configured")) {
+				snprintf(path, sizeof(path), "/sys/class/udc/%s/soft_connect", udc);
+				writefile(path, "disconnect");
+				usleep(500000);
+				writefile(path, "connect");
+				out("  USB not enumerated, re-asserted pull-up\n");
+			}
+		}
+		/* no host after the timeout: hand back to the flashing loop */
+		/*
+		 * Timing side channel for the host loop: with no host, reboot into
+		 * Download mode after 30 + 10 * code seconds,
+		 * code = st_max (0 no i2c, 1 NACK, 2 ACK) + 3 * st_gadget (0/1).
+		 */
+		if (i == (30 + 10 * (st_max + 3 * st_gadget)) * 10 && !host_seen) {
+			char st[32] = "";
+
+			snprintf(path, sizeof(path), "/sys/class/udc/%s/state", udc);
+			readfile(path, st, sizeof(st));
+			if (!strstr(st, "configured")) {
+				out("No USB host after timeout (UDC state: ");
+				out(st[0] ? st : "unknown\n");
+				out(").\n");
+				reboot_to("download");
+			}
+			out("USB host present, staying up.\n");
+		}
+		usleep(100000);
+	}
+	return 0;
+}

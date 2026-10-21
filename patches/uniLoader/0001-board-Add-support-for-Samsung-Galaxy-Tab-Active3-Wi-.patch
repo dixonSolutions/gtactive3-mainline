@@ -1,0 +1,116 @@
+From cefde1ce2a16b134f58c4b5be6d76a563b402f5a Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 13:53:36 +1100
+Subject: [PATCH] board: Add support for Samsung Galaxy Tab Active3 (Wi-Fi)
+
+Based on the starlte board. The framebuffer base (0xca000000) comes from
+the stock T570XXSFEYI1 DTBO fb_handover node; the panel is 1200x1920.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ board/Kconfig                       |  7 +++++
+ board/Makefile                      |  1 +
+ board/samsung/board-gtactive3wifi.c | 43 +++++++++++++++++++++++++++++
+ configs/gtactive3wifi_defconfig     | 10 +++++++
+ 4 files changed, 61 insertions(+)
+ create mode 100644 board/samsung/board-gtactive3wifi.c
+ create mode 100644 configs/gtactive3wifi_defconfig
+
+diff --git a/board/Kconfig b/board/Kconfig
+index 95fa423..cb16ed7 100644
+--- a/board/Kconfig
++++ b/board/Kconfig
+@@ -351,6 +351,13 @@ menu "Device Support"
+ 		help
+ 		  Say Y if you want to include support for Samsung Galaxy S20 FE
+ 
++	config SAMSUNG_GTACTIVE3WIFI
++		bool "Support for Samsung Galaxy Tab Active3 (Wi-Fi)"
++		default n
++		depends on EXYNOS_9810
++		help
++		  Say Y if you want to include support for Samsung Galaxy Tab Active3
++
+ 	config SAMSUNG_STARLTE
+ 		bool "Support for Samsung Galaxy S9"
+ 		default n
+diff --git a/board/Makefile b/board/Makefile
+index 74a7292..7a677e8 100644
+--- a/board/Makefile
++++ b/board/Makefile
+@@ -45,6 +45,7 @@ lib-$(CONFIG_SAMSUNG_LUCKY7) += samsung/board-lucky7.o
+ lib-$(CONFIG_SAMSUNG_NOBLELTE) += samsung/board-noblelte.o
+ lib-$(CONFIG_SAMSUNG_R0Q) += samsung/board-r0q.o
+ lib-$(CONFIG_SAMSUNG_R8S) += samsung/board-r8s.o
++lib-$(CONFIG_SAMSUNG_GTACTIVE3WIFI) += samsung/board-gtactive3wifi.o
+ lib-$(CONFIG_SAMSUNG_STARLTE) += samsung/board-starlte.o
+ lib-$(CONFIG_SAMSUNG_X1S) += samsung/board-x1s.o
+ lib-$(CONFIG_SAMSUNG_ZEROFLTE) += samsung/board-zeroflte.o
+diff --git a/board/samsung/board-gtactive3wifi.c b/board/samsung/board-gtactive3wifi.c
+new file mode 100644
+index 0000000..b966efe
+--- /dev/null
++++ b/board/samsung/board-gtactive3wifi.c
+@@ -0,0 +1,43 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Samsung Galaxy Tab Active3 (SM-T570) board, based on board-starlte.c
++ */
++#include <board.h>
++#include <util.h>
++#include <drivers/framework.h>
++#include <lib/simplefb.h>
++
++#define DECON_F_BASE		0x16030000
++#define HW_SW_TRIG_CONTROL	0x70
++
++// Early initialization
++int gtactive3wifi_init(void)
++{
++	/* Allow framebuffer to be written to */
++	*(int*) (DECON_F_BASE + HW_SW_TRIG_CONTROL) = 0x1281;
++	return 0;
++}
++
++/* Bootloader framebuffer (stock DTBO "exynos,fb_handover" at 0xca000000) */
++static struct video_info gtactive3wifi_fb = {
++	.format = FB_FORMAT_ARGB8888,
++	.width = 1200,
++	.height = 1920,
++	.stride = 4,
++	.scale = 2,
++	.address = (void *)0xca000000
++};
++
++static const struct device gtactive3wifi_devices[] = {
++	{ "simplefb", &gtactive3wifi_fb, "fb" },
++};
++
++struct board_data board_ops = {
++	.name = "samsung-gtactive3wifi",
++	.ops = {
++		.early_init = gtactive3wifi_init,
++	},
++	.devices = gtactive3wifi_devices,
++	.num_devices = ARRAY_SIZE(gtactive3wifi_devices),
++	.quirks = 0
++};
+diff --git a/configs/gtactive3wifi_defconfig b/configs/gtactive3wifi_defconfig
+new file mode 100644
+index 0000000..e16f827
+--- /dev/null
++++ b/configs/gtactive3wifi_defconfig
+@@ -0,0 +1,10 @@
++CONFIG_POSITION_INDEPENDENT=y
++CONFIG_EXYNOS_9810=y
++CONFIG_SAMSUNG_GTACTIVE3WIFI=y
++CONFIG_TEXT_BASE=0x87000000
++CONFIG_PAYLOAD_ENTRY=0x90000000
++CONFIG_RAMDISK_ENTRY=0x84000000
++CONFIG_FRAMEBUFFER_BASE=0xca000000
++CONFIG_FRAMEBUFFER_WIDTH=1200
++CONFIG_FRAMEBUFFER_HEIGHT=1920
++CONFIG_FRAMEBUFFER_STRIDE=4
+-- 
+2.56.0
+

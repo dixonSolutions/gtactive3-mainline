@@ -1,0 +1,38 @@
+# Reference: https://wiki.postmarketos.org/wiki/Deviceinfo_reference
+# Boot image values read from stock T570XXSFEYI1 boot.img (unpack_bootimg).
+deviceinfo_format_version="0"
+deviceinfo_name="Samsung Galaxy Tab Active3 (Wi-Fi)"
+deviceinfo_manufacturer="Samsung"
+deviceinfo_codename="samsung-gtactive3wifi"
+deviceinfo_year="2020"
+deviceinfo_dtb="exynos/exynos9810-gtactive3wifi"
+deviceinfo_arch="aarch64"
+deviceinfo_chassis="tablet"
+deviceinfo_keyboard="false"
+deviceinfo_external_storage="true"
+deviceinfo_screen_width="1200"
+deviceinfo_screen_height="1920"
+deviceinfo_getty="ttySAC0;115200"
+
+# Flashing: Heimdall from Download mode. Test images go to RECOVERY so that
+# Android on BOOT stays as a fallback.
+deviceinfo_flash_method="heimdall-bootimg"
+deviceinfo_flash_heimdall_partition_kernel="RECOVERY"
+deviceinfo_flash_heimdall_partition_rootfs="USERDATA"
+deviceinfo_flash_sparse="true"
+
+# Android boot image v2 with appended DTB (header from stock boot.img)
+deviceinfo_header_version="2"
+deviceinfo_generate_bootimg="true"
+deviceinfo_bootimg_qcdt="false"
+deviceinfo_bootimg_mtk_mkimage="false"
+deviceinfo_bootimg_dtb_second="false"
+deviceinfo_bootimg_append_seandroidenforce="true"
+deviceinfo_flash_offset_base="0x10000000"
+deviceinfo_flash_offset_kernel="0x00008000"
+deviceinfo_flash_offset_ramdisk="0x01000000"
+deviceinfo_flash_offset_second="0x00f00000"
+deviceinfo_flash_offset_tags="0x00000100"
+deviceinfo_flash_offset_dtb="0x00000000"
+deviceinfo_flash_pagesize="2048"
+deviceinfo_kernel_cmdline="console=tty0 PMOS_NO_OUTPUT_REDIRECT"

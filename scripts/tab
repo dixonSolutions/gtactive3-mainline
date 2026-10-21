@@ -1,0 +1,40 @@
+#!/bin/bash
+# Talk to the bring-up debug console on the tablet over USB.
+#   tab wait            wait until the tablet's USB network is up
+#   tab dmesg | peek ADDR | poke ADDR VAL | cat PATH | reboot [download]
+P=$(cd "$(dirname "$0")/.." && pwd)
+LL=fe80::57:aff:fe00:1
+iface() {
+	for d in /sys/class/net/*; do
+		[ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && { basename "$d"; return 0; }
+	done
+	return 1
+}
+if [ "${1:-}" = wait ]; then
+	for i in $(seq 1 ${2:-120}); do
+		ifc=$(iface) && ping -6 -c1 -W1 "$LL%$ifc" >/dev/null 2>&1 && { echo "up on $ifc"; exit 0; }
+		sleep 1
+	done
+	echo "timeout"; exit 1
+fi
+ifc=$(iface) || { echo "tablet USB network not present" >&2; exit 1; }
+python3 -I - "$LL%$ifc" "$*" <<'PY'
+import socket, sys, time
+s = socket.create_connection((sys.argv[1], 23), timeout=10)
+s.settimeout(2)
+def drain():
+    out = b""
+    try:
+        while True:
+            d = s.recv(65536)
+            if not d: break
+            out += d
+    except socket.timeout:
+        pass
+    return out.decode(errors="replace")
+drain()
+s.sendall((sys.argv[2] + "\n").encode())
+time.sleep(0.3)
+r = drain()
+sys.stdout.write(r[:-2] if r.endswith("> ") else r)
+PY

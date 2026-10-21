@@ -1,0 +1,15 @@
+# third-party trees (our changes live in patches/)
+/src/
+# build output
+/build/
+# Samsung firmware, decrypted images, keys: proprietary or private, never commit
+/firmware/
+# downloaded tools and their environments
+/tools/venv/
+/tools/bifrost-src/
+/tools/samloader3/
+/tools/magisk/
+/tools/auth_param.dat
+# runtime logs
+/logs/
+__pycache__/

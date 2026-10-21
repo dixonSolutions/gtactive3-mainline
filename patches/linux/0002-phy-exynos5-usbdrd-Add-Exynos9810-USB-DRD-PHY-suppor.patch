@@ -1,0 +1,61 @@
+From c7e94f256cdd7e7bab5c87b9f0ef9b66031f892c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 13:53:36 +1100
+Subject: [PATCH 2/3] phy: exynos5-usbdrd: Add Exynos9810 USB DRD PHY support
+
+The Exynos9810 USB DRD controller uses the same USBCON register layout
+as Exynos850 (LINKCTRL 0x04, CLKRST 0x20, UTMI 0x50, HSP 0x54, ...),
+per Samsung's phy-exynos-usb3p1 driver, so reuse the Exynos850 UTMI
+init. Only the PMU offset of the HS PHY isolation control differs
+(0x72c, the "pmu_offset" of the vendor device tree).
+
+Tested in USB 2.0 device mode (NCM gadget) on a Galaxy Tab Active3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/phy/samsung/phy-exynos5-usbdrd.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/drivers/phy/samsung/phy-exynos5-usbdrd.c b/drivers/phy/samsung/phy-exynos5-usbdrd.c
+index 8711a3b62..9cd0d0deb 100644
+--- a/drivers/phy/samsung/phy-exynos5-usbdrd.c
++++ b/drivers/phy/samsung/phy-exynos5-usbdrd.c
+@@ -2079,6 +2079,25 @@ static const struct exynos5_usbdrd_phy_drvdata exynos850_usbdrd_phy = {
+ 	.n_regulators		= ARRAY_SIZE(exynos5_regulator_names),
+ };
+ 
++/*
++ * Exynos9810 uses the same USB DRD controller register layout as Exynos850
++ * (LINKCTRL 0x04, CLKRST 0x20, UTMI 0x50, HSP 0x54 ...), but its HS PHY
++ * isolation bit lives at PMU offset 0x72c (Samsung "pmu_offset" for USBDRD).
++ */
++#define EXYNOS9810_USBDRD_PHY_CONTROL	0x072c
++
++static const struct exynos5_usbdrd_phy_drvdata exynos9810_usbdrd_phy = {
++	.phy_cfg		= phy_cfg_exynos850,
++	.phy_ops		= &exynos850_usbdrd_phy_ops,
++	.pmu_offset_usbdrd0_phy	= EXYNOS9810_USBDRD_PHY_CONTROL,
++	.clk_names		= exynos5_clk_names,
++	.n_clks			= ARRAY_SIZE(exynos5_clk_names),
++	.core_clk_names		= exynos5_core_clk_names,
++	.n_core_clks		= ARRAY_SIZE(exynos5_core_clk_names),
++	.regulator_names	= exynos5_regulator_names,
++	.n_regulators		= ARRAY_SIZE(exynos5_regulator_names),
++};
++
+ static const struct exynos5_usbdrd_phy_tuning exynos990_tunes_utmi_postinit[] = {
+ 	PHY_TUNING_ENTRY_PHY(EXYNOS850_DRD_HSPPARACON,
+ 			     (HSPPARACON_TXVREF |
+@@ -2900,6 +2919,9 @@ static const struct of_device_id exynos5_usbdrd_phy_of_match[] = {
+ 	}, {
+ 		.compatible = "samsung,exynos850-usbdrd-phy",
+ 		.data = &exynos850_usbdrd_phy
++	}, {
++		.compatible = "samsung,exynos9810-usbdrd-phy",
++		.data = &exynos9810_usbdrd_phy
+ 	}, {
+ 		.compatible = "samsung,exynos990-usbdrd-phy",
+ 		.data = &exynos990_usbdrd_phy
+-- 
+2.56.0
+
