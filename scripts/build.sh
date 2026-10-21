@@ -14,6 +14,23 @@ gen_list() {
 	for f in "$P"/build/initramfs/modules/*.ko; do
 		[ -e "$f" ] && echo "file /lib/modules/$(basename "$f") $f 0644 0 0"
 	done >> "$P/build/initramfs.list"
+	# vendor Wi-Fi/BT firmware (local only, never committed), if extracted
+	fw=$P/firmware/extracted/linux-firmware/lib/firmware/brcm
+	if [ -d "$fw" ]; then
+		printf 'dir /lib/firmware 0755 0 0\ndir /lib/firmware/brcm 0755 0 0\n'
+		for f in "$fw"/*; do echo "file /lib/firmware/brcm/$(basename "$f") $f 0644 0 0"; done
+	fi >> "$P/build/initramfs.list"
+	# optional local userspace overlay (e.g. iw, wpa_supplicant, busybox
+	# from Alpine aarch64 packages for the Wi-Fi tests), never committed
+	x=$P/build/initramfs-extra
+	if [ -d "$x" ]; then
+		(cd -P "$x" && find . -mindepth 1 | sort | while read -r e; do
+			d=${e#.}
+			if [ -L "$e" ]; then echo "slink $d $(readlink "$e") 0777 0 0"
+			elif [ -d "$e" ]; then echo "dir $d 0755 0 0"
+			else echo "file $d $(pwd -P)/${e#./} $(stat -c %a "$e") 0 0"; fi
+		done)
+	fi >> "$P/build/initramfs.list"
 }
 
 echo "== init"

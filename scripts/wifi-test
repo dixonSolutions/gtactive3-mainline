@@ -1,0 +1,69 @@
+#!/bin/bash
+# Bring up Wi-Fi on the bring-up init over the USB debug console, step by
+# step, stopping at the first failure:
+#   pcie     load the Exynos9810 PCIe host driver, check the link and the
+#            BCM4375 on the bus (read-only prechecks first)
+#   wlan     load cfg80211 + brcmfmac, bind the device, wait for wlan0
+#   scan     iw scan (needs the initramfs-extra overlay: iw, busybox)
+#   connect  wpa_supplicant with /etc/wpa_supplicant.conf (pushed by
+#            scripts/wifi-push-creds), udhcpc, ping the gateway
+#
+#   scripts/wifi-test [pcie|wlan|scan|connect]   (default: all, in order)
+set -uo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
+M=/lib/modules
+step=${1:-all}
+
+pcie() {
+	echo "== pcie prechecks"
+	t "peek 0x11402038"; t "peek 0x1140204c"
+	t "insmod $M/pcie-exynos9810.ko"
+	t "dmesg" | grep -iE "pcie|pci |LTSSM|link" | tail -25
+	t "ls /sys/bus/pci/devices"
+	t "cat /sys/bus/pci/devices/0000:01:00.0/device" || return 1
+}
+
+wlan() {
+	echo "== wlan"
+	for m in rfkill cfg80211 brcmutil brcmfmac brcmfmac-wcc; do
+		t "insmod $M/$m.ko"
+	done
+	t "ls /sys/class/net" | grep -q wlan0 ||
+		{ t "write /sys/bus/pci/drivers/brcmfmac/bind 0000:01:00.0"; }
+	for i in 1 2 3 4 5 6; do
+		t "ls /sys/class/net" | grep -q wlan0 && break
+		sleep 2
+	done
+	t "dmesg" | grep -iE "brcm|wlan|cfg80211|firmware" | tail -30
+	t "ls /sys/class/net" | grep -q wlan0
+}
+
+scan() {
+	echo "== scan"
+	t "run /sbin/ip link set wlan0 up"
+	t "run /usr/sbin/iw dev wlan0 scan" | grep -E "^BSS|SSID:|signal:|freq:" | head -60
+}
+
+connect() {
+	echo "== connect"
+	t "cat /etc/wpa_supplicant.conf" >/dev/null 2>&1 ||
+		{ echo "no /etc/wpa_supplicant.conf: run scripts/wifi-push-creds first"; return 1; }
+	t "run /sbin/wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211"
+	for i in $(seq 1 15); do
+		t "run /sbin/wpa_cli -i wlan0 status" | grep -q "wpa_state=COMPLETED" && break
+		sleep 2
+	done
+	t "run /sbin/wpa_cli -i wlan0 status" | grep -vE "^(passphrase|psk)="
+	t "run /bin/busybox udhcpc -i wlan0 -n -q -t 10"
+	t "run /sbin/ip addr show wlan0"
+	gw=$(t "run /sbin/ip route" | awk '/^default/{print $3; exit}')
+	[ -n "$gw" ] && t "run /bin/busybox ping -c 4 $gw"
+	t "run /bin/busybox ping -c 3 1.1.1.1"
+}
+
+case $step in
+all) pcie && wlan && scan && connect ;;
+pcie|wlan|scan|connect) $step ;;
+*) echo "usage: $0 [pcie|wlan|scan|connect]" >&2; exit 1 ;;
+esac

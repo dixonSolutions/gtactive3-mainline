@@ -767,7 +767,7 @@ static void serve(int c)
 			chmod(av[0], 0755);
 			pid = fork();
 			if (pid == 0) {
-				char *envp[] = { "PATH=/", 0 };
+				char *envp[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", 0 };
 
 				dup2(c, 1);
 				dup2(c, 2);
