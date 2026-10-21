@@ -1,0 +1,383 @@
+From 1d40f24b3c891e67a5351b9a64f48b1ca098b73a Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:11:18 +1100
+Subject: [PATCH 33/38] arm64: dts: exynos: gtactive3wifi: Add PMIC, charger
+ and battery nodes
+
+Describe the power devices from the stock DTBO (hw_rev 4):
+
+- S2MPS18 under ACPM (fragment@71, acpm-ipc-channel 2) with the 13 bucks
+  and 32 LDOs the stock kernel uses, names and always-on/boot-on flags
+  from the stock regulators node. The driver is read-only for now, so no
+  voltage constraints are given; the stock ranges are kept as comments.
+- MAX77705 PMIC (0x66), charger (0x69) and fuel gauge (0x36) on HSI2C_40
+  (fragment@30). IRQ on gpa1-6, active low. The stock fuel gauge uses
+  fg_resistor = 2, i.e. a 5 mOhm sense resistor.
+- The EB-BT575BBE battery: 5000 mAh, 4.26 V float voltage, 3.1 A max
+  charge current, 3.2 V empty (stock sec-battery node).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 329 ++++++++++++++++++
+ 1 file changed, 329 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index edbbecdea..a0e9d9cf3 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -15,12 +15,26 @@
+ #include "exynos9810.dtsi"
+ #include <dt-bindings/gpio/gpio.h>
+ #include <dt-bindings/input/input.h>
++#include <dt-bindings/interrupt-controller/irq.h>
+ 
+ / {
+ 	model = "Samsung Galaxy Tab Active3 (SM-T570)";
+ 	compatible = "samsung,gtactive3wifi", "samsung,exynos9810";
+ 	chassis-type = "tablet";
+ 
++	/*
++	 * EB-BT575BBE, values from the stock sec-battery node (DTBO hw_rev 4):
++	 * battery_full_capacity 5000 mAh, chg_float_voltage 4260 mV,
++	 * max_charging_current 3100 mA, sw_v_empty_voltage 3200 mV.
++	 */
++	battery: battery {
++		compatible = "simple-battery";
++		charge-full-design-microamp-hours = <5000000>;
++		constant-charge-current-max-microamp = <3100000>;
++		voltage-max-design-microvolt = <4260000>;
++		voltage-min-design-microvolt = <3200000>;
++	};
++
+ 	chosen {
+ 		#address-cells = <2>;
+ 		#size-cells = <1>;
+@@ -164,6 +178,13 @@ key_hot: key-hot-pins {
+ 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+ 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+ 	};
++
++	max77705_irq: max77705-irq-pins {
++		samsung,pins = "gpa1-6";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
+ };
+ 
+ &pinctrl_peric1 {
+@@ -322,3 +343,311 @@ ufs: ufs@11120000 {
+ 		phy-names = "ufs-phy";
+ 	};
+ };
++
++/*
++ * S2MPS18 main PMIC, reached through ACPM IPC channel 2 (stock
++ * s2mps18mfd node, DTBO hw_rev 4). The driver is read-only for now, so
++ * the regulators carry no voltage constraints: the stock ranges are
++ * kept as comments for when voltage control is enabled. The PMIC IRQ is
++ * gpa0-1 (not used yet).
++ */
++&acpm_ipc {
++	pmic-1 {
++		compatible = "samsung,s2mps18-pmic";
++
++		regulators {
++			s2mps18_buck1: BUCK1 {
++				regulator-name = "vdd_mif";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_buck2: BUCK2 {
++				regulator-name = "vdd_cpucl1";
++				regulator-always-on;
++				/* stock: 450-1300 mV */
++			};
++
++			s2mps18_buck3: BUCK3 {
++				regulator-name = "vdd_cpucl0";
++				regulator-always-on;
++				/* stock: 450-1300 mV */
++			};
++
++			s2mps18_buck4: BUCK4 {
++				regulator-name = "vdd_int";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_buck5: BUCK5 {
++				regulator-name = "vdd_cam";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_buck6: BUCK6 {
++				regulator-name = "vdd_g3d";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_buck7: BUCK7 {
++				regulator-name = "vdd_cpucl1_m";
++				regulator-always-on;
++				/* stock: 450-1300 mV */
++			};
++
++			s2mps18_buck8: BUCK8 {
++				regulator-name = "vdd2_mem";
++				regulator-always-on;
++				/* stock: 900-1300 mV */
++			};
++
++			s2mps18_buck9: BUCK9 {
++				regulator-name = "vddq_mem";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_buck10: BUCK10 {
++				regulator-name = "vdd_lldo1";
++				regulator-always-on;
++				/* stock: 750-1150 mV */
++			};
++
++			s2mps18_buck11: BUCK11 {
++				regulator-name = "vdd_lldo2";
++				regulator-always-on;
++				/* stock: 900-1300 mV */
++			};
++
++			s2mps18_buck12: BUCK12 {
++				regulator-name = "vdd_lldo3";
++				regulator-always-on;
++				/* stock: 1100-1500 mV */
++			};
++
++			s2mps18_buck13: BUCK13 {
++				regulator-name = "vdd_mldo";
++				regulator-always-on;
++				/* stock: 1750-2150 mV */
++			};
++
++			s2mps18_ldo1: LDO1 {
++				regulator-name = "vdd_ldo1";
++				regulator-always-on;
++				/* stock: 700-950 mV */
++			};
++
++			s2mps18_ldo2: LDO2 {
++				regulator-name = "vqmmc";
++				/* stock: 1700-2950 mV */
++			};
++
++			s2mps18_ldo3: LDO3 {
++				regulator-name = "vdd_ldo3";
++				regulator-always-on;
++				/* stock: 1600-1950 mV */
++			};
++
++			s2mps18_ldo4: LDO4 {
++				regulator-name = "vdd_ldo4";
++				regulator-always-on;
++				/* stock: 700-1100 mV */
++			};
++
++			s2mps18_ldo5: LDO5 {
++				regulator-name = "vdd_ldo5";
++				regulator-always-on;
++				/* stock: 1600-1950 mV */
++			};
++
++			s2mps18_ldo6: LDO6 {
++				regulator-name = "vdd_ldo6";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_ldo7: LDO7 {
++				regulator-name = "vdd_ldo7";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_ldo8: LDO8 {
++				regulator-name = "vdd_ldo8";
++				regulator-always-on;
++				/* stock: 700-1300 mV */
++			};
++
++			s2mps18_ldo9: LDO9 {
++				regulator-name = "vdd_ldo9";
++				regulator-always-on;
++				/* stock: 1600-1950 mV */
++			};
++
++			s2mps18_ldo10: LDO10 {
++				regulator-name = "vdd_ldo10";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_ldo11: LDO11 {
++				regulator-name = "vdd_ldo11";
++				regulator-always-on;
++				/* stock: 450-950 mV */
++			};
++
++			s2mps18_ldo12: LDO12 {
++				regulator-name = "vdd_ldo12";
++				regulator-always-on;
++				/* stock: 700-1100 mV */
++			};
++
++			s2mps18_ldo13: LDO13 {
++				regulator-name = "vdd_ldo13";
++				regulator-always-on;
++				/* stock: 1600-1950 mV */
++			};
++
++			s2mps18_ldo14: LDO14 {
++				regulator-name = "vdd_ldo14";
++				regulator-always-on;
++				/* stock: 1700-3350 mV */
++			};
++
++			s2mps18_ldo22: LDO22 {
++				regulator-name = "vdd_ldo22";
++				/* stock: 700-1100 mV */
++			};
++
++			s2mps18_ldo28: LDO28 {
++				regulator-name = "VDD_FCAM_A2P8";
++				/* stock: 2800 mV */
++			};
++
++			s2mps18_ldo30: LDO30 {
++				regulator-name = "vdd_ldo30";
++				regulator-always-on;
++				/* stock: 450-1100 mV */
++			};
++
++			s2mps18_ldo31: LDO31 {
++				regulator-name = "vmmc";
++				/* stock: 2950 mV */
++			};
++
++			s2mps18_ldo32: LDO32 {
++				regulator-name = "VDD_RCAM_A2P8";
++				/* stock: 2800 mV */
++			};
++
++			s2mps18_ldo33: LDO33 {
++				regulator-name = "regulator_1v8";
++				regulator-boot-on;
++				/* stock: 1800 mV */
++			};
++
++			s2mps18_ldo34: LDO34 {
++				regulator-name = "VDD_RCAM_CORE_1P05";
++				/* stock: 1050 mV */
++			};
++
++			s2mps18_ldo35: LDO35 {
++				regulator-name = "VDD_SENSOR_1P8";
++				regulator-always-on;
++				/* stock: 1800 mV */
++			};
++
++			s2mps18_ldo36: LDO36 {
++				regulator-name = "regulator_3v3";
++				regulator-boot-on;
++				/* stock: 3300 mV */
++			};
++
++			s2mps18_ldo37: LDO37 {
++				regulator-name = "vdd_mcu_1p8";
++				/* stock: 1800 mV */
++			};
++
++			s2mps18_ldo38: LDO38 {
++				regulator-name = "VDD_ESE_1P8";
++				/* stock: 1800 mV */
++			};
++
++			s2mps18_ldo39: LDO39 {
++				regulator-name = "VDD_FCAM_CORE_1P2";
++				/* stock: 1200 mV */
++			};
++
++			s2mps18_ldo40: LDO40 {
++				regulator-name = "VDD_GRIP_3P0";
++				/* stock: 3000 mV */
++			};
++
++			s2mps18_ldo41: LDO41 {
++				regulator-name = "VDD_NFC_1P8";
++				/* stock: 1800 mV */
++			};
++
++			s2mps18_ldo42: LDO42 {
++				regulator-name = "vdd_proxy_led_3p3";
++				regulator-always-on;
++				/* stock: 3300 mV */
++			};
++
++			s2mps18_ldo43: LDO43 {
++				regulator-name = "vdd_ldo43";
++				regulator-always-on;
++				/* stock: 3300 mV */
++			};
++
++			s2mps18_ldo44: LDO44 {
++				regulator-name = "VDD_CAM_IO_1P8";
++				/* stock: 1800 mV */
++			};
++
++			s2mps18_ldo45: LDO45 {
++				regulator-name = "VDD_RCAM_AF_2P8";
++				/* stock: 2800 mV */
++			};
++		};
++	};
++};
++
++/*
++ * MAX77705 PMIC/charger/fuel gauge on HSI2C_40 (stock fragment@30,
++ * DTBO hw_rev 4). The controller node itself comes from the HSI2C work;
++ * until it transfers reliably the same devices can be reached through
++ * the i2c-gpio variant, exynos9810-gtactive3wifi-i2cgpio.dtb.
++ */
++&hsi2c_40 {
++	max77705: pmic@66 {
++		compatible = "maxim,max77705";
++		reg = <0x66>;
++		interrupts-extended = <&gpa1 6 IRQ_TYPE_LEVEL_LOW>;
++		interrupt-controller;
++		#interrupt-cells = <1>;
++		pinctrl-0 = <&max77705_irq>;
++		pinctrl-names = "default";
++	};
++
++	max77705_charger: charger@69 {
++		compatible = "maxim,max77705-charger";
++		reg = <0x69>;
++		interrupt-parent = <&max77705>;
++		interrupts = <0>;
++		monitored-battery = <&battery>;
++	};
++
++	/* fg_resistor = 2 in the stock DT, i.e. a 5 mOhm sense resistor */
++	fuel-gauge@36 {
++		compatible = "maxim,max77705-battery";
++		reg = <0x36>;
++		interrupt-parent = <&max77705>;
++		interrupts = <2>;
++		maxim,rsns-microohm = <5000>;
++		power-supplies = <&max77705_charger>;
++	};
++};
+-- 
+2.56.0
+

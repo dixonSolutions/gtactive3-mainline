@@ -1,7 +1,7 @@
 From d248e1451028faf3da4f3eaad343649702be754f Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:41:43 +1100
-Subject: [PATCH 09/27] dt-bindings: watchdog: samsung-wdt: Add exynos9810-wdt
+Subject: [PATCH 09/38] dt-bindings: watchdog: samsung-wdt: Add exynos9810-wdt
  compatible
 
 Exynos9810 has two watchdog timers, one per CPU cluster. Their reset

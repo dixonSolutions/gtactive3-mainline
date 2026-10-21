@@ -1,0 +1,78 @@
+From 00653739faffdcdf8ecd335aac5d52100dc7244d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:48:08 +1100
+Subject: [PATCH 14/38] dt-bindings: firmware: google,gs101-acpm-ipc: Add
+ Exynos9810
+
+Exynos9810 runs an older ACPM firmware with the same shared memory
+channel layout as GS101. It has no firmware clocks wired up, so only
+GS101 requires the clock cells property. Its main PMIC is the S2MPS18.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../firmware/google,gs101-acpm-ipc.yaml       | 32 +++++++++++++++++--
+ 1 file changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml b/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml
+index e68f9c3ca..464f6e8f0 100644
+--- a/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml
++++ b/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml
+@@ -22,7 +22,9 @@ description: |
+ 
+ properties:
+   compatible:
+-    const: google,gs101-acpm-ipc
++    enum:
++      - google,gs101-acpm-ipc
++      - samsung,exynos9810-acpm-ipc
+ 
+   "#clock-cells":
+     const: 1
+@@ -53,7 +55,9 @@ properties:
+ 
+     properties:
+       compatible:
+-        const: samsung,s2mpg10-pmic
++        enum:
++          - samsung,s2mpg10-pmic
++          - samsung,s2mps18-pmic
+ 
+   pmic-2:
+     description: Child node describing the sub PMIC.
+@@ -73,10 +77,32 @@ properties:
+ 
+ required:
+   - compatible
+-  - "#clock-cells"
+   - mboxes
+   - shmem
+ 
++allOf:
++  - if:
++      properties:
++        compatible:
++          const: google,gs101-acpm-ipc
++    then:
++      required:
++        - "#clock-cells"
++      properties:
++        pmic-1:
++          properties:
++            compatible:
++              const: samsung,s2mpg10-pmic
++    else:
++      properties:
++        "#clock-cells": false
++        pmic: false
++        pmic-2: false
++        pmic-1:
++          properties:
++            compatible:
++              const: samsung,s2mps18-pmic
++
+ additionalProperties: false
+ 
+ examples:
+-- 
+2.56.0
+

@@ -1,0 +1,80 @@
+From 8695adc5b30423e5b6bf0db3f908ee3d84b801f1 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:48:08 +1100
+Subject: [PATCH 15/38] firmware: samsung: acpm: Add Exynos9810 support
+
+The Exynos9810 ACPM framework header lives at offset 0x7f00 of the APM
+SRAM (initdata-base in the stock DT). Its layout matches what the
+driver expects: the channel table pointer is at +0x08 and the number
+of AP channels at +0x18, and each 72-byte channel descriptor has id,
+queue pointers, qlen, mlen and the AP polling flag at the same offsets
+as on GS101. A dump of the live SRAM on an SM-T570 shows 13 AP
+channels, the PMIC channel (2) with qlen 5, mlen 16 and polling
+enabled.
+
+The firmware has no DVFS clock device for us to register, so make the
+clock child device optional.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/firmware/samsung/exynos-acpm.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/firmware/samsung/exynos-acpm.c b/drivers/firmware/samsung/exynos-acpm.c
+index 942a2e9f0..7e710743e 100644
+--- a/drivers/firmware/samsung/exynos-acpm.c
++++ b/drivers/firmware/samsung/exynos-acpm.c
+@@ -40,6 +40,7 @@
+ #define ACPM_TX_TIMEOUT_US		500000
+ 
+ #define ACPM_GS101_INITDATA_BASE	0xa000
++#define ACPM_EXYNOS9810_INITDATA_BASE	0x7f00
+ 
+ /**
+  * struct acpm_shmem - shared memory configuration information.
+@@ -182,7 +183,8 @@ struct acpm_info {
+ /**
+  * struct acpm_match_data - of_device_id data.
+  * @initdata_base:	offset in SRAM where the channels configuration resides.
+- * @acpm_clk_dev_name:	base name for the ACPM clocks device that we're registering.
++ * @acpm_clk_dev_name:	base name for the ACPM clocks device that we're registering,
++ *			or NULL if the firmware does not provide clocks.
+  */
+ struct acpm_match_data {
+ 	loff_t initdata_base;
+@@ -742,6 +744,9 @@ static int acpm_probe(struct platform_device *pdev)
+ 
+ 	platform_set_drvdata(pdev, acpm);
+ 
++	if (!match_data->acpm_clk_dev_name)
++		return devm_of_platform_populate(dev);
++
+ 	acpm_clk_pdev = platform_device_register_data(dev,
+ 						match_data->acpm_clk_dev_name,
+ 						PLATFORM_DEVID_NONE, NULL, 0);
+@@ -881,10 +886,22 @@ static const struct acpm_match_data acpm_gs101 = {
+ 	.acpm_clk_dev_name = "gs101-acpm-clk",
+ };
+ 
++/*
++ * The Exynos9810 ACPM firmware uses the same framework header and channel
++ * descriptor layout as GS101 (checked against a live SRAM dump), but has
++ * no DVFS clock interface wired up in this driver yet.
++ */
++static const struct acpm_match_data acpm_exynos9810 = {
++	.initdata_base = ACPM_EXYNOS9810_INITDATA_BASE,
++};
++
+ static const struct of_device_id acpm_match[] = {
+ 	{
+ 		.compatible = "google,gs101-acpm-ipc",
+ 		.data = &acpm_gs101,
++	}, {
++		.compatible = "samsung,exynos9810-acpm-ipc",
++		.data = &acpm_exynos9810,
+ 	},
+ 	{},
+ };
+-- 
+2.56.0
+

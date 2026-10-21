@@ -1,0 +1,518 @@
+From 7493dd6f85e15c6d539e2e41985212844e86452c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:52:07 +1100
+Subject: [PATCH 17/38] mfd: sec: Add read-only S2MPS18 support over ACPM
+
+Add the S2MPS18 PMIC found on Exynos9810 boards. Like the S2MPG1x, it is
+reached through ACPM IPC (channel 2, the "acpm-ipc-channel" of the stock
+s2mps18mfd node). The ACPM PMIC command layout is unchanged: register
+in bits [7:0] and block type in [11:8] of word 0 with TOP = 0, PMIC = 1
+and RTC = 2 (downstream drivers/mfd/s2mps18_core.c I2C_ADDR_*), and
+function/value/mask/return in word 1 (downstream acpm_mfd.h).
+
+For bring-up the device is strictly read-only: the regmaps have no
+writeable registers and the bus callbacks refuse writes and updates, so
+nothing on the PMIC can be changed while the firmware keeps scaling the
+DVFS rails. As a consequence, interrupts (which need mask writes) and
+the RTC are left out, and the IRQ is not requested. The PMIC ID from
+the TOP block is logged at probe as a first sign of life.
+
+There is no power meter regmap yet, so make it optional, and skip the
+wake IRQ handling in suspend/resume when there is no IRQ.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/mfd/Kconfig                 |   2 +-
+ drivers/mfd/sec-acpm.c              | 141 +++++++++++++++++++++++++--
+ drivers/mfd/sec-common.c            |  18 +++-
+ drivers/mfd/sec-irq.c               |   5 +
+ include/linux/mfd/samsung/core.h    |   1 +
+ include/linux/mfd/samsung/s2mps18.h | 144 ++++++++++++++++++++++++++++
+ 6 files changed, 301 insertions(+), 10 deletions(-)
+ create mode 100644 include/linux/mfd/samsung/s2mps18.h
+
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index e4fd45724..2b9d5198f 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -1423,7 +1423,7 @@ config MFD_SEC_CORE
+ 	select REGMAP_IRQ
+ 
+ config MFD_SEC_ACPM
+-	tristate "Samsung Electronics S2MPG1x PMICs"
++	tristate "Samsung Electronics S2MPG1x and S2MPS18 PMICs"
+ 	depends on EXYNOS_ACPM_PROTOCOL
+ 	depends on OF
+ 	select MFD_SEC_CORE
+diff --git a/drivers/mfd/sec-acpm.c b/drivers/mfd/sec-acpm.c
+index d11fbf5b9..7b61ab8c3 100644
+--- a/drivers/mfd/sec-acpm.c
++++ b/drivers/mfd/sec-acpm.c
+@@ -3,7 +3,7 @@
+  * Copyright 2020 Google Inc
+  * Copyright 2025 Linaro Ltd.
+  *
+- * Samsung S2MPG1x ACPM driver
++ * Samsung S2MPG1x / S2MPS18 ACPM driver
+  */
+ 
+ #include <linux/array_size.h>
+@@ -14,6 +14,7 @@
+ #include <linux/mfd/samsung/rtc.h>
+ #include <linux/mfd/samsung/s2mpg10.h>
+ #include <linux/mfd/samsung/s2mpg11.h>
++#include <linux/mfd/samsung/s2mps18.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+@@ -30,6 +31,10 @@ struct sec_pmic_acpm_platform_data {
+ 
+ 	unsigned int acpm_chan_id;
+ 	u8 speedy_channel;
++	/* refuse all register writes (bring-up), implies no IRQ */
++	bool read_only;
++	/* the identification register in the common block, or -1 */
++	int id_reg;
+ 
+ 	const struct regmap_config *regmap_cfg_common;
+ 	const struct regmap_config *regmap_cfg_pmic;
+@@ -365,10 +370,87 @@ static const struct regmap_config s2mpg11_regmap_config_meter = {
+ 	.cache_type = REGCACHE_FLAT,
+ };
+ 
++/*
++ * S2MPS18 (Exynos9810). The ACPM firmware itself keeps changing the DVFS
++ * rail voltages, so nothing is cached. INTx are clear-on-read.
++ */
++static const struct regmap_range s2mps18_common_registers[] = {
++	regmap_reg_range(0x00, 0x02), /* PMICID, INTSRC, INTSRC_MASK */
++};
++
++static const struct regmap_access_table s2mps18_common_rd_table = {
++	.yes_ranges = s2mps18_common_registers,
++	.n_yes_ranges = ARRAY_SIZE(s2mps18_common_registers),
++};
++
++static const struct regmap_range s2mps18_common_precious_registers[] = {
++	regmap_reg_range(0x01, 0x01), /* INTSRC */
++};
++
++static const struct regmap_access_table s2mps18_common_precious_table = {
++	.yes_ranges = s2mps18_common_precious_registers,
++	.n_yes_ranges = ARRAY_SIZE(s2mps18_common_precious_registers),
++};
++
++static const struct regmap_range s2mps18_ro_registers[] = {
++	regmap_reg_range(0x00, 0xff),
++};
++
++/* Writes are refused for now, both here and in the bus callbacks. */
++static const struct regmap_access_table s2mps18_wr_table = {
++	.no_ranges = s2mps18_ro_registers,
++	.n_no_ranges = ARRAY_SIZE(s2mps18_ro_registers),
++};
++
++static const struct regmap_config s2mps18_regmap_config_common = {
++	.name = "common",
++	.reg_bits = ACPM_ADDR_BITS,
++	.val_bits = 8,
++	.max_register = S2MPS18_TOP_REG_INTSRC_MASK,
++	.wr_table = &s2mps18_wr_table,
++	.rd_table = &s2mps18_common_rd_table,
++	.precious_table = &s2mps18_common_precious_table,
++	.cache_type = REGCACHE_NONE,
++};
++
++static const struct regmap_range s2mps18_pmic_registers[] = {
++	regmap_reg_range(0x00, 0x16), /* INTx, INTxM, STATUSx, CTRLx */
++	regmap_reg_range(0x1c, 0x48), /* BUCKs, ramp, DVS */
++	regmap_reg_range(0x49, 0x7e), /* LDOs, discharge */
++	regmap_reg_range(0x88, 0x88), /* TCXO_CTRL */
++	regmap_reg_range(0xc8, 0xd4), /* PWREN_SEL, LPM, ADC, OCP_WARN */
++};
++
++static const struct regmap_access_table s2mps18_pmic_rd_table = {
++	.yes_ranges = s2mps18_pmic_registers,
++	.n_yes_ranges = ARRAY_SIZE(s2mps18_pmic_registers),
++};
++
++static const struct regmap_range s2mps18_pmic_precious_registers[] = {
++	regmap_reg_range(S2MPS18_REG_INT1, S2MPS18_REG_INT7),
++};
++
++static const struct regmap_access_table s2mps18_pmic_precious_table = {
++	.yes_ranges = s2mps18_pmic_precious_registers,
++	.n_yes_ranges = ARRAY_SIZE(s2mps18_pmic_precious_registers),
++};
++
++static const struct regmap_config s2mps18_regmap_config_pmic = {
++	.name = "pmic",
++	.reg_bits = ACPM_ADDR_BITS,
++	.val_bits = 8,
++	.max_register = S2MPS18_REG_OCP_WARN2,
++	.wr_table = &s2mps18_wr_table,
++	.rd_table = &s2mps18_pmic_rd_table,
++	.precious_table = &s2mps18_pmic_precious_table,
++	.cache_type = REGCACHE_NONE,
++};
++
+ struct sec_pmic_acpm_shared_bus_context {
+ 	struct acpm_handle *acpm;
+ 	unsigned int acpm_chan_id;
+ 	u8 speedy_channel;
++	bool read_only;
+ };
+ 
+ enum sec_pmic_acpm_accesstype {
+@@ -401,6 +483,9 @@ static int sec_pmic_acpm_bus_write(void *context, const void *data,
+ 
+ 	reg = d[0];
+ 
++	if (ctx->shared->read_only)
++		return -EPERM;
++
+ 	return pmic_ops->bulk_write(acpm, ctx->shared->acpm_chan_id, ctx->type, reg,
+ 				    ctx->shared->speedy_channel, val_count, vals);
+ }
+@@ -431,6 +516,9 @@ static int sec_pmic_acpm_bus_reg_update_bits(void *context, unsigned int reg, un
+ 	struct acpm_handle *acpm = ctx->shared->acpm;
+ 	const struct acpm_pmic_ops *pmic_ops = &acpm->ops->pmic;
+ 
++	if (ctx->shared->read_only)
++		return -EPERM;
++
+ 	return pmic_ops->update_reg(acpm, ctx->shared->acpm_chan_id, ctx->type, reg & 0xff,
+ 				    ctx->shared->speedy_channel, val, mask);
+ }
+@@ -491,9 +579,13 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
+ 	if (IS_ERR(acpm))
+ 		return dev_err_probe(dev, PTR_ERR(acpm), "failed to get acpm\n");
+ 
+-	irq = platform_get_irq(pdev, 0);
+-	if (irq < 0)
+-		return irq;
++	if (pdata->read_only) {
++		irq = 0;
++	} else {
++		irq = platform_get_irq(pdev, 0);
++		if (irq < 0)
++			return irq;
++	}
+ 
+ 	shared_ctx = devm_kzalloc(dev, sizeof(*shared_ctx), GFP_KERNEL);
+ 	if (!shared_ctx)
+@@ -502,6 +594,7 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
+ 	shared_ctx->acpm = acpm;
+ 	shared_ctx->acpm_chan_id = pdata->acpm_chan_id;
+ 	shared_ctx->speedy_channel = pdata->speedy_channel;
++	shared_ctx->read_only = pdata->read_only;
+ 
+ 	regmap_common = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_COMMON,
+ 						  pdata->regmap_cfg_common, true);
+@@ -520,10 +613,24 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
+ 			return PTR_ERR(regmap);
+ 	}
+ 
+-	regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_METER,
+-					   pdata->regmap_cfg_meter, true);
+-	if (IS_ERR(regmap))
+-		return PTR_ERR(regmap);
++	if (pdata->regmap_cfg_meter) {
++		regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx,
++						   SEC_PMIC_ACPM_ACCESSTYPE_METER,
++						   pdata->regmap_cfg_meter, true);
++		if (IS_ERR(regmap))
++			return PTR_ERR(regmap);
++	}
++
++	if (pdata->id_reg >= 0) {
++		unsigned int id;
++
++		ret = regmap_read(regmap_common, pdata->id_reg, &id);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to read PMIC ID\n");
++
++		dev_info(dev, "PMIC ID 0x%02x%s\n", id,
++			 pdata->read_only ? ", read-only" : "");
++	}
+ 
+ 	ret = sec_pmic_probe(dev, pdata->device_type, irq, regmap_pmic, NULL);
+ 	if (ret)
+@@ -544,6 +651,7 @@ static const struct sec_pmic_acpm_platform_data s2mpg10_data = {
+ 	.device_type = S2MPG10,
+ 	.acpm_chan_id = 2,
+ 	.speedy_channel = 0,
++	.id_reg = -1,
+ 	.regmap_cfg_common = &s2mpg10_regmap_config_common,
+ 	.regmap_cfg_pmic = &s2mpg10_regmap_config_pmic,
+ 	.regmap_cfg_rtc = &s2mpg10_regmap_config_rtc,
+@@ -554,14 +662,31 @@ static const struct sec_pmic_acpm_platform_data s2mpg11_data = {
+ 	.device_type = S2MPG11,
+ 	.acpm_chan_id = 2,
+ 	.speedy_channel = 1,
++	.id_reg = -1,
+ 	.regmap_cfg_common = &s2mpg11_regmap_config_common,
+ 	.regmap_cfg_pmic = &s2mpg11_regmap_config_pmic,
+ 	.regmap_cfg_meter = &s2mpg11_regmap_config_meter,
+ };
+ 
++/*
++ * Bring-up: register access is read-only until the regulator and IRQ
++ * support has been checked on hardware. ACPM IPC channel 2 per the
++ * "acpm-ipc-channel" property of the stock s2mps18mfd node.
++ */
++static const struct sec_pmic_acpm_platform_data s2mps18_data = {
++	.device_type = S2MPS18X,
++	.acpm_chan_id = 2,
++	.speedy_channel = 0,
++	.read_only = true,
++	.id_reg = S2MPS18_TOP_REG_PMICID,
++	.regmap_cfg_common = &s2mps18_regmap_config_common,
++	.regmap_cfg_pmic = &s2mps18_regmap_config_pmic,
++};
++
+ static const struct of_device_id sec_pmic_acpm_of_match[] = {
+ 	{ .compatible = "samsung,s2mpg10-pmic", .data = &s2mpg10_data, },
+ 	{ .compatible = "samsung,s2mpg11-pmic", .data = &s2mpg11_data, },
++	{ .compatible = "samsung,s2mps18-pmic", .data = &s2mps18_data, },
+ 	{ },
+ };
+ MODULE_DEVICE_TABLE(of, sec_pmic_acpm_of_match);
+diff --git a/drivers/mfd/sec-common.c b/drivers/mfd/sec-common.c
+index fe92bc4a3..68a343996 100644
+--- a/drivers/mfd/sec-common.c
++++ b/drivers/mfd/sec-common.c
+@@ -88,6 +88,11 @@ static const struct mfd_cell s2mps15_devs[] = {
+ 	MFD_CELL_OF("s2mps13-clk", NULL, NULL, 0, 0, "samsung,s2mps13-clk"),
+ };
+ 
++/* The RTC and IRQs need register writes and are not wired up yet */
++static const struct mfd_cell s2mps18_devs[] = {
++	MFD_CELL_NAME("s2mps18-regulator"),
++};
++
+ static const struct mfd_cell s2mpa01_devs[] = {
+ 	MFD_CELL_NAME("s2mpa01-pmic"),
+ 	MFD_CELL_RES("s2mps14-rtc", s2mps14_rtc_resources),
+@@ -125,7 +130,8 @@ static void sec_pmic_dump_rev(struct sec_pmic_dev *sec_pmic)
+ 	switch (sec_pmic->device_type) {
+ 	case S2MPG10:
+ 	case S2MPG11:
+-		/* For s2mpg1x, the revision is in a different regmap */
++	case S2MPS18X:
++		/* For s2mpg1x and s2mps18, the revision is in a different regmap */
+ 		return;
+ 	case S2MU005:
+ 		reg = S2MU005_REG_ID;
+@@ -263,6 +269,10 @@ int sec_pmic_probe(struct device *dev, int device_type, unsigned int irq,
+ 		sec_devs = s2mps15_devs;
+ 		num_sec_devs = ARRAY_SIZE(s2mps15_devs);
+ 		break;
++	case S2MPS18X:
++		sec_devs = s2mps18_devs;
++		num_sec_devs = ARRAY_SIZE(s2mps18_devs);
++		break;
+ 	case S2MPU02:
+ 		sec_devs = s2mpu02_devs;
+ 		num_sec_devs = ARRAY_SIZE(s2mpu02_devs);
+@@ -324,6 +334,9 @@ static int sec_pmic_suspend(struct device *dev)
+ {
+ 	struct sec_pmic_dev *sec_pmic = dev_get_drvdata(dev);
+ 
++	if (!sec_pmic->irq)
++		return 0;
++
+ 	if (device_may_wakeup(dev))
+ 		enable_irq_wake(sec_pmic->irq);
+ 	/*
+@@ -344,6 +357,9 @@ static int sec_pmic_resume(struct device *dev)
+ {
+ 	struct sec_pmic_dev *sec_pmic = dev_get_drvdata(dev);
+ 
++	if (!sec_pmic->irq)
++		return 0;
++
+ 	if (device_may_wakeup(dev))
+ 		disable_irq_wake(sec_pmic->irq);
+ 	enable_irq(sec_pmic->irq);
+diff --git a/drivers/mfd/sec-irq.c b/drivers/mfd/sec-irq.c
+index 42862807b..ad9e2fb01 100644
+--- a/drivers/mfd/sec-irq.c
++++ b/drivers/mfd/sec-irq.c
+@@ -506,6 +506,11 @@ struct regmap_irq_chip_data *sec_irq_init(struct sec_pmic_dev *sec_pmic)
+ 	case S2MPS15X:
+ 		sec_irq_chip = &s2mps15_irq_chip;
+ 		break;
++	case S2MPS18X:
++		/* Not implemented yet, unmasking needs PMIC register writes */
++		if (sec_pmic->irq)
++			dev_warn(sec_pmic->dev, "S2MPS18 interrupts not supported yet\n");
++		return NULL;
+ 	case S2MPU02:
+ 		sec_irq_chip = &s2mpu02_irq_chip;
+ 		break;
+diff --git a/include/linux/mfd/samsung/core.h b/include/linux/mfd/samsung/core.h
+index 6191f409d..5bea9d9f7 100644
+--- a/include/linux/mfd/samsung/core.h
++++ b/include/linux/mfd/samsung/core.h
+@@ -45,6 +45,7 @@ enum sec_device_type {
+ 	S2MPS13X,
+ 	S2MPS14X,
+ 	S2MPS15X,
++	S2MPS18X,
+ 	S2MPU02,
+ 	S2MPU05,
+ 	S2MU005,
+diff --git a/include/linux/mfd/samsung/s2mps18.h b/include/linux/mfd/samsung/s2mps18.h
+new file mode 100644
+index 000000000..54c3fc2c3
+--- /dev/null
++++ b/include/linux/mfd/samsung/s2mps18.h
+@@ -0,0 +1,144 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Samsung S2MPS18 PMIC register definitions
++ *
++ * Register map taken from the Samsung downstream s2mps18-private.h
++ * (Exynos 9810 kernel, Copyright (C) 2015 Samsung Electronics).
++ */
++
++#ifndef __LINUX_MFD_S2MPS18_H
++#define __LINUX_MFD_S2MPS18_H
++
++/* TOP (COMMON) block, ACPM type 0x00 */
++#define S2MPS18_TOP_REG_PMICID		0x00
++#define S2MPS18_TOP_REG_INTSRC		0x01
++#define S2MPS18_TOP_REG_INTSRC_MASK	0x02
++
++/* PMIC block, ACPM type 0x01 */
++#define S2MPS18_REG_INT1		0x00
++#define S2MPS18_REG_INT7		0x06
++#define S2MPS18_REG_INT1M		0x07
++#define S2MPS18_REG_INT7M		0x0d
++#define S2MPS18_REG_STATUS1		0x0e
++#define S2MPS18_REG_STATUS2		0x0f
++#define S2MPS18_REG_PWRONSRC		0x10
++#define S2MPS18_REG_OFFSRC		0x11
++#define S2MPS18_REG_BUCHG		0x12
++#define S2MPS18_REG_RTCBUF		0x13
++#define S2MPS18_REG_CTRL1		0x14
++#define S2MPS18_REG_CTRL2		0x15
++#define S2MPS18_REG_CTRL3		0x16
++
++#define S2MPS18_REG_B1CTRL		0x1c
++#define S2MPS18_REG_B1OUT1		0x1d
++#define S2MPS18_REG_B2CTRL		0x1f
++#define S2MPS18_REG_B2OUT1		0x20
++#define S2MPS18_REG_B3CTRL		0x22
++#define S2MPS18_REG_B3OUT1		0x23
++#define S2MPS18_REG_B4CTRL		0x25
++#define S2MPS18_REG_B4OUT1		0x26
++#define S2MPS18_REG_B5CTRL		0x28
++#define S2MPS18_REG_B5OUT		0x29
++#define S2MPS18_REG_B6CTRL		0x2a
++#define S2MPS18_REG_B6OUT		0x2b
++#define S2MPS18_REG_B7CTRL		0x2c
++#define S2MPS18_REG_B7OUT		0x2d
++#define S2MPS18_REG_B8CTRL		0x2e
++#define S2MPS18_REG_B8OUT		0x2f
++#define S2MPS18_REG_B9CTRL		0x30
++#define S2MPS18_REG_B9OUT		0x31
++#define S2MPS18_REG_B10CTRL		0x32
++#define S2MPS18_REG_B10OUT		0x33
++#define S2MPS18_REG_B11CTRL		0x34
++#define S2MPS18_REG_B11OUT1		0x35
++#define S2MPS18_REG_B12CTRL		0x37
++#define S2MPS18_REG_B12OUT		0x38
++#define S2MPS18_REG_B13CTRL		0x39
++#define S2MPS18_REG_B13OUT		0x3a
++#define S2MPS18_REG_B14CTRL		0x3b
++#define S2MPS18_REG_B14OUT		0x3c
++#define S2MPS18_REG_BB1CTRL		0x3d
++#define S2MPS18_REG_BB1OUT		0x3e
++#define S2MPS18_REG_BUCKRAMP		0x3f
++#define S2MPS18_REG_BUCKRAMP2		0x40
++
++#define S2MPS18_REG_L1CTRL		0x49
++#define S2MPS18_REG_L2CTRL1		0x4a
++#define S2MPS18_REG_L2CTRL2		0x4b
++/* LDO3..LDO45 have a single control register each, from 0x4c on */
++#define S2MPS18_REG_LCTRL(n)		(0x49 + (n))
++#define S2MPS18_REG_L45CTRL		S2MPS18_REG_LCTRL(45)
++
++#define S2MPS18_REG_ADC_CTRL1		0xcf
++#define S2MPS18_REG_OCP_WARN2		0xd4
++
++/* S2MPS18 regulator IDs */
++enum s2mps18_regulators {
++	S2MPS18_LDO1,
++	S2MPS18_LDO2,
++	S2MPS18_LDO3,
++	S2MPS18_LDO4,
++	S2MPS18_LDO5,
++	S2MPS18_LDO6,
++	S2MPS18_LDO7,
++	S2MPS18_LDO8,
++	S2MPS18_LDO9,
++	S2MPS18_LDO10,
++	S2MPS18_LDO11,
++	S2MPS18_LDO12,
++	S2MPS18_LDO13,
++	S2MPS18_LDO14,
++	S2MPS18_LDO22,
++	S2MPS18_LDO28,
++	S2MPS18_LDO30,
++	S2MPS18_LDO31,
++	S2MPS18_LDO32,
++	S2MPS18_LDO33,
++	S2MPS18_LDO34,
++	S2MPS18_LDO35,
++	S2MPS18_LDO36,
++	S2MPS18_LDO37,
++	S2MPS18_LDO38,
++	S2MPS18_LDO39,
++	S2MPS18_LDO40,
++	S2MPS18_LDO41,
++	S2MPS18_LDO42,
++	S2MPS18_LDO43,
++	S2MPS18_LDO44,
++	S2MPS18_LDO45,
++	S2MPS18_BUCK1,
++	S2MPS18_BUCK2,
++	S2MPS18_BUCK3,
++	S2MPS18_BUCK4,
++	S2MPS18_BUCK5,
++	S2MPS18_BUCK6,
++	S2MPS18_BUCK7,
++	S2MPS18_BUCK8,
++	S2MPS18_BUCK9,
++	S2MPS18_BUCK10,
++	S2MPS18_BUCK11,
++	S2MPS18_BUCK12,
++	S2MPS18_BUCK13,
++	S2MPS18_REGULATOR_MAX,
++};
++
++#define S2MPS18_BUCK_MIN1		300000
++#define S2MPS18_BUCK_MIN2		600000
++#define S2MPS18_BUCK_STEP1		6250
++#define S2MPS18_BUCK_STEP2		12500
++#define S2MPS18_LDO_MIN1		700000
++#define S2MPS18_LDO_MIN2		400000
++#define S2MPS18_LDO_MIN3		1800000
++#define S2MPS18_LDO_MIN4		300000
++#define S2MPS18_LDO_STEP1		12500
++#define S2MPS18_LDO_STEP2		25000
++
++#define S2MPS18_LDO_VSEL_MASK		0x3f
++#define S2MPS18_BUCK_VSEL_MASK		0xff
++#define S2MPS18_ENABLE_SHIFT		6
++#define S2MPS18_ENABLE_MASK		(0x03 << S2MPS18_ENABLE_SHIFT)
++
++#define S2MPS18_LDO_N_VOLTAGES		(S2MPS18_LDO_VSEL_MASK + 1)
++#define S2MPS18_BUCK_N_VOLTAGES		(S2MPS18_BUCK_VSEL_MASK + 1)
++
++#endif /* __LINUX_MFD_S2MPS18_H */
+-- 
+2.56.0
+

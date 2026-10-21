@@ -1,7 +1,7 @@
 From ca5d9f6db58b6f7e183ed52298a634921eb6231e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:52:30 +1100
-Subject: [PATCH 13/27] i2c: exynos5: Look up the variant before requesting the
+Subject: [PATCH 18/38] i2c: exynos5: Look up the variant before requesting the
  IRQ
 
 exynos5_i2c_irq() dereferences i2c->variant, but probe only sets it after

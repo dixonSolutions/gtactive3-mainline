@@ -805,6 +805,18 @@ int main(void)
 	load_module("/lib/modules/i2c-exynos5.ko");
 	load_module("/lib/modules/exynos9810-dsim-bl.ko");
 
+	/* bundle 2 (tested 2026-10-21): TMU, ACPM + read-only S2MPS18, MAX77705 */
+	load_module("/lib/modules/exynos9810_tmu.ko");
+	load_module("/lib/modules/exynos-mailbox.ko");
+	load_module("/lib/modules/acpm-protocol.ko");
+	load_module("/lib/modules/sec-core.ko");
+	load_module("/lib/modules/sec-acpm.ko");
+	load_module("/lib/modules/s2mps11.ko");
+	load_module("/lib/modules/regmap-i2c.ko");
+	load_module("/lib/modules/max77705.ko");
+	load_module("/lib/modules/max77705_charger.ko");
+	load_module("/lib/modules/max17042_battery.ko");
+
 	/*
 	 * Hardware watchdog (cluster 0, 30 s), kicked from the main loop below:
 	 * if the kernel or init wedges, the SoC resets and S-Boot boots BOOT.

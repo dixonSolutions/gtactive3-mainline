@@ -9,6 +9,13 @@ O=$P/build/bringup
 MK="nice -n 19 make -j4 -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=$O"
 MODS="drivers/phy/samsung/phy-exynos5-usbdrd drivers/usb/dwc3/dwc3 drivers/usb/dwc3/dwc3-exynos drivers/i2c/busses/i2c-exynos5 drivers/ufs/core/ufshcd-core drivers/ufs/host/ufshcd-pltfrm drivers/ufs/host/ufs-exynos drivers/phy/samsung/phy-exynos-ufs drivers/soc/samsung/exynos-usi drivers/video/backlight/exynos9810-dsim-bl"
 
+gen_list() {
+	sed "s|@P@|$P|g" "$P/configs/initramfs.list.in" > "$P/build/initramfs.list"
+	for f in "$P"/build/initramfs/modules/*.ko; do
+		[ -e "$f" ] && echo "file /lib/modules/$(basename "$f") $f 0644 0 0"
+	done >> "$P/build/initramfs.list"
+}
+
 echo "== init"
 aarch64-linux-gnu-gcc -Os -static -nostdlib -fno-stack-protector -fno-asynchronous-unwind-tables \
 	-I"$P/initramfs/stub" -I"$K/tools/include/nolibc" -I"$P/build/hdr/usr/include" \
@@ -17,7 +24,7 @@ aarch64-linux-gnu-gcc -Os -static -nostdlib -fno-stack-protector -fno-asynchrono
 
 echo "== config"
 mkdir -p "$P/build"
-sed "s|@P@|$P|g" "$P/configs/initramfs.list.in" > "$P/build/initramfs.list"
+gen_list
 sed "s|@P@|$P|g" "$P/configs/gtactive3-bringup.config" > "$P/build/gtactive3-bringup.config"
 cd "$K"
 make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O="$O" allnoconfig >/dev/null
@@ -27,10 +34,15 @@ make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O="$O" olddefconfig
 
 echo "== kernel + modules"
 mkdir -p "$P/build/initramfs/modules"
+# every module the config builds goes into /lib/modules (flat), listed in the
+# generated initramfs list; placeholders first so the list resolves on the
+# first link, then the real files and a relink
 for m in $MODS; do f=$P/build/initramfs/modules/$(basename "$m").ko; [ -e "$f" ] || touch "$f"; done
 $MK Image modules
-for m in $MODS; do cp "$O/$m.ko" "$P/build/initramfs/modules/"; done
+rm -f "$P"/build/initramfs/modules/*.ko
+find "$O" -name '*.ko' -exec cp {} "$P/build/initramfs/modules/" \;
 aarch64-linux-gnu-strip --strip-debug "$P"/build/initramfs/modules/*.ko
+gen_list
 # relink so the initramfs carries the fresh modules
 $MK Image exynos/exynos9810-gtactive3wifi.dtb
 

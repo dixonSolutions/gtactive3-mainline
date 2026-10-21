@@ -1,7 +1,7 @@
 From 5811eeec2851309e0f74444432a9e7e271ad4078 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 14:44:18 +1100
-Subject: [PATCH 06/27] arm64: dts: exynos: gtactive3wifi: Add UFS host and PHY
+Subject: [PATCH 06/38] arm64: dts: exynos: gtactive3wifi: Add UFS host and PHY
  nodes
 
 UFS clocks are described as fixed clocks with the rates the bootloader

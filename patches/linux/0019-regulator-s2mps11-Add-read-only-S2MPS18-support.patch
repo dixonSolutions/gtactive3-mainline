@@ -1,0 +1,185 @@
+From 4e626c6c5b34eee064dda7653c186c65562315f2 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:52:51 +1100
+Subject: [PATCH 19/38] regulator: s2mps11: Add read-only S2MPS18 support
+
+Describe the S2MPS18 bucks and the LDOs the stock Exynos9810 kernel
+exposes, with ranges and registers from the downstream
+drivers/regulator/s2mps18.c and s2mps18-private.h: 8-bit buck selectors
+in BnOUT(1), 6-bit LDO selectors in LnCTRL, enable mode in bits [7:6]
+of the control registers. LDO28 is commented out in the S9 tree but is
+used on the Galaxy Tab Active3 (VDD_FCAM_A2P8, per its stock DTBO), so
+it is described with its downstream 1.8 V / 25 mV range.
+
+The ops only read: the ACPM firmware scales the DVFS rails itself and
+the PMIC regmap refuses writes for now, so this gives voltage and state
+reporting in /sys/class/regulator without any risk of changing a rail.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/regulator/Kconfig   |   4 +-
+ drivers/regulator/s2mps11.c | 105 +++++++++++++++++++++++++++++++++++-
+ 2 files changed, 106 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+index 89789ac7a..2ba3b0901 100644
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -1461,10 +1461,10 @@ config REGULATOR_S2MPA01
+ 	 via I2C bus. S2MPA01 has 10 Bucks and 26 LDO outputs.
+ 
+ config REGULATOR_S2MPS11
+-	tristate "Samsung S2MPS11/13/14/15/S2MPU02/05 voltage regulator"
++	tristate "Samsung S2MPS11/13/14/15/18/S2MPU02/05 voltage regulator"
+ 	depends on MFD_SEC_CORE || COMPILE_TEST
+ 	help
+-	 This driver supports a Samsung S2MPS11/13/14/15/S2MPU02/05 voltage
++	 This driver supports a Samsung S2MPS11/13/14/15/18/S2MPU02/05 voltage
+ 	 output regulator via I2C bus. The chip is comprised of high efficient
+ 	 Buck converters including Dual-Phase Buck converter, Buck-Boost
+ 	 converter, various LDOs.
+diff --git a/drivers/regulator/s2mps11.c b/drivers/regulator/s2mps11.c
+index 0fb54617b..7895a3179 100644
+--- a/drivers/regulator/s2mps11.c
++++ b/drivers/regulator/s2mps11.c
+@@ -23,6 +23,7 @@
+ #include <linux/mfd/samsung/s2mps13.h>
+ #include <linux/mfd/samsung/s2mps14.h>
+ #include <linux/mfd/samsung/s2mps15.h>
++#include <linux/mfd/samsung/s2mps18.h>
+ #include <linux/mfd/samsung/s2mpu02.h>
+ #include <linux/mfd/samsung/s2mpu05.h>
+ 
+@@ -2127,6 +2128,102 @@ static const struct regulator_desc s2mpu05_regulators[] = {
+ 	regulator_desc_s2mpu05_buck45(5),
+ };
+ 
++/*
++ * S2MPS18: read-only for now. The ACPM firmware owns the DVFS rails and
++ * the regmap refuses writes, so only report state. Ranges and registers
++ * are from the downstream Exynos9810 drivers/regulator/s2mps18.c.
++ */
++static const struct regulator_ops s2mps18_reg_ro_ops = {
++	.list_voltage		= regulator_list_voltage_linear,
++	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
++	.is_enabled		= regulator_is_enabled_regmap,
++};
++
++#define regulator_desc_s2mps18(_name, _id, min, step, nvolt, vmask, vreg, ereg) { \
++	.name		= _name,				\
++	.id		= _id,					\
++	.of_match	= of_match_ptr(_name),			\
++	.regulators_node = of_match_ptr("regulators"),		\
++	.ops		= &s2mps18_reg_ro_ops,			\
++	.type		= REGULATOR_VOLTAGE,			\
++	.owner		= THIS_MODULE,				\
++	.min_uV		= min,					\
++	.uV_step	= step,					\
++	.n_voltages	= nvolt,				\
++	.vsel_reg	= vreg,					\
++	.vsel_mask	= vmask,				\
++	.enable_reg	= ereg,					\
++	.enable_mask	= S2MPS18_ENABLE_MASK			\
++}
++
++#define regulator_desc_s2mps18_ldo_reg(num, min, step, reg)		\
++	regulator_desc_s2mps18("LDO"#num, S2MPS18_LDO##num,		\
++			       S2MPS18_LDO_MIN##min, S2MPS18_LDO_STEP##step, \
++			       S2MPS18_LDO_N_VOLTAGES, S2MPS18_LDO_VSEL_MASK, \
++			       reg, reg)
++
++#define regulator_desc_s2mps18_ldo(num, min, step)			\
++	regulator_desc_s2mps18_ldo_reg(num, min, step, S2MPS18_REG_LCTRL(num))
++
++#define regulator_desc_s2mps18_buck_reg(num, min, step, out)		\
++	regulator_desc_s2mps18("BUCK"#num, S2MPS18_BUCK##num,		\
++			       S2MPS18_BUCK_MIN##min, S2MPS18_BUCK_STEP##step, \
++			       S2MPS18_BUCK_N_VOLTAGES, S2MPS18_BUCK_VSEL_MASK, \
++			       S2MPS18_REG_B##num##out, S2MPS18_REG_B##num##CTRL)
++
++#define regulator_desc_s2mps18_buck(num) \
++	regulator_desc_s2mps18_buck_reg(num, 1, 1, OUT)
++#define regulator_desc_s2mps18_buck_out1(num) \
++	regulator_desc_s2mps18_buck_reg(num, 1, 1, OUT1)
++
++static const struct regulator_desc s2mps18_regulators[] = {
++	regulator_desc_s2mps18_ldo_reg(1, 1, 1, S2MPS18_REG_L1CTRL),
++	regulator_desc_s2mps18_ldo_reg(2, 3, 2, S2MPS18_REG_L2CTRL1),
++	regulator_desc_s2mps18_ldo(3, 1, 2),
++	regulator_desc_s2mps18_ldo(4, 1, 1),
++	regulator_desc_s2mps18_ldo(5, 1, 2),
++	regulator_desc_s2mps18_ldo(6, 4, 2),
++	regulator_desc_s2mps18_ldo(7, 4, 2),
++	regulator_desc_s2mps18_ldo(8, 1, 1),
++	regulator_desc_s2mps18_ldo(9, 1, 2),
++	regulator_desc_s2mps18_ldo(10, 4, 2),
++	regulator_desc_s2mps18_ldo(11, 4, 2),
++	regulator_desc_s2mps18_ldo(12, 1, 1),
++	regulator_desc_s2mps18_ldo(13, 1, 2),
++	regulator_desc_s2mps18_ldo(14, 3, 2),
++	regulator_desc_s2mps18_ldo(22, 1, 1),
++	regulator_desc_s2mps18_ldo(28, 3, 2),
++	regulator_desc_s2mps18_ldo(30, 2, 1),
++	regulator_desc_s2mps18_ldo(31, 3, 2),
++	regulator_desc_s2mps18_ldo(32, 3, 2),
++	regulator_desc_s2mps18_ldo(33, 1, 2),
++	regulator_desc_s2mps18_ldo(34, 1, 1),
++	regulator_desc_s2mps18_ldo(35, 1, 2),
++	regulator_desc_s2mps18_ldo(36, 3, 2),
++	regulator_desc_s2mps18_ldo(37, 1, 2),
++	regulator_desc_s2mps18_ldo(38, 1, 2),
++	regulator_desc_s2mps18_ldo(39, 1, 1),
++	regulator_desc_s2mps18_ldo(40, 3, 2),
++	regulator_desc_s2mps18_ldo(41, 1, 2),
++	regulator_desc_s2mps18_ldo(42, 3, 2),
++	regulator_desc_s2mps18_ldo(43, 3, 2),
++	regulator_desc_s2mps18_ldo(44, 1, 2),
++	regulator_desc_s2mps18_ldo(45, 3, 2),
++	regulator_desc_s2mps18_buck_out1(1),
++	regulator_desc_s2mps18_buck_out1(2),
++	regulator_desc_s2mps18_buck_out1(3),
++	regulator_desc_s2mps18_buck_out1(4),
++	regulator_desc_s2mps18_buck(5),
++	regulator_desc_s2mps18_buck(6),
++	regulator_desc_s2mps18_buck(7),
++	regulator_desc_s2mps18_buck(8),
++	regulator_desc_s2mps18_buck(9),
++	regulator_desc_s2mps18_buck(10),
++	regulator_desc_s2mps18_buck_out1(11),
++	regulator_desc_s2mps18_buck(12),
++	regulator_desc_s2mps18_buck_reg(13, 2, 2, OUT),
++};
++
+ static int s2mps11_handle_ext_control(struct s2mps11_info *s2mps11,
+ 				      struct regulator_dev *rdev)
+ {
+@@ -2207,6 +2304,11 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
+ 		regulators = s2mps15_regulators;
+ 		BUILD_BUG_ON(ARRAY_SIZE(s2mps15_regulators) > S2MPS_REGULATOR_MAX);
+ 		break;
++	case S2MPS18X:
++		rdev_num = ARRAY_SIZE(s2mps18_regulators);
++		regulators = s2mps18_regulators;
++		BUILD_BUG_ON(ARRAY_SIZE(s2mps18_regulators) > S2MPS_REGULATOR_MAX);
++		break;
+ 	case S2MPU02:
+ 		rdev_num = ARRAY_SIZE(s2mpu02_regulators);
+ 		regulators = s2mpu02_regulators;
+@@ -2272,6 +2374,7 @@ static const struct platform_device_id s2mps11_pmic_id[] = {
+ 	{ .name = "s2mps13-regulator", .driver_data = S2MPS13X },
+ 	{ .name = "s2mps14-regulator", .driver_data = S2MPS14X },
+ 	{ .name = "s2mps15-regulator", .driver_data = S2MPS15X },
++	{ .name = "s2mps18-regulator", .driver_data = S2MPS18X },
+ 	{ .name = "s2mpu02-regulator", .driver_data = S2MPU02 },
+ 	{ .name = "s2mpu05-regulator", .driver_data = S2MPU05 },
+ 	{ }
+@@ -2291,5 +2394,5 @@ module_platform_driver(s2mps11_pmic_driver);
+ 
+ /* Module information */
+ MODULE_AUTHOR("Sangbeom Kim <sbkim73@samsung.com>");
+-MODULE_DESCRIPTION("Samsung S2MPS11/14/15/S2MPU02/05 Regulator Driver");
++MODULE_DESCRIPTION("Samsung S2MPS11/14/15/18/S2MPU02/05 Regulator Driver");
+ MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

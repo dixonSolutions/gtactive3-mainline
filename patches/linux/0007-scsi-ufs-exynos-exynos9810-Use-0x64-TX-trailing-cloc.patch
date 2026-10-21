@@ -1,7 +1,7 @@
 From 637ebd67e68566016c7475b017e57a23c11e414b Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 14:47:00 +1100
-Subject: [PATCH 07/27] scsi: ufs: exynos: exynos9810: Use 0x64 TX trailing
+Subject: [PATCH 07/38] scsi: ufs: exynos: exynos9810: Use 0x64 TX trailing
  clocks
 
 With PA_TxTrailingClocks at 0x10 (as on FSD/exynos7) DME_LINKSTARTUP

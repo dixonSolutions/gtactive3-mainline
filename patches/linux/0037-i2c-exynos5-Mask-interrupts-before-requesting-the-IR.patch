@@ -1,7 +1,7 @@
 From a615e143a16792e29ee34cf868b15cd0985b4580 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:28:28 +1100
-Subject: [PATCH 26/27] i2c: exynos5: Mask interrupts before requesting the IRQ
+Subject: [PATCH 37/38] i2c: exynos5: Mask interrupts before requesting the IRQ
 
 Probe only clears INT_STATUS before requesting the interrupt. If the
 bootloader left bits set in INT_ENABLE (TX_ALMOSTEMPTY is level and

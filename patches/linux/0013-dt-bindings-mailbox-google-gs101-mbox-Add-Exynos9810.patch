@@ -1,0 +1,40 @@
+From 2686600b298e9c83fa202a2dee3e282b152daa8e Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:48:08 +1100
+Subject: [PATCH 13/38] dt-bindings: mailbox: google,gs101-mbox: Add Exynos9810
+
+The AP-to-APM mailbox on Exynos9810 has the Exynos850 register layout:
+the doorbell is raised through INTGR0 bits [31:16] and the AP side is
+masked through INTMR1, as the downstream acpm_ipc driver shows
+(apm_interrupt_gen() and channel_init()). Document it with the
+Exynos850 compatible as fallback.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/mailbox/google,gs101-mbox.yaml | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml b/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml
+index c109c1f7a..2feaad65f 100644
+--- a/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml
++++ b/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml
+@@ -20,9 +20,13 @@ description:
+ 
+ properties:
+   compatible:
+-    enum:
+-      - google,gs101-mbox
+-      - samsung,exynos850-mbox
++    oneOf:
++      - enum:
++          - google,gs101-mbox
++          - samsung,exynos850-mbox
++      - items:
++          - const: samsung,exynos9810-mbox
++          - const: samsung,exynos850-mbox
+ 
+   reg:
+     maxItems: 1
+-- 
+2.56.0
+

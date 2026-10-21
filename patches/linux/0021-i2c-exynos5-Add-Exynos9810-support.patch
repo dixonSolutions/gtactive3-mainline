@@ -1,7 +1,7 @@
 From 7d686481e5abef1bacfe1725cbb857038d51861d Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:53:19 +1100
-Subject: [PATCH 15/27] i2c: exynos5: Add Exynos9810 support
+Subject: [PATCH 21/38] i2c: exynos5: Add Exynos9810 support
 
 The Exynos9810 HSI2C is the I2C function of a USIv2 block. Compared to
 the ExynosAutoV9 variant it needs:

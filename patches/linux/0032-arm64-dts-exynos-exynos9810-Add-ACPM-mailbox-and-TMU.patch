@@ -1,0 +1,231 @@
+From cc3eeab584066c6b087b6e07e1186827ecaf70f9 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:11:16 +1100
+Subject: [PATCH 32/38] arm64: dts: exynos: exynos9810: Add ACPM, mailbox and
+ TMU nodes
+
+Add the nodes needed to talk to the APM firmware and to read the SoC
+temperatures, all taken from the stock T570XXSFEYI1 DT:
+
+- AP-to-APM mailbox at 0x14100000, IRQ SPI 68 (acpm_ipc node). There is
+  no clock driver yet, the bootloader leaves its gate running, so the
+  oscillator stands in for pclk.
+- APM SRAM at 0x02039000, size 0x20000 (acpm_ipc reg[1]).
+- The ACPM IPC firmware node.
+- TMU_TOP at 0x10070000 (SPI 478) and TMU_SUB at 0x10074000 (SPI 479),
+  the stock tmuctrl_0..3 nodes, and one thermal zone per probe the stock
+  zones use: BIG = TMU_TOP probes 1-4 and 6 (sensors = <0x5e>), LITTLE =
+  TMU_TOP probe 5, G3D = TMU_SUB probe 1, ISP = TMU_SUB probe 2.
+
+Only the stock 115 C "hot" trip is described. The firmware keeps the
+hardware thermal trip enabled, and a critical trip (orderly power off)
+is only worth adding once the readings are validated on hardware.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 162 +++++++++++++++++++++
+ 1 file changed, 162 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 4f1f1e9a4..625ee2f2e 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -126,6 +126,14 @@ cpu7: cpu@103 {
+ 		};
+ 	};
+ 
++	firmware {
++		acpm_ipc: power-management {
++			compatible = "samsung,exynos9810-acpm-ipc";
++			mboxes = <&ap2apm_mailbox>;
++			shmem = <&apm_sram>;
++		};
++	};
++
+ 	oscclk: osc-clock {
+ 		compatible = "fixed-clock";
+ 		#clock-cells = <0>;
+@@ -171,12 +179,35 @@ soc: soc@0 {
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+ 
++		/* APM SRAM, the ACPM framework header is at offset 0x7f00 */
++		apm_sram: sram@2039000 {
++			compatible = "mmio-sram";
++			reg = <0x02039000 0x20000>;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			ranges = <0x0 0x02039000 0x20000>;
++		};
++
+ 		chipid@10000000 {
+ 			compatible = "samsung,exynos9810-chipid",
+ 				     "samsung,exynos850-chipid";
+ 			reg = <0x10000000 0x100>;
+ 		};
+ 
++		tmu_top: thermal-sensor@10070000 {
++			compatible = "samsung,exynos9810-tmu";
++			reg = <0x10070000 0x700>;
++			interrupts = <GIC_SPI 478 IRQ_TYPE_LEVEL_HIGH>;
++			#thermal-sensor-cells = <1>;
++		};
++
++		tmu_sub: thermal-sensor@10074000 {
++			compatible = "samsung,exynos9810-tmu";
++			reg = <0x10074000 0x700>;
++			interrupts = <GIC_SPI 479 IRQ_TYPE_LEVEL_HIGH>;
++			#thermal-sensor-cells = <1>;
++		};
++
+ 		gic: interrupt-controller@10101000 {
+ 			compatible = "arm,gic-400";
+ 			reg = <0x10101000 0x1000>,
+@@ -242,6 +273,17 @@ pmu_system_controller: system-controller@14060000 {
+ 			reg = <0x14060000 0x10000>;
+ 		};
+ 
++		ap2apm_mailbox: mailbox@14100000 {
++			compatible = "samsung,exynos9810-mbox",
++				     "samsung,exynos850-mbox";
++			reg = <0x14100000 0x1000>;
++			/* TODO: CMU_APM mailbox gate, left on by the bootloader */
++			clocks = <&oscclk>;
++			clock-names = "pclk";
++			interrupts = <GIC_SPI 68 IRQ_TYPE_LEVEL_HIGH>;
++			#mbox-cells = <0>;
++		};
++
+ 		pinctrl_cmgp: pinctrl@14220000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x14220000 0x1000>;
+@@ -259,6 +301,126 @@ pinctrl_aud: pinctrl@17c60000 {
+ 		};
+ 	};
+ 
++	/*
++	 * Probe assignment from the stock DT: BIG = TMU_TOP probes 1-4 and 6,
++	 * LITTLE = TMU_TOP probe 5, G3D = TMU_SUB probe 1, ISP = TMU_SUB
++	 * probe 2. The 115 C "hot" trip is the last stock trip. The hardware
++	 * thermal trip set up by the firmware stays the critical protection.
++	 */
++	thermal-zones {
++		cpu_big0_thermal: cpu-big0-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_top 1>;
++
++			trips {
++				cpu_big0_hot: cpu-big0-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++
++		cpu_big1_thermal: cpu-big1-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_top 2>;
++
++			trips {
++				cpu_big1_hot: cpu-big1-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++
++		cpu_big2_thermal: cpu-big2-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_top 3>;
++
++			trips {
++				cpu_big2_hot: cpu-big2-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++
++		cpu_big3_thermal: cpu-big3-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_top 4>;
++
++			trips {
++				cpu_big3_hot: cpu-big3-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++
++		cpu_big4_thermal: cpu-big4-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_top 6>;
++
++			trips {
++				cpu_big4_hot: cpu-big4-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++
++		cpu_little_thermal: cpu-little-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_top 5>;
++
++			trips {
++				cpu_little_hot: cpu-little-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++
++		gpu_thermal: gpu-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_sub 1>;
++
++			trips {
++				gpu_hot: gpu-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++
++		isp_thermal: isp-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&tmu_sub 2>;
++
++			trips {
++				isp_hot: isp-hot {
++					temperature = <115000>;
++					hysteresis = <5000>;
++					type = "hot";
++				};
++			};
++		};
++	};
++
+ 	timer {
+ 		compatible = "arm,armv8-timer";
+ 		/* Hypervisor Virtual Timer interrupt is not wired to GIC */
+-- 
+2.56.0
+

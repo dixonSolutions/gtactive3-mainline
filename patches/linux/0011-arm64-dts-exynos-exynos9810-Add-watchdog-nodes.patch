@@ -1,7 +1,7 @@
 From 41774961c83525e3bf4d604b217724d5bba006e3 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:42:47 +1100
-Subject: [PATCH 11/27] arm64: dts: exynos: exynos9810: Add watchdog nodes
+Subject: [PATCH 11/38] arm64: dts: exynos: exynos9810: Add watchdog nodes
 
 Add the cluster 0 and cluster 1 watchdogs, at 0x10050000 (GIC SPI 464)
 and 0x10060000 (GIC SPI 465), as described in the stock Samsung device
