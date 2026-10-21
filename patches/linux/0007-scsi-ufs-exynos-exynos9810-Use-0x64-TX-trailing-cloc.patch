@@ -1,0 +1,56 @@
+From 637ebd67e68566016c7475b017e57a23c11e414b Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 14:47:00 +1100
+Subject: [PATCH 7/7] scsi: ufs: exynos: exynos9810: Use 0x64 TX trailing
+ clocks
+
+With PA_TxTrailingClocks at 0x10 (as on FSD/exynos7) DME_LINKSTARTUP
+fails on Exynos9810. 0x64 matches what Samsung's CAL leaves in place,
+and the 64 GB Micron UFS (MT064GASAO2U21) now enumerates with all five
+LUNs and the stock GPT.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/ufs/host/ufs-exynos.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/ufs/host/ufs-exynos.c b/drivers/ufs/host/ufs-exynos.c
+index 206961b40..94688577c 100644
+--- a/drivers/ufs/host/ufs-exynos.c
++++ b/drivers/ufs/host/ufs-exynos.c
+@@ -2264,7 +2264,11 @@ static struct exynos_ufs_uic_attr fsd_uic_attr = {
+  * ufs-cal-9810.c init_cfg and calib_of_hs_rate tables.
+  */
+ static struct exynos_ufs_uic_attr exynos9810_uic_attr = {
+-	.tx_trailingclks		= 0x10,
++	/*
++	 * Samsung's CAL leaves PA_TxTrailingClocks at its default; the FSD/
++	 * exynos7 value of 0x10 makes link startup fail on this SoC.
++	 */
++	.tx_trailingclks		= 0x64,
+ 	.pa_dbg_clk_period_off		= PA_DBG_CLK_PERIOD,
+ 	.pa_dbg_opt_suite1_val		= 0x2E820183,
+ 	.pa_dbg_opt_suite1_off		= PA_DBG_OPTION_SUITE,
+@@ -2361,6 +2365,19 @@ static int exynos9810_ufs_pre_link(struct exynos_ufs *ufs)
+ 
+ 	exynos_ufs_establish_connt(ufs);
+ 
++	{
++		u32 rx5c = 0, tx8f = 0, clkp = 0, ov = 0;
++
++		ufshcd_dme_set(hba, UIC_ARG_MIB(0x200), 0x40);
++		ufshcd_dme_get(hba, UIC_ARG_MIB_SEL(0x5C, ufs->rx_sel_idx), &rx5c);
++		ufshcd_dme_get(hba, UIC_ARG_MIB_SEL(0x8F, 0), &tx8f);
++		ufshcd_dme_set(hba, UIC_ARG_MIB(0x200), 0x0);
++		ufshcd_dme_get(hba, UIC_ARG_MIB(0x200), &ov);
++		ufshcd_dme_get(hba, UIC_ARG_MIB(attr->pa_dbg_clk_period_off), &clkp);
++		dev_info(hba->dev, "9810 readback: rx[0x5c]=%#x (want 0x38) tx[0x8f]=%#x (want 0x3e) clkperiod=%u ov=%#x\n",
++			 rx5c, tx8f, clkp, ov);
++	}
++
+ 	return 0;
+ }
+ 
+-- 
+2.56.0
+

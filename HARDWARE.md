@@ -85,3 +85,11 @@ back gpg3-0, recent gpg3-1, "Active" key gpa0-5.
 - dtbo-4 vs dtbo-5: only the speaker amp differs (rev 4 = Richtek RT5510 on hsi2c, matches
   the live 4-0034 rt5510; rev 5 = TI TAS2562, which has an upstream driver). Framebuffer
   (0xca000000) and all seven key GPIOs are identical, so the mainline DTS is right for both.
+
+## UFS bring-up notes (2026-10-21)
+- Micron MT064GASAO2U21 (64 GB), LUN0 = sda with the 31 stock partitions, LUN1-4 = boot/RPMB-ish (4-8 MB).
+- Works on mainline with an FSD-like ufs-exynos variant + 9810 PHY tables (Samsung ufs-cal-9810.c).
+- Required: UFSP SMU is secure (EXYNOS_UFS_OPT_UFSPR_SECURE, else SError), HCI_UFS_ACG_DISABLE (0xFC)=1
+  before link startup, lane count read before per-lane PCS writes, **PA_TxTrailingClocks 0x64** (0x10 fails).
+- Clocks as left by S-Boot: PLL_SHARED4 = 666.25 MHz; FSYS0 bus 333.125 MHz; UFS_EMBD (UniPro) 166.5625 MHz.
+- Link: HS-G3 rate B x2, FAST_MODE.

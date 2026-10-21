@@ -16,8 +16,9 @@ Exynos 9810), with the goal of running postmarketOS Duranium.
 | USB 2.0 device mode (DWC3 + 9810 PHY), NCM networking | ✅ |
 | Reboot into Download mode from Linux (PMU INFORM3) | ✅ |
 | MAX77705 USB data switch | ✅ (bit-banged I2C for now) |
+| UFS storage (64 GB Micron, HS-G3 x2, all 5 LUNs, stock GPT) | ✅ |
 | HSI2C (USI) | ⚠️ times out, being worked on |
-| Clocks, UFS, PMIC, thermal, display, touch, pen, Wi-Fi, audio | ⏳ |
+| Clocks, PMIC, thermal, display, touch, pen, Wi-Fi, audio | ⏳ |
 
 ## Layout
 
