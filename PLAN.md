@@ -1,34 +1,59 @@
-# SM-T570 → postmarketOS (Nura) Duranium: plan
+# SM-T570 → postmarketOS Duranium: plan
 
-## Phase 0: access (now)
-- [x] (2026-10-21) Charge > 50 %, unlock bootloader in Download mode, finish setup online,
-      confirm "Bootloader is already unlocked" (VaultKeeper check)
-- [ ] Stock firmware T570XXSFEYI1 / XSA → `firmware/` (Bifrost 2.1.4, serial <serial>)
-- [ ] Samsung kernel source for SM-T570 (opensource.samsung.com) → `firmware/`
-- [ ] Back up stock BOOT, RECOVERY, VBMETA, DTBO from the AP tar; flash vbmeta with flags=2
-- [ ] Magisk-patched BOOT → root over adb → dump efs/sec_efs, live /proc/device-tree, dmesg,
-      touch chip ID, Wi-Fi chip ID
+Goal: postmarketOS **Duranium** (immutable, systemd, UKI + systemd-boot, A/B
+systemd-sysupdate) with a complete GUI and every piece of hardware working, plus a
+USB debug layer (NCM gadget + root console) that is on by default for development
+and can be disabled.
 
-## Phase 1: first Linux boot with USB debugging (downstream kernel)
-- [ ] pmbootstrap device package `samsung-gtactive3wifi` + `linux-samsung-gtactive3wifi`
-      (Samsung 4.9 kernel, CONFIG_USB_CONFIGFS_RNDIS, framebuffer)
-- [ ] Flash to RECOVERY (Android stays on BOOT as fallback)
-- [ ] USB networking 172.16.42.1 → SSH. Claude works on the device from here.
+Work is split into layers. Each layer is built by parallel agents in their own
+branches (`drv/<track>` in src/linux, worktrees under build/wt/), reviewed by an
+independent agent, then integrated and tested live on the device, one layer at a
+time, through the USB console. A layer is only merged into `gtactive3wifi` after
+its live test passes.
 
-## Phase 2: mainline bring-up (uniLoader on BOOT or RECOVERY)
-- [x] uniLoader board `gtactive3wifi` (src/uniLoader, branch gtactive3wifi)
-- [x] DTS `exynos9810-gtactive3wifi.dts` drafted (src/linux, branch gtactive3wifi)
-- [ ] Verify fb base / memory / key GPIOs from stock DT → initramfs shell on screen
-- [ ] Drivers, in order: CMU clocks + power domains → UFS → USB (DWC3 + PHY, gadget
-      networking) → S2MPS18 regulators → TMU thermal → MAX77705 charger/fuel gauge (upstream)
-      → SM5504 (upstream) → Himax SPI touch → Wacom W90xx pen (try wacom_w9000)
-- [ ] Mainline pmOS install (systemd), USB SSH on mainline
+Rule for every test: a failure must come back to the USB console without anyone
+touching the tablet (reset → Download mode → automatic reflash, or watchdog reset
+→ BOOT). No boot stages on RECOVERY.
 
-## Phase 3: Duranium
-- [ ] U-Boot exynos-mobile: add Exynos 9810 + gtactive3wifi DT, blkmap, EFI
-- [ ] U-Boot wrapped in boot.img → BOOT; UKI from GPT in userdata
-- [ ] Duranium image for samsung-gtactive3wifi
+## Done
+- [x] Bootloader unlock, KnoxGuard cleared, stock firmware T570XXSFEYI1 downloaded
+- [x] S-Boot → uniLoader (BOOT) → mainline Linux 7.3, automated flash/boot loop (~33 s)
+- [x] USB NCM gadget + debug console with the cable never unplugged (MAX77705 switch)
+- [x] UFS HS-G3 x2, simple-framebuffer console, gpio-keys, pstore
+- [x] Cluster-0 watchdog reset measured (PMU 0x408/0x40c bit 24); WDT reset boots BOOT
 
-## Phase 4: the rest
-Wi-Fi (PCIe + brcmfmac), Bluetooth, Panfrost GPU, DPU/DSI display + backlight, audio
-(rt5665 + ABOX), NFC. Cameras / sensor hub / fingerprint: unlikely.
+## Layer 0: safety net
+- [ ] Linux watchdog (s3c2410_wdt Exynos 9810 variant), kicked by init — track `wdt`
+- [ ] uniLoader dual payload: U-Boot primary, bring-up Linux fallback on watchdog
+      reset or Volume Down — track `chainload`
+
+## Layer 1: boot chain and storage
+- [ ] U-Boot as uniLoader payload: UFS, blkmap over userdata, EFI, systemd-boot — `chainload`
+- [ ] Nested GPT in userdata (sda31) visible to Linux / systemd in the initrd — `duranium`
+- [ ] Android wiped (approved 2026-10-21: userdata + Android OS partitions; never
+      efs, sec_efs, param, up_param, persistent, bootloader partitions, RPMB)
+
+## Layer 2: Duranium image
+- [ ] device-samsung-gtactive3wifi + linux-postmarketos-exynos9810 packages — `pmos`
+- [ ] mkosi device support, UKI with embedded DTB, phosh/plasma-mobile — `duranium`
+- [ ] `duranium-usb-debug` package/sysext: NCM gadget, root console, SSH, initrd too
+- [ ] Vendor firmware extracted from the stock package (never committed) — `firmware`
+
+## Layer 3: what the GUI needs
+- [ ] Display via simpledrm, rotation, backlight brightness — `display`
+- [ ] Touch: SPI controller + Himax HX83102E — `touch`
+- [ ] I2C buses (HSI2C/USI) — `hsi2c`; Wacom pen — `misc`
+
+## Layer 4: power and CPU
+- [ ] S2MPS18 (SPEEDY), MAX77705 charger + fuel gauge, TMU thermal — `power`
+- [ ] Big cores, clock driver, then cpufreq — `cpu`
+
+## Layer 5: acceleration and connectivity
+- [ ] Mali-G72 Panfrost — `gpu`
+- [ ] Wi-Fi (Exynos PCIe + brcmfmac), Bluetooth (UART, hci_bcm) — `wifi`
+
+## Layer 6: the rest
+- [ ] Audio (ABOX, RT5665, RT5510) — `audio`
+- [ ] MUIC SM5504, hall sensor, jack, vibrator, keys, NFC (S3FWRN5), grip sensor,
+      accelerometer/light sensors — `misc`
+- [ ] Fingerprint, GPS, cameras: research first (feasibility documented by `misc`)
