@@ -55,8 +55,10 @@ if [ ! -s "$SUPER/vendor.img" ]; then
 		mv "$AP/super.raw.img.part" "$AP/super.raw.img"
 		rm -f "$AP/super.sparse.img"
 	fi
-	mkdir -p "$SUPER"
-	lpunpack "$AP/super.raw.img" "$SUPER/"
+	# unpack into a scratch dir so an interrupted run is not mistaken for a finished one
+	rm -rf "$SUPER.part"; mkdir -p "$SUPER.part"
+	lpunpack "$AP/super.raw.img" "$SUPER.part/"
+	rm -rf "$SUPER"; mv "$SUPER.part" "$SUPER"
 fi
 ls -l "$SUPER"
 
@@ -69,7 +71,9 @@ for img in "$SUPER"/*.img; do
 	case $(file -b "$img") in
 	*ext[234]*)
 		# rdump cannot chown as a user; those warnings are harmless
-		$LOW debugfs -R "rdump / $FS/$p" "$img" 2>&1 | grep -v 'changing ownership' || true ;;
+		$LOW debugfs -R "rdump / $FS/$p" "$img" 2>&1 | grep -v 'changing ownership' || true
+		# debugfs exits 0 even when rdump fails: refuse to mark an empty dump done
+		[ -n "$(ls -A "$FS/$p")" ] || { echo "$p: rdump produced nothing" >&2; exit 1; } ;;
 	*EROFS*|*erofs*)
 		command -v fsck.erofs >/dev/null || { echo "$p is EROFS: install erofs-utils" >&2; exit 1; }
 		$LOW fsck.erofs --extract="$FS/$p" "$img" ;;
@@ -82,14 +86,19 @@ done
 log "5/6 stock kernel built-in firmware"
 if [ ! -s "$AP/boot-kernel" ]; then
 	lz4 -d -q -f "$AP/boot.img.lz4" "$AP/boot.img"
-	# Android boot header (v0-v2): kernel_size @8, page_size @36, kernel at 1 page
+	# Android boot header v0-v2: kernel_size @8, page_size @36, header_version @40,
+	# kernel at 1 page (v3/v4 use a fixed 4096-byte page and a different layout)
 	python3 -I -c '
 import struct, sys
 b = open(sys.argv[1], "rb").read()
-assert b[:8] == b"ANDROID!", "not an Android boot image"
-ks, ps = struct.unpack_from("<I", b, 8)[0], struct.unpack_from("<I", b, 36)[0]
+if b[:8] != b"ANDROID!":
+    sys.exit("not an Android boot image")
+ks, ps, hv = (struct.unpack_from("<I", b, o)[0] for o in (8, 36, 40))
+if hv > 2 or ps not in (2048, 4096) or ps + ks > len(b):
+    sys.exit(f"unsupported boot image: header v{hv}, page {ps}, kernel {ks}")
 open(sys.argv[2], "wb").write(b[ps:ps + ks])
-' "$AP/boot.img" "$AP/boot-kernel"
+' "$AP/boot.img" "$AP/boot-kernel.part"
+	mv "$AP/boot-kernel.part" "$AP/boot-kernel"
 fi
 rm -rf "$FW/builtin-fw"
 python3 -I "$TOOLS/builtin_fw_extract.py" "$AP/boot-kernel" "$FW/builtin-fw" tsp_himax/hx83102e_gtactive3.bin

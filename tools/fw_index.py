@@ -29,27 +29,35 @@ SG = "samsung/gtactive3wifi/"  # namespace for blobs without a mainline consumer
 
 BRCM_MAINLINE = ("mainline brcmfmac has no BCM4375 entry (src/linux drivers/net/wireless/broadcom/"
                  "brcm80211/brcmfmac/pcie.c:52-74, 110-111); needs BRCMF_FW_CLM_DEF(4375B1, "
-                 "\"brcmfmac4375b1-pcie\"), chip id 0x4375 and PCI id 0x4475 (samsung-9810-ref "
-                 "drivers/net/wireless/bcmdhd_100_15/include/bcmdevs.h:299,520)")
+                 "\"brcmfmac4375b1-pcie\"), chip id 0x4375 (samsung-9810-ref drivers/net/wireless/"
+                 "bcmdhd_100_15/include/bcmdevs.h:520), PCI ids 0x4475/0x4476/0x4477 (bcmdevs.h:299-301) "
+                 "and a TCM rambase of 0x170000 in brcmf_chip_tcm_rambase() (src/linux brcmfmac/chip.c:"
+                 "710-755; dhd uses CR4_4369_RAM_BASE for 4375: dhd_pcie.c:1607-1609, include/sbchipc.h:3285)")
 BT_NOTE = ("btbcm.c:494-532 has no BCM4375B1 subver entry, so mainline asks for "
            "brcm/BCM.samsung,gtactive3wifi.hcd then brcm/BCM.hcd (src/linux drivers/bluetooth/"
-           "btbcm.c:661-667); with an entry it would be brcm/BCM4375B1[.samsung,gtactive3wifi].hcd")
+           "btbcm.c:661-667); with an entry it would try brcm/BCM4375B1.samsung,gtactive3wifi.hcd "
+           "first (btbcm.c:650-655)")
 
 # (regex on path relative to OUT, hardware, stock consumer + source, mainline note, [staged names])
 RULES = [
     # ---- Wi-Fi: Broadcom BCM4375 B1, PCIe on pcie1 0x116b0000 (HARDWARE.md) ----
     (r"vendor/firmware/bcmdhd_sta\.bin_b1$", "Wi-Fi BCM4375B1 (PCIe, pcie1)",
-     "dhd STA firmware 4375b1-roml 18.41.117 (FW-TAG string in file); dhd adds the _b1 suffix "
-     "(samsung-9810-ref bcmdhd_100_15/dhd_pcie.c:2216)", BRCM_MAINLINE,
-     ["brcm/brcmfmac4375b1-pcie.bin", "brcm/brcmfmac4375b1-pcie.samsung,gtactive3wifi.bin"]),
+     "dhd STA firmware 4375b1-roml 18.41.117 (FW-TAG string in file); dhd appends the _b1 fw_ext "
+     "from bcm4375_naming_table (samsung-9810-ref bcmdhd_100_15/dhd_pcie.c:2342-2362, 2620-2622)",
+     BRCM_MAINLINE + ". Staged under the board-specific name only: brcmfmac tries "
+     "<fw>.<board_type>.<ext> before <fw>.<ext> for every item (src/linux brcmfmac/firmware.c:"
+     "655-675, 777-786), so no generic name can clash with linux-firmware",
+     ["brcm/brcmfmac4375b1-pcie.samsung,gtactive3wifi.bin"]),
     (r"vendor/firmware/bcmdhd_clm\.blob$", "Wi-Fi BCM4375B1 regulatory (CLM)",
      "dhd clm_path", "brcmfmac loads <fw>.clm_blob (pcie.c BRCMF_FW_CLM_DEF)",
-     ["brcm/brcmfmac4375b1-pcie.clm_blob", "brcm/brcmfmac4375b1-pcie.samsung,gtactive3wifi.clm_blob"]),
+     ["brcm/brcmfmac4375b1-pcie.samsung,gtactive3wifi.clm_blob"]),
     (r"vendor/firmware/nvram\.txt_CS01_semco_b1$", "Wi-Fi BCM4375B1 NVRAM, SEMCO SWB-E43 module",
      "selected when the chip OTP module tag is e43_cs51/e43_cs53 (dhd_pcie.c:2350-2351); header "
      "line 1 says 'SWB-E43 R03 SEMCO nvram_200831_Active3-EU_US' -> most likely this tablet's module",
      "brcmfmac board nvram = <fw>.<DT root compatible>.txt; root compatible is samsung,gtactive3wifi "
-     "(src/linux arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts:21). VERIFY module tag at runtime.",
+     "(src/linux arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts:21). VERIFY module tag at runtime. "
+     "Contains the Broadcom placeholder macaddr=00:90:4c:30:50:01 (line 11): set the real MAC "
+     "from /efs/wifi/.mac.info outside /usr (systemd .link MACAddress= or DT local-mac-address).",
      ["brcm/brcmfmac4375b1-pcie.samsung,gtactive3wifi.txt"]),
     (r"vendor/firmware/nvram\.txt_1rh_es43_b1$", "Wi-Fi BCM4375B1 NVRAM, Murata 1RH ES4.3 module",
      "selected when OTP tag is 1rh_es43 (dhd_pcie.c:2361; dhd_custom_cis.c:829); header says "
@@ -65,7 +73,7 @@ RULES = [
      "libbt-vendor picks by /data/vendor/conn/.cid.info (strings in vendor/lib64/libbt-vendor.so: "
      "'semco_sem_e43_cs51', '_semco_sem.hcd'); UART /dev/ttySAC1 (vendor/etc/init/init.exynos9810.rc:798)",
      BT_NOTE + ". Staged as default because the Wi-Fi SEMCO module tag is semco_sem_e43_cs5x; VERIFY.",
-     ["brcm/BCM.samsung,gtactive3wifi.hcd", "brcm/BCM4375B1.samsung,gtactive3wifi.hcd", "brcm/BCM4375B1.hcd"]),
+     ["brcm/BCM.samsung,gtactive3wifi.hcd", "brcm/BCM4375B1.samsung,gtactive3wifi.hcd"]),
     (r"vendor/firmware/bcm4375B1_semco\.hcd$", "Bluetooth BCM4375B1 patchram (SEMCO, older cid)",
      "libbt-vendor '_semco.hcd'", "alternative", [SG + "bt/bcm4375B1_semco.hcd"]),
     (r"vendor/firmware/bcm4375B1_murata\.hcd$", "Bluetooth BCM4375B1 patchram (Murata module)",
@@ -204,7 +212,8 @@ w("```\n" + src + "\n```\n")
 w("## Summary\n")
 w("- Wi-Fi/BT: **Broadcom BCM4375 B1** (not BCM4361 as HARDWARE.md guessed): FW-TAG `4375b1-roml/"
   "config_pcie_release Version=18.41.117`, BT `bcm4375B1_*.hcd`. Two module variants ship (SEMCO SWB-E43, "
-  "Murata 1RH); stock dhd chooses by OTP module tag (samsung-9810-ref bcmdhd_100_15/dhd_pcie.c:2349-2362). "
+  "Murata 1RH); stock dhd chooses by OTP module tag (samsung-9810-ref bcmdhd_100_15/dhd_pcie.c:2342-2362, "
+  "2610-2622). "
   "Mainline brcmfmac and btbcm need a BCM4375 entry first.")
 w("- Touch HX83102E and Wacom W9019 firmware were **built into the stock kernel** (CONFIG_EXTRA_FIRMWARE), "
   "not in /vendor; extracted from boot.img via the RELA table (`tools/builtin_fw_extract.py`).")

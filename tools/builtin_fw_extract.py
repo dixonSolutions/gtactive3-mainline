@@ -20,6 +20,15 @@ import os
 import struct
 import sys
 
+
+def safe_join(top, name):
+    """Join a name taken from the Image below top; refuse absolute paths and '..'."""
+    rel = os.path.normpath(name)
+    if os.path.isabs(rel) or rel == ".." or rel.startswith(".." + os.sep):
+        sys.exit(f"refusing unsafe firmware name {name!r}")
+    return os.path.join(top, rel)
+
+
 img, outdir, known = sys.argv[1], sys.argv[2], sys.argv[3].encode()
 d = open(img, "rb").read()
 if d[56:60] != b"ARM\x64":
@@ -77,7 +86,7 @@ os.makedirs(outdir, exist_ok=True)
 print(f"builtin_fw at Image+{start - base:#x}: {(end - start) // 24} entries")
 for va in range(start, end, 24):
     name, do, sz = entry(va)
-    dst = os.path.join(outdir, name)
+    dst = safe_join(outdir, name)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, "wb") as f:
         f.write(d[do:do + sz])
@@ -89,7 +98,7 @@ while o >= 0:
     e = d.find(b"\0", o)
     blob = d[o:e]
     nm = blob.split(b"<Name=", 1)[1].split(b">", 1)[0].decode() if b"<Name=" in blob else "bbd"
-    dst = os.path.join(outdir, "bbd", nm + ".patch")
+    dst = safe_join(os.path.join(outdir, "bbd"), nm + ".patch")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, "wb") as f:
         f.write(blob)
