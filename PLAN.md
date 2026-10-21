@@ -30,7 +30,7 @@ touching the tablet (reset → Download mode → automatic reflash, or watchdog 
 ## Layer 1: boot chain and storage
 - [ ] U-Boot as uniLoader payload: UFS, blkmap over userdata, EFI, systemd-boot — `chainload`
 - [ ] Nested GPT in userdata (sda31) visible to Linux / systemd in the initrd — `duranium`
-- [ ] Android wiped (approved 2026-10-21: userdata + Android OS partitions; never
+- [x] (2026-10-21) Android wiped by UFS discard: metadata, super, cache, userdata (approved 2026-10-21: userdata + Android OS partitions; never
       efs, sec_efs, param, up_param, persistent, bootloader partitions, RPMB)
 
 ## Layer 2: Duranium image
