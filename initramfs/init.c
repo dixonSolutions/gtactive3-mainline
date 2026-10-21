@@ -791,6 +791,12 @@ int main(void)
 	out(lsock < 0 ? "  debug console: FAILED\n" : "  debug console on port 23\n");
 	out("\nVOLUME UP = restart into Download mode.\n");
 
+	/* storage, so the partitions are there without a manual insmod */
+	load_module("/lib/modules/phy-exynos-ufs.ko");
+	load_module("/lib/modules/ufshcd-core.ko");
+	load_module("/lib/modules/ufshcd-pltfrm.ko");
+	load_module("/lib/modules/ufs-exynos.ko");
+
 	keys = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
 	if (lsock >= 0)
 		__nolibc_syscall3(__NR_fcntl, lsock, 4 /* F_SETFL */, O_NONBLOCK);
@@ -807,11 +813,27 @@ int main(void)
 		if (lsock >= 0) {
 			c = __nolibc_syscall4(__NR_accept4, lsock, 0, 0, 0);
 			if (c >= 0) {
+				int pid;
+
 				out("Host connected to debug console.\n");
 				host_seen = 1;
-				serve(c);
+				/*
+				 * Serve each connection in a child: a peek/dump of a
+				 * register that faults (unclocked or secure block)
+				 * then only kills that child, not init.
+				 */
+				pid = fork();
+				if (pid == 0) {
+					close(lsock);
+					serve(c);
+					_exit(0);
+				}
+				if (pid < 0)
+					serve(c);
 				close(c);
 			}
+			while (waitpid(-1, 0, WNOHANG) > 0)
+				;
 		}
 		/* not enumerated yet: drop and re-assert the D+ pull-up every 8 s */
 		if (!host_seen && udc[0] && i && i % 80 == 0) {

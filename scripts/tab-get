@@ -1,0 +1,53 @@
+#!/bin/bash
+# Copy a file or block device from the tablet to the host over the debug console.
+#   tab-get REMOTE LOCAL [BYTES]
+# BYTES defaults to the block device size from /sys/class/block/<dev>/size.
+# The console's "cat" streams raw bytes followed by the "> " prompt, so exactly
+# BYTES are read and the trailing prompt is checked.
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+R=$1 L=$2 N=${3:-}
+if [ -z "$N" ]; then
+	s=$("$P/scripts/tab" "cat /sys/class/block/$(basename "$R")/size" | tr -dc 0-9)
+	N=$((s * 512))
+fi
+LL=fe80::57:aff:fe00:1
+ifc=
+for d in /sys/class/net/*; do
+	[ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && ifc=$(basename "$d")
+done
+[ -n "$ifc" ] || { echo "tablet USB network not present" >&2; exit 1; }
+python3 -I - "$LL%$ifc" "$R" "$L" "$N" <<'PY'
+import hashlib, socket, sys, time
+addr, remote, local, n = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+s = socket.create_connection((addr, 23), timeout=10)
+s.settimeout(60)
+buf = b""
+while not buf.endswith(b"> "):
+    d = s.recv(65536)
+    if not d:
+        sys.exit("console closed")
+    buf += d
+s.sendall(("cat %s\n" % remote).encode())
+h = hashlib.sha256()
+got = 0
+t0 = time.time()
+with open(local, "wb") as f:
+    while got < n:
+        d = s.recv(min(1 << 20, n - got))
+        if not d:
+            sys.exit("console closed after %d of %d bytes" % (got, n))
+        f.write(d)
+        h.update(d)
+        got += len(d)
+tail = b""
+while not tail.endswith(b"> "):
+    d = s.recv(64)
+    if not d:
+        break
+    tail += d
+if tail != b"> ":
+    sys.exit("unexpected trailer %r (size mismatch?)" % tail[:80])
+dt = time.time() - t0
+print("%s %d bytes %.1f MB/s sha256 %s" % (local, got, got / dt / 1e6 if dt else 0, h.hexdigest()))
+PY
