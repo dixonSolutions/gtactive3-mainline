@@ -60,3 +60,21 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | Audio (PipeWire/UCM) | next image (untested) |
 | Updates (sysupdate) instead of 6.9 GB reinstalls | not set up yet |
 | distrobox / podman / brew | queued check (dev-tools sysext) |
+
+## DVFS findings (2026-10-22, bring-up #76/#77, measured)
+
+- cpufreq-dt + clk-acpm accept every rate, but the CPU PLL
+  (PLL_CON0_PLL_CPUCL0 @ 0x1d000140, F = 26 MHz * M / (P * 2^S)) stays at
+  1053 MHz (M=243 P=3 S=1) and a CPU-bound loop runs at the same speed at
+  208, 1053 and 1950 MHz: **DVFS has no effect yet**.
+- Cause 1: ACPM channel 5 (DVFS) is interrupt mode (ap_poll 0) and the
+  mainline driver rejects it (-EOPNOTSUPP, "Interrupt mode not supported").
+- Cause 2: forcing polling sends the request, but channel 5 has q_len 1
+  (all queue pointers 0), and the "next TX front != RX front / TX rear"
+  checks (mainline and Samsung acpm_ipc.c alike) never allow a send:
+  "RX front can not keep up with TX front". Stock does send DVFS on channel
+  5 (cal-if: dvfs_cpucl0 is an ACPM vclk -> acpm_ipc_send_data(5)), so its
+  runtime queue state or path differs; next: dump channel 5 SRAM under the
+  stock kernel or trace acpm_ipc_send_data's q_len 1 behaviour.
+- The force-polling patch was reverted (each request would block until the
+  TX timeout).
