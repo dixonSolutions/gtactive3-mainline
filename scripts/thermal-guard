@@ -1,0 +1,19 @@
+#!/bin/bash
+# Keep the host laptop cool during builds: pause every running build
+# container (podman) at >= HOT C, resume at <= COOL C. Logs to logs/thermal.log.
+HOT=${HOT:-85}; COOL=${COOL:-65}
+P=$(cd "$(dirname "$0")/.." && pwd)
+log() { echo "[$(date +%T)] $*" >> "$P/logs/thermal.log"; }
+paused=""
+while true; do
+	t=$(( $(cat /sys/class/thermal/thermal_zone0/temp) / 1000 ))
+	if [ -z "$paused" ] && [ "$t" -ge "$HOT" ]; then
+		paused=$(podman ps -q --filter status=running)
+		[ -n "$paused" ] && podman pause $paused >/dev/null && log "paused at ${t}C: $paused"
+		[ -z "$paused" ] && paused=none
+	elif [ -n "$paused" ] && [ "$t" -le "$COOL" ]; then
+		[ "$paused" != none ] && podman unpause $paused >/dev/null 2>&1 && log "resumed at ${t}C"
+		paused=""
+	fi
+	sleep 5
+done
