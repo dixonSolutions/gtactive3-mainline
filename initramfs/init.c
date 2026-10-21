@@ -624,23 +624,37 @@ static void serve(int c)
 				wr(c, ob);
 			}
 		} else if (!strncmp(line, "memcat ", 7)) {
-			/* memcat ADDR LEN: LEN raw bytes of physical memory (e.g. the framebuffer) */
-			static char mb[65536];
+			/*
+			 * memcat ADDR LEN: LEN raw bytes of physical memory (e.g. the
+			 * framebuffer). mmap, not read(): arm64 /dev/mem read() only
+			 * covers mapped RAM. The mapping is device memory, so copy
+			 * with aligned 32-bit loads.
+			 */
+			static unsigned int mb[16384];
 			const char *e;
 			unsigned long a = parse_num(line + 7, &e);
 			unsigned long nn = parse_num(e, 0);
+			unsigned long base = a & ~4095UL, off = a - base;
 			int fd = open("/dev/mem", O_RDONLY | O_SYNC);
+			void *m = fd < 0 ? MAP_FAILED :
+				mmap(0, off + nn, PROT_READ, MAP_SHARED, fd, base);
 
-			if (fd < 0 || lseek(fd, a, SEEK_SET) == (off_t)-1) {
+			if (m == MAP_FAILED || (a & 3)) {
 				wr(c, "error\n");
 			} else {
-				while (nn) {
-					r = read(fd, mb, nn < sizeof(mb) ? nn : sizeof(mb));
-					if (r <= 0)
+				volatile unsigned int *src = (volatile unsigned int *)((char *)m + off);
+				unsigned long k, done = 0;
+
+				while (done < nn) {
+					unsigned long chunk = nn - done < sizeof(mb) ? nn - done : sizeof(mb);
+
+					for (k = 0; k < (chunk + 3) / 4; k++)
+						mb[k] = src[done / 4 + k];
+					if (write(c, mb, chunk) != (ssize_t)chunk)
 						break;
-					write(c, mb, r);
-					nn -= r;
+					done += chunk;
 				}
+				munmap(m, off + nn);
 			}
 			if (fd >= 0)
 				close(fd);

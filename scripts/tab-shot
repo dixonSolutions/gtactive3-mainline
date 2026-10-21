@@ -9,7 +9,7 @@ P=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$P/build/shots/shot-$(date +%Y%m%d-%H%M%S).png}
 mkdir -p "$(dirname "$OUT")"
 LL=fe80::57:aff:fe00:1
-ifc=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1)
+ifc=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
 [ -n "$ifc" ] || { echo "tablet USB network not present" >&2; exit 1; }
 flock "$P/build/tab.lock" python3 -I - "$LL%$ifc" "$OUT" <<'PY'
 import socket, struct, sys, zlib

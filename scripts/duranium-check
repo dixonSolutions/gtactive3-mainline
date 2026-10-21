@@ -1,0 +1,33 @@
+#!/bin/bash
+# Health check of a booted Duranium over the debug console (port 23):
+# systemd state, failed units, GDM / gnome-shell, DRM, Wi-Fi, Bluetooth,
+# touch / pen input, battery, UFS errors, then a panel screenshot.
+#
+#   scripts/duranium-check [SHOT.png]
+set -uo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+S=$(mktemp -d)
+trap 'rm -rf "$S"' EXIT
+t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
+
+cat > "$S/check.sh" <<'EOF'
+echo "== kernel: $(cat /proc/version | cut -d' ' -f1-3), up $(cut -d' ' -f1 /proc/uptime) s"
+echo "== systemd: $(systemctl is-system-running 2>&1)"
+systemctl --no-pager --failed --plain --no-legend 2>&1 | head -20
+echo "== jobs:"; systemctl --no-pager list-jobs --plain --no-legend 2>&1 | head -10
+echo "== gdm: $(systemctl is-active gdm.service 2>&1)"
+ps -eo user,pid,args 2>/dev/null | grep -E "gnome-shell|gdm-|Xwayland|gnome-session" | grep -v grep | head -8
+echo "== drm:"; ls /sys/class/drm 2>&1 | tr '\n' ' '; echo
+for c in /sys/class/drm/card*-*; do [ -e "$c/status" ] && echo "$c $(cat $c/status) $(cat $c/enabled 2>/dev/null)"; done
+echo "== net:"; ip -br addr 2>&1 | head
+nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device 2>&1 | head
+echo "== bluetooth:"; ls /sys/class/bluetooth 2>&1
+echo "== input:"; grep -E "^N:" /proc/bus/input/devices
+echo "== battery: $(cat /sys/class/power_supply/max170xx_battery/capacity 2>/dev/null)% $(cat /sys/class/power_supply/max170xx_battery/current_now 2>/dev/null) uA, usb $(cat /sys/class/power_supply/max77705-usb/current_max 2>/dev/null) uA"
+echo "== ufs errors: $(dmesg | grep -ciE 'saved_err|OCS invalid')"
+echo "== journal errors (last 25):"
+journalctl -b -p err --no-pager -o cat 2>&1 | tail -25
+EOF
+flock "$P/build/tab.lock" "$P/scripts/tab-put" "$S/check.sh" /run/duranium-check.sh >/dev/null
+t "run /bin/sh /run/duranium-check.sh"
+"$P/scripts/tab-shot" "${1:-$P/build/shots/duranium-$(date +%Y%m%d-%H%M%S).png}" || true
