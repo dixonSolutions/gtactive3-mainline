@@ -1,0 +1,39 @@
+From a615e143a16792e29ee34cf868b15cd0985b4580 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:28:28 +1100
+Subject: [PATCH 26/27] i2c: exynos5: Mask interrupts before requesting the IRQ
+
+Probe only clears INT_STATUS before requesting the interrupt. If the
+bootloader left bits set in INT_ENABLE (TX_ALMOSTEMPTY is level and
+stays asserted while the FIFO is empty), the handler runs right after
+devm_request_irq() and dereferences i2c->msg, which is still NULL.
+
+Write 0 to INT_ENABLE before clearing the pending status. Every transfer
+programs INT_ENABLE itself in exynos5_i2c_message_start(), so nothing
+relies on the old value.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/i2c/busses/i2c-exynos5.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/i2c/busses/i2c-exynos5.c b/drivers/i2c/busses/i2c-exynos5.c
+index b4f2495fc..7d8404509 100644
+--- a/drivers/i2c/busses/i2c-exynos5.c
++++ b/drivers/i2c/busses/i2c-exynos5.c
+@@ -1053,7 +1053,11 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
+ 	i2c->adap.algo_data = i2c;
+ 	i2c->adap.dev.parent = &pdev->dev;
+ 
+-	/* Clear pending interrupts from u-boot or misc causes */
++	/*
++	 * Mask and clear interrupts left enabled or pending by the bootloader:
++	 * the handler dereferences i2c->msg, which is only set for a transfer.
++	 */
++	writel(0, i2c->regs + HSI2C_INT_ENABLE);
+ 	exynos5_i2c_clr_pend_irq(i2c);
+ 
+ 	spin_lock_init(&i2c->lock);
+-- 
+2.56.0
+

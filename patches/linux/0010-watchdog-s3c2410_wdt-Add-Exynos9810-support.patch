@@ -1,0 +1,107 @@
+From 52e42a7357f6dcd28427664ba82c83c757804615 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:42:24 +1100
+Subject: [PATCH 10/27] watchdog: s3c2410_wdt: Add Exynos9810 support
+
+Exynos9810 has a watchdog per CPU cluster at 0x10050000 (cluster 0,
+Cortex-A55) and 0x10060000 (cluster 1, Mongoose M3). The PMU gates
+their reset outputs with the Exynos7 style AUTOMATIC_WDT_RESET_DISABLE
+(0x408) and MASK_WDT_RESET_REQUEST (0x40c) registers and reports them
+in RST_STAT (0x404), using bit 24 for cluster 0 and bit 23 for
+cluster 1, as in Samsung's downstream exynos8/exynos7 driver data.
+
+Add driver data for both clusters, selected by samsung,cluster-index.
+
+Tested on the Galaxy Tab Active3 (SM-T570): with bit 24 cleared in
+both PMU registers, the cluster 0 watchdog left running by the
+bootloader resets the SoC and RST_STAT reads 0x01000000 afterwards.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/watchdog/s3c2410_wdt.c | 38 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/watchdog/s3c2410_wdt.c b/drivers/watchdog/s3c2410_wdt.c
+index e31f93db0..ff375b049 100644
+--- a/drivers/watchdog/s3c2410_wdt.c
++++ b/drivers/watchdog/s3c2410_wdt.c
+@@ -88,6 +88,9 @@
+ #define EXYNOS990_CLUSTER2_NONCPU_INT_EN	0x1644
+ #define EXYNOS990_CLUSTER2_WDTRESET_BIT		23
+ 
++#define EXYNOS9810_CLUSTER0_WDTRESET_BIT	24
++#define EXYNOS9810_CLUSTER1_WDTRESET_BIT	23
++
+ /**
+  * DOC: Quirk flags for different Samsung watchdog IP-cores
+  *
+@@ -292,6 +295,32 @@ static const struct s3c2410_wdt_variant drv_data_exynos990_cl2 = {
+ 		  QUIRK_HAS_DBGACK_BIT,
+ };
+ 
++/*
++ * Exynos9810 keeps the Exynos7 PMU layout (AUTOMATIC_WDT_RESET_DISABLE,
++ * MASK_WDT_RESET_REQUEST, RST_STAT), but with one bit per cluster: bit 24 for
++ * the cluster 0 (Cortex-A55) watchdog and bit 23 for the cluster 1
++ * (Mongoose M3) one.
++ */
++static const struct s3c2410_wdt_variant drv_data_exynos9810_cl0 = {
++	.disable_reg = EXYNOS5_WDT_DISABLE_REG_OFFSET,
++	.mask_reset_reg = EXYNOS5_WDT_MASK_RESET_REG_OFFSET,
++	.mask_bit = EXYNOS9810_CLUSTER0_WDTRESET_BIT,
++	.rst_stat_reg = EXYNOS5_RST_STAT_REG_OFFSET,
++	.rst_stat_bit = EXYNOS9810_CLUSTER0_WDTRESET_BIT,
++	.quirks = QUIRK_HAS_WTCLRINT_REG | QUIRK_HAS_PMU_MASK_RESET |
++		  QUIRK_HAS_PMU_RST_STAT | QUIRK_HAS_PMU_AUTO_DISABLE,
++};
++
++static const struct s3c2410_wdt_variant drv_data_exynos9810_cl1 = {
++	.disable_reg = EXYNOS5_WDT_DISABLE_REG_OFFSET,
++	.mask_reset_reg = EXYNOS5_WDT_MASK_RESET_REG_OFFSET,
++	.mask_bit = EXYNOS9810_CLUSTER1_WDTRESET_BIT,
++	.rst_stat_reg = EXYNOS5_RST_STAT_REG_OFFSET,
++	.rst_stat_bit = EXYNOS9810_CLUSTER1_WDTRESET_BIT,
++	.quirks = QUIRK_HAS_WTCLRINT_REG | QUIRK_HAS_PMU_MASK_RESET |
++		  QUIRK_HAS_PMU_RST_STAT | QUIRK_HAS_PMU_AUTO_DISABLE,
++};
++
+ static const struct s3c2410_wdt_variant drv_data_exynosautov9_cl0 = {
+ 	.mask_reset_reg = EXYNOS850_CLUSTER0_NONCPU_INT_EN,
+ 	.mask_bit = 2,
+@@ -385,6 +414,8 @@ static const struct of_device_id s3c2410_wdt_match[] = {
+ 	  .data = &drv_data_exynos850_cl0 },
+ 	{ .compatible = "samsung,exynos990-wdt",
+ 	  .data = &drv_data_exynos990_cl0 },
++	{ .compatible = "samsung,exynos9810-wdt",
++	  .data = &drv_data_exynos9810_cl0 },
+ 	{ .compatible = "samsung,exynosautov9-wdt",
+ 	  .data = &drv_data_exynosautov9_cl0 },
+ 	{ .compatible = "samsung,exynosautov920-wdt",
+@@ -703,12 +734,13 @@ s3c2410_get_wdt_drv_data(struct platform_device *pdev, struct s3c2410_wdt *wdt)
+ 			   platform_get_device_id(pdev)->driver_data;
+ 	}
+ 
+-	/* Choose Exynos850/ExynosAutov9 driver data w.r.t. cluster index */
++	/* Choose Exynos850/9810/ExynosAutov9 driver data w.r.t. cluster index */
+ 	if (variant == &drv_data_exynos850_cl0 ||
+ 	    variant == &drv_data_exynosautov9_cl0 ||
+ 	    variant == &drv_data_gs101_cl0 ||
+ 	    variant == &drv_data_exynosautov920_cl0 ||
+-	    variant == &drv_data_exynos990_cl0) {
++	    variant == &drv_data_exynos990_cl0 ||
++	    variant == &drv_data_exynos9810_cl0) {
+ 		u32 index;
+ 		int err;
+ 
+@@ -729,6 +761,8 @@ s3c2410_get_wdt_drv_data(struct platform_device *pdev, struct s3c2410_wdt *wdt)
+ 				variant = &drv_data_gs101_cl1;
+ 			else if (variant == &drv_data_exynosautov920_cl0)
+ 				variant = &drv_data_exynosautov920_cl1;
++			else if (variant == &drv_data_exynos9810_cl0)
++				variant = &drv_data_exynos9810_cl1;
+ 			break;
+ 		case 2:
+ 			if (variant == &drv_data_exynos990_cl0)
+-- 
+2.56.0
+

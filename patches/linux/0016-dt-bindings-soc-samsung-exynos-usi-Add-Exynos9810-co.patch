@@ -1,0 +1,31 @@
+From 65030ef1e1e9067fe1ab0c496bdda2e85662fe3c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:53:20 +1100
+Subject: [PATCH 16/27] dt-bindings: soc: samsung: exynos-usi: Add Exynos9810
+ compatible
+
+The USI blocks of Exynos9810 are USIv2: one SW_CONF register per block
+in the domain system register (UART = 0x1, SPI = 0x2, I2C = 0x4) and
+USI_CON / USI_OPTION at offset 0xc4 / 0xc8 of the protocol registers,
+as on Exynos850. Add a compatible with the Exynos850 fallback.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Documentation/devicetree/bindings/soc/samsung/exynos-usi.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/soc/samsung/exynos-usi.yaml b/Documentation/devicetree/bindings/soc/samsung/exynos-usi.yaml
+index c694926e5..39fb23d16 100644
+--- a/Documentation/devicetree/bindings/soc/samsung/exynos-usi.yaml
++++ b/Documentation/devicetree/bindings/soc/samsung/exynos-usi.yaml
+@@ -37,6 +37,7 @@ properties:
+           - enum:
+               - google,gs101-usi
+               - samsung,exynos2200-usi
++              - samsung,exynos9810-usi
+               - samsung,exynosautov9-usi
+               - samsung,exynosautov920-usi
+           - const: samsung,exynos850-usi
+-- 
+2.56.0
+

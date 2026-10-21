@@ -20,6 +20,7 @@
 #include <linux/if.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
+#include <linux/watchdog.h>
 
 #define PMU_BASE	0x14060000UL
 #define PMU_INFORM2	0x0808
@@ -39,6 +40,7 @@ static int con = 1;
 static int st_max, st_gadget;
 static int kmsg = -1;
 static int devmem = -1;
+static int wdt = -1;
 static char logbuf[1 << 17];
 
 /* ---------- output helpers ---------- */
@@ -741,6 +743,7 @@ int main(void)
 	kmsg = open("/dev/kmsg", O_WRONLY);
 	mkdir("/sys/fs/pstore", 0755);
 	mount("pstore", "/sys/fs/pstore", "pstore", 0, 0);
+	mount("debugfs", "/sys/kernel/debug", "debugfs", 0, 0);
 
 	out("\n\n==============================================\n");
 	out("  Galaxy Tab Active3 - mainline Linux is alive\n");
@@ -796,6 +799,25 @@ int main(void)
 	load_module("/lib/modules/ufshcd-core.ko");
 	load_module("/lib/modules/ufshcd-pltfrm.ko");
 	load_module("/lib/modules/ufs-exynos.ko");
+
+	/* bundle 1 (tested 2026-10-21): hardware I2C behind its USI wrapper, DCS backlight */
+	load_module("/lib/modules/exynos-usi.ko");
+	load_module("/lib/modules/i2c-exynos5.ko");
+	load_module("/lib/modules/exynos9810-dsim-bl.ko");
+
+	/*
+	 * Hardware watchdog (cluster 0, 30 s), kicked from the main loop below:
+	 * if the kernel or init wedges, the SoC resets and S-Boot boots BOOT.
+	 */
+	wdt = open("/dev/watchdog0", O_WRONLY);
+	if (wdt >= 0) {
+		int t = 30;
+
+		ioctl(wdt, WDIOC_SETTIMEOUT, &t);
+		out("  watchdog armed (30 s)\n");
+	} else {
+		out("  watchdog: not available\n");
+	}
 
 	keys = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
 	if (lsock >= 0)
@@ -868,6 +890,8 @@ int main(void)
 			}
 			out("USB host present, staying up.\n");
 		}
+		if (wdt >= 0 && i % 10 == 0)
+			ioctl(wdt, WDIOC_KEEPALIVE, 0);
 		usleep(100000);
 	}
 	return 0;

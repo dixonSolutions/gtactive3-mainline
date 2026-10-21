@@ -1,0 +1,61 @@
+From f0e08c62a59bf2979e540aa282e81fdfe0d5bfbf Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:08:33 +1100
+Subject: [PATCH 21/27] arm64: dts: exynos: gtactive3wifi: Add DCS backlight
+
+The stock DTBO has no backlight IC for this board: brightness is DCS
+0x51 to the HX83102E on both DSI links, DSIM0 at 0x16080000 and DSIM1
+at 0x16090000 (stock-0.dts dsim_0/dsim_1, both enabled by dtbo-4
+fragments 1 and 2 with dsi_mode = 1, dual DSI). Samsung's
+brightness_table maps the UI range to 0..2437 with 3977 for outdoor
+mode, and its default level 128 to 928; use the full 3977 range so
+nothing the stock firmware allows is out of reach.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 20 +++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index eaab8375e..1943aeec2 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -46,13 +46,14 @@ framebuffer0: framebuffer-0 {
+ 	 * Himax HX83102E (BOE) TDDI, 1200x1920 portrait, on DSIM0 + DSIM1.
+ 	 * There is no DSI host driver yet: the bootloader initialises the
+ 	 * panel and this node only describes it for simpledrm (physical size,
+-	 * mounting). Change "rotation" here if userspace should treat another
+-	 * edge as the top.
++	 * mounting) and links the DCS backlight. Change "rotation" here if
++	 * userspace should treat another edge as the top.
+ 	 */
+ 	panel: panel {
+ 		width-mm = <108>;
+ 		height-mm = <172>;
+ 		rotation = <0>;
++		backlight = <&backlight>;
+ 	};
+ 
+ 	gpio-keys {
+@@ -341,3 +342,18 @@ ufs: ufs@11120000 {
+ 		phy-names = "ufs-phy";
+ 	};
+ };
++
++&soc {
++	/*
++	 * The HX83102E takes its brightness as DCS 0x51 (12 bits, two bytes)
++	 * on both DSI links and drives the LED PWM itself; there is no
++	 * backlight IC on I2C. Samsung's table tops out at 2437 in normal
++	 * use and 3977 in outdoor mode, 928 is its default.
++	 */
++	backlight: backlight@16080000 {
++		compatible = "samsung,exynos9810-dsim-backlight";
++		reg = <0x16080000 0x100>, <0x16090000 0x100>;
++		max-brightness = <3977>;
++		default-brightness = <928>;
++	};
++};
+-- 
+2.56.0
+

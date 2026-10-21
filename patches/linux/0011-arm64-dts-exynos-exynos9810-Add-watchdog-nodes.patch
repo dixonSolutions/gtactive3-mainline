@@ -1,0 +1,59 @@
+From 41774961c83525e3bf4d604b217724d5bba006e3 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:42:47 +1100
+Subject: [PATCH 11/27] arm64: dts: exynos: exynos9810: Add watchdog nodes
+
+Add the cluster 0 and cluster 1 watchdogs, at 0x10050000 (GIC SPI 464)
+and 0x10060000 (GIC SPI 465), as described in the stock Samsung device
+tree. Their counters run from the 26 MHz OSCCLK. There is no Exynos9810
+clock driver yet, so oscclk also stands in for the bus clock, which the
+bootloader leaves enabled.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 29 ++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 4f1f1e9a4..30e573d17 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -177,6 +177,35 @@ chipid@10000000 {
+ 			reg = <0x10000000 0x100>;
+ 		};
+ 
++		/*
++		 * TODO: the bus clock is the CMU_PERIS WDT_CLUSTERx PCLK gate;
++		 * use oscclk until there is a clock driver (the bootloader
++		 * leaves the gate enabled). The counter runs from OSCCLK.
++		 */
++		watchdog_cl0: watchdog@10050000 {
++			compatible = "samsung,exynos9810-wdt";
++			reg = <0x10050000 0x100>;
++			interrupts = <GIC_SPI 464 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&oscclk>, <&oscclk>;
++			clock-names = "watchdog", "watchdog_src";
++			samsung,syscon-phandle = <&pmu_system_controller>;
++			samsung,cluster-index = <0>;
++
++			status = "disabled";
++		};
++
++		watchdog_cl1: watchdog@10060000 {
++			compatible = "samsung,exynos9810-wdt";
++			reg = <0x10060000 0x100>;
++			interrupts = <GIC_SPI 465 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&oscclk>, <&oscclk>;
++			clock-names = "watchdog", "watchdog_src";
++			samsung,syscon-phandle = <&pmu_system_controller>;
++			samsung,cluster-index = <1>;
++
++			status = "disabled";
++		};
++
+ 		gic: interrupt-controller@10101000 {
+ 			compatible = "arm,gic-400";
+ 			reg = <0x10101000 0x1000>,
+-- 
+2.56.0
+

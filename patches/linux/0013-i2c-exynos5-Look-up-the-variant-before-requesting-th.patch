@@ -1,0 +1,41 @@
+From ca5d9f6db58b6f7e183ed52298a634921eb6231e Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:52:30 +1100
+Subject: [PATCH 13/27] i2c: exynos5: Look up the variant before requesting the
+ IRQ
+
+exynos5_i2c_irq() dereferences i2c->variant, but probe only sets it after
+devm_request_irq(). Look the variant up right after mapping the
+registers, so that it is valid before the interrupt handler can run and
+before any variant specific register setup is done.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/i2c/busses/i2c-exynos5.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/i2c/busses/i2c-exynos5.c b/drivers/i2c/busses/i2c-exynos5.c
+index 9c1c5f3c0..dd826997f 100644
+--- a/drivers/i2c/busses/i2c-exynos5.c
++++ b/drivers/i2c/busses/i2c-exynos5.c
+@@ -929,6 +929,8 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
+ 		goto err_clk;
+ 	}
+ 
++	i2c->variant = of_device_get_match_data(&pdev->dev);
++
+ 	i2c->adap.dev.of_node = np;
+ 	i2c->adap.algo_data = i2c;
+ 	i2c->adap.dev.parent = &pdev->dev;
+@@ -950,8 +952,6 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
+ 		goto err_clk;
+ 	}
+ 
+-	i2c->variant = of_device_get_match_data(&pdev->dev);
+-
+ 	ret = exynos5_hsi2c_clock_setup(i2c);
+ 	if (ret)
+ 		goto err_clk;
+-- 
+2.56.0
+

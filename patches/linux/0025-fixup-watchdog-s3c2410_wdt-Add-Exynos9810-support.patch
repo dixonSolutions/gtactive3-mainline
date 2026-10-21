@@ -1,0 +1,32 @@
+From 31da53d4c2e4ac3440151a9d959aac8c830eae3d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:12:49 +1100
+Subject: [PATCH 25/27] fixup! watchdog: s3c2410_wdt: Add Exynos9810 support
+
+Keep the of_device_id table sorted: exynos9810 sorts before exynos990.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/watchdog/s3c2410_wdt.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/watchdog/s3c2410_wdt.c b/drivers/watchdog/s3c2410_wdt.c
+index ff375b049..499175718 100644
+--- a/drivers/watchdog/s3c2410_wdt.c
++++ b/drivers/watchdog/s3c2410_wdt.c
+@@ -412,10 +412,10 @@ static const struct of_device_id s3c2410_wdt_match[] = {
+ 	  .data = &drv_data_exynos7 },
+ 	{ .compatible = "samsung,exynos850-wdt",
+ 	  .data = &drv_data_exynos850_cl0 },
+-	{ .compatible = "samsung,exynos990-wdt",
+-	  .data = &drv_data_exynos990_cl0 },
+ 	{ .compatible = "samsung,exynos9810-wdt",
+ 	  .data = &drv_data_exynos9810_cl0 },
++	{ .compatible = "samsung,exynos990-wdt",
++	  .data = &drv_data_exynos990_cl0 },
+ 	{ .compatible = "samsung,exynosautov9-wdt",
+ 	  .data = &drv_data_exynosautov9_cl0 },
+ 	{ .compatible = "samsung,exynosautov920-wdt",
+-- 
+2.56.0
+

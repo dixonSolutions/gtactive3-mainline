@@ -7,7 +7,7 @@ P=$(cd "$(dirname "$0")/.." && pwd)
 K=$P/src/linux
 O=$P/build/bringup
 MK="nice -n 19 make -j4 -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=$O"
-MODS="drivers/phy/samsung/phy-exynos5-usbdrd drivers/usb/dwc3/dwc3 drivers/usb/dwc3/dwc3-exynos drivers/i2c/busses/i2c-exynos5 drivers/ufs/core/ufshcd-core drivers/ufs/host/ufshcd-pltfrm drivers/ufs/host/ufs-exynos drivers/phy/samsung/phy-exynos-ufs"
+MODS="drivers/phy/samsung/phy-exynos5-usbdrd drivers/usb/dwc3/dwc3 drivers/usb/dwc3/dwc3-exynos drivers/i2c/busses/i2c-exynos5 drivers/ufs/core/ufshcd-core drivers/ufs/host/ufshcd-pltfrm drivers/ufs/host/ufs-exynos drivers/phy/samsung/phy-exynos-ufs drivers/soc/samsung/exynos-usi drivers/video/backlight/exynos9810-dsim-bl"
 
 echo "== init"
 aarch64-linux-gnu-gcc -Os -static -nostdlib -fno-stack-protector -fno-asynchronous-unwind-tables \

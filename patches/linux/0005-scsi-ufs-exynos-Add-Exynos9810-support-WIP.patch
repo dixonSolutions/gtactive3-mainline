@@ -1,7 +1,7 @@
 From c9e9d8d1962978194f803da8be3a48a1bc1ec92b Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 14:44:18 +1100
-Subject: [PATCH 5/8] scsi: ufs: exynos: Add Exynos9810 support (WIP)
+Subject: [PATCH 05/27] scsi: ufs: exynos: Add Exynos9810 support (WIP)
 
 Exynos9810 is calibrated almost like FSD; differences from Samsung's
 ufs-cal-9810.c are applied in its own pre_link and pre_pwr_change hooks.

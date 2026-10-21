@@ -1,0 +1,39 @@
+From 131ad21ca4874e55a8a5b5d1b0b912ceebdd8849 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:53:19 +1100
+Subject: [PATCH 14/27] dt-bindings: i2c: exynos5: Add Exynos9810 compatible
+
+The HSI2C controllers of the Exynos9810 SoC sit in USIv2 blocks like the
+ones of Exynos850, but their timing registers do not match any existing
+variant: the SCL period is split into 16 slots and TSCL_H / TSTART_HD
+are slot masks, so add a dedicated compatible. Like ExynosAutoV9, the
+controller has both an operating and a bus clock.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Documentation/devicetree/bindings/i2c/i2c-exynos5.yaml | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/i2c/i2c-exynos5.yaml b/Documentation/devicetree/bindings/i2c/i2c-exynos5.yaml
+index 32269239b..01584c297 100644
+--- a/Documentation/devicetree/bindings/i2c/i2c-exynos5.yaml
++++ b/Documentation/devicetree/bindings/i2c/i2c-exynos5.yaml
+@@ -26,6 +26,7 @@ properties:
+           - samsung,exynos5260-hsi2c    # Exynos5260
+           - samsung,exynos7-hsi2c       # Exynos7
+           - samsung,exynos8895-hsi2c
++          - samsung,exynos9810-hsi2c
+           - samsung,exynosautov9-hsi2c
+       - items:
+           - enum:
+@@ -88,6 +89,7 @@ allOf:
+         compatible:
+           contains:
+             enum:
++              - samsung,exynos9810-hsi2c
+               - samsung,exynosautov9-hsi2c
+ 
+     then:
+-- 
+2.56.0
+

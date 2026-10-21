@@ -1,0 +1,374 @@
+From e4ba5aa65f891d92a5d89c4bb4c7bb7f455e9be2 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:10:00 +1100
+Subject: [PATCH 22/27] arm64: dts: exynos: exynos9810: Add sysreg, USI and
+ HSI2C nodes
+
+Describe the CMGP, PERIC0 and PERIC1 system registers, which hold the
+USI SW_CONF registers, and the HSI2C channels that have devices on the
+Galaxy Tab Active3, plus the four camera I2C channels:
+
+  channel           HSI2C       SW_CONF          IRQ  pins (func)
+  I2C_CAM0..3       1086..1089  none             424..427 gpc0-0..7 (2)
+  PERIC0 USI01_I2C  10480000    PERIC0 + 0x1010  401  gpp0-6/7 (3)
+  PERIC1 USI07_USI  108c0000    PERIC1 + 0x1024  430  gpp4-4/5 (2)
+  PERIC1 USI08_USI  108e0000    PERIC1 + 0x102c  432  gpp5-0/1 (2)
+  PERIC1 USI09_I2C  10910000    PERIC1 + 0x1038  435  gpp5-6/7 (3)
+  USI_CMGP00        14300000    CMGP + 0x2000      0  gpm0-0/gpm1-0 (2)
+  USI_CMGP03        14360000    CMGP + 0x2030      6  gpm14-0/gpm15-0 (2)
+
+Addresses, interrupts and pin functions are from the vendor device tree
+(hsi2c_N and usi_N nodes), the sysreg bases from the vendor PMU CAL
+sequences. Clocks are left to the boards until there is an Exynos9810
+clock driver. All nodes are disabled.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../boot/dts/exynos/exynos9810-pinctrl.dtsi   |  70 ++++++
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi    | 202 ++++++++++++++++++
+ 2 files changed, 272 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi b/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
+index 88091bf09..135ac2cb4 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810-pinctrl.dtsi
+@@ -346,6 +346,20 @@ gpm43: gpm43-gpio-bank {
+ 
+ 		interrupts = <GIC_SPI 28 IRQ_TYPE_LEVEL_HIGH>;
+ 	};
++
++	hsi2c34_bus: hsi2c34-bus-pins {
++		samsung,pins = "gpm0-0", "gpm1-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	hsi2c40_bus: hsi2c40-bus-pins {
++		samsung,pins = "gpm14-0", "gpm15-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
+ };
+ 
+ &pinctrl_fsys0 {
+@@ -432,6 +446,13 @@ gpp3: gpp3-gpio-bank {
+ 		interrupt-controller;
+ 		#interrupt-cells = <2>;
+ 	};
++
++	hsi2c7_bus: hsi2c7-bus-pins {
++		samsung,pins = "gpp0-6", "gpp0-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_3>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
+ };
+ 
+ &pinctrl_peric1 {
+@@ -490,6 +511,55 @@ gpp6: gpp6-gpio-bank {
+ 		interrupt-controller;
+ 		#interrupt-cells = <2>;
+ 	};
++
++	hsi2c0_bus: hsi2c0-bus-pins {
++		samsung,pins = "gpc0-0", "gpc0-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	hsi2c1_bus: hsi2c1-bus-pins {
++		samsung,pins = "gpc0-2", "gpc0-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	hsi2c2_bus: hsi2c2-bus-pins {
++		samsung,pins = "gpc0-4", "gpc0-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	hsi2c3_bus: hsi2c3-bus-pins {
++		samsung,pins = "gpc0-6", "gpc0-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	hsi2c18_bus: hsi2c18-bus-pins {
++		samsung,pins = "gpp4-4", "gpp4-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	hsi2c20_bus: hsi2c20-bus-pins {
++		samsung,pins = "gpp5-0", "gpp5-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
++
++	hsi2c23_bus: hsi2c23-bus-pins {
++		samsung,pins = "gpp5-6", "gpp5-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_3>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	};
+ };
+ 
+ &pinctrl_vts {
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 4f1f1e9a4..082a81d19 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <dt-bindings/interrupt-controller/arm-gic.h>
++#include <dt-bindings/soc/samsung,exynos-usi.h>
+ 
+ / {
+ 	compatible = "samsung,exynos9810";
+@@ -190,18 +191,168 @@ gic: interrupt-controller@10101000 {
+ 			#size-cells = <1>;
+ 		};
+ 
++		sysreg_peric0: syscon@10410000 {
++			compatible = "samsung,exynos9810-peric0-sysreg", "syscon";
++			reg = <0x10410000 0x10000>;
++		};
++
+ 		pinctrl_peric0: pinctrl@10430000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x10430000 0x1000>;
+ 			interrupts = <GIC_SPI 396 IRQ_TYPE_LEVEL_HIGH>;
+ 		};
+ 
++		/* PERIC0 USI01_I2C */
++		usi01_i2c: usi@104800c0 {
++			compatible = "samsung,exynos9810-usi", "samsung,exynos850-usi";
++			reg = <0x104800c0 0x20>;
++			ranges;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			samsung,sysreg = <&sysreg_peric0 0x1010>;
++			samsung,mode = <USI_MODE_I2C>;
++			status = "disabled";
++
++			hsi2c_7: i2c@10480000 {
++				compatible = "samsung,exynos9810-hsi2c";
++				reg = <0x10480000 0xc0>;
++				interrupts = <GIC_SPI 401 IRQ_TYPE_LEVEL_HIGH>;
++				pinctrl-0 = <&hsi2c7_bus>;
++				pinctrl-names = "default";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
++		sysreg_peric1: syscon@10810000 {
++			compatible = "samsung,exynos9810-peric1-sysreg", "syscon";
++			reg = <0x10810000 0x10000>;
++		};
++
+ 		pinctrl_peric1: pinctrl@10830000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x10830000 0x1000>;
+ 			interrupts = <GIC_SPI 421 IRQ_TYPE_LEVEL_HIGH>;
+ 		};
+ 
++		/* I2C_CAM0: no USI SW_CONF, USI_CON lies in the HSI2C window */
++		hsi2c_0: i2c@10860000 {
++			compatible = "samsung,exynos9810-hsi2c";
++			reg = <0x10860000 0x1000>;
++			interrupts = <GIC_SPI 424 IRQ_TYPE_LEVEL_HIGH>;
++			pinctrl-0 = <&hsi2c0_bus>;
++			pinctrl-names = "default";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		/* I2C_CAM1: no USI SW_CONF, USI_CON lies in the HSI2C window */
++		hsi2c_1: i2c@10870000 {
++			compatible = "samsung,exynos9810-hsi2c";
++			reg = <0x10870000 0x1000>;
++			interrupts = <GIC_SPI 425 IRQ_TYPE_LEVEL_HIGH>;
++			pinctrl-0 = <&hsi2c1_bus>;
++			pinctrl-names = "default";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		/* I2C_CAM2: no USI SW_CONF, USI_CON lies in the HSI2C window */
++		hsi2c_2: i2c@10880000 {
++			compatible = "samsung,exynos9810-hsi2c";
++			reg = <0x10880000 0x1000>;
++			interrupts = <GIC_SPI 426 IRQ_TYPE_LEVEL_HIGH>;
++			pinctrl-0 = <&hsi2c2_bus>;
++			pinctrl-names = "default";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		/* I2C_CAM3: no USI SW_CONF, USI_CON lies in the HSI2C window */
++		hsi2c_3: i2c@10890000 {
++			compatible = "samsung,exynos9810-hsi2c";
++			reg = <0x10890000 0x1000>;
++			interrupts = <GIC_SPI 427 IRQ_TYPE_LEVEL_HIGH>;
++			pinctrl-0 = <&hsi2c3_bus>;
++			pinctrl-names = "default";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		/* PERIC1 USI07_USI */
++		usi07_usi: usi@108c00c0 {
++			compatible = "samsung,exynos9810-usi", "samsung,exynos850-usi";
++			reg = <0x108c00c0 0x20>;
++			ranges;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			samsung,sysreg = <&sysreg_peric1 0x1024>;
++			samsung,mode = <USI_MODE_I2C>;
++			status = "disabled";
++
++			hsi2c_18: i2c@108c0000 {
++				compatible = "samsung,exynos9810-hsi2c";
++				reg = <0x108c0000 0xc0>;
++				interrupts = <GIC_SPI 430 IRQ_TYPE_LEVEL_HIGH>;
++				pinctrl-0 = <&hsi2c18_bus>;
++				pinctrl-names = "default";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
++		/* PERIC1 USI08_USI */
++		usi08_usi: usi@108e00c0 {
++			compatible = "samsung,exynos9810-usi", "samsung,exynos850-usi";
++			reg = <0x108e00c0 0x20>;
++			ranges;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			samsung,sysreg = <&sysreg_peric1 0x102c>;
++			samsung,mode = <USI_MODE_I2C>;
++			status = "disabled";
++
++			hsi2c_20: i2c@108e0000 {
++				compatible = "samsung,exynos9810-hsi2c";
++				reg = <0x108e0000 0xc0>;
++				interrupts = <GIC_SPI 432 IRQ_TYPE_LEVEL_HIGH>;
++				pinctrl-0 = <&hsi2c20_bus>;
++				pinctrl-names = "default";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
++		/* PERIC1 USI09_I2C */
++		usi09_i2c: usi@109100c0 {
++			compatible = "samsung,exynos9810-usi", "samsung,exynos850-usi";
++			reg = <0x109100c0 0x20>;
++			ranges;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			samsung,sysreg = <&sysreg_peric1 0x1038>;
++			samsung,mode = <USI_MODE_I2C>;
++			status = "disabled";
++
++			hsi2c_23: i2c@10910000 {
++				compatible = "samsung,exynos9810-hsi2c";
++				reg = <0x10910000 0xc0>;
++				interrupts = <GIC_SPI 435 IRQ_TYPE_LEVEL_HIGH>;
++				pinctrl-0 = <&hsi2c23_bus>;
++				pinctrl-names = "default";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
+ 		pinctrl_fsys0: pinctrl@11050000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x11050000 0x1000>;
+@@ -242,6 +393,11 @@ pmu_system_controller: system-controller@14060000 {
+ 			reg = <0x14060000 0x10000>;
+ 		};
+ 
++		sysreg_cmgp: syscon@14210000 {
++			compatible = "samsung,exynos9810-cmgp-sysreg", "syscon";
++			reg = <0x14210000 0x10000>;
++		};
++
+ 		pinctrl_cmgp: pinctrl@14220000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x14220000 0x1000>;
+@@ -253,6 +409,52 @@ wakeup-interrupt-controller {
+ 			};
+ 		};
+ 
++		/* USI_CMGP00 */
++		usi_cmgp00: usi@143000c0 {
++			compatible = "samsung,exynos9810-usi", "samsung,exynos850-usi";
++			reg = <0x143000c0 0x20>;
++			ranges;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			samsung,sysreg = <&sysreg_cmgp 0x2000>;
++			samsung,mode = <USI_MODE_I2C>;
++			status = "disabled";
++
++			hsi2c_34: i2c@14300000 {
++				compatible = "samsung,exynos9810-hsi2c";
++				reg = <0x14300000 0xc0>;
++				interrupts = <GIC_SPI 0 IRQ_TYPE_LEVEL_HIGH>;
++				pinctrl-0 = <&hsi2c34_bus>;
++				pinctrl-names = "default";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
++		/* USI_CMGP03 */
++		usi_cmgp03: usi@143600c0 {
++			compatible = "samsung,exynos9810-usi", "samsung,exynos850-usi";
++			reg = <0x143600c0 0x20>;
++			ranges;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			samsung,sysreg = <&sysreg_cmgp 0x2030>;
++			samsung,mode = <USI_MODE_I2C>;
++			status = "disabled";
++
++			hsi2c_40: i2c@14360000 {
++				compatible = "samsung,exynos9810-hsi2c";
++				reg = <0x14360000 0xc0>;
++				interrupts = <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>;
++				pinctrl-0 = <&hsi2c40_bus>;
++				pinctrl-names = "default";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
+ 		pinctrl_aud: pinctrl@17c60000 {
+ 			compatible = "samsung,exynos9810-pinctrl";
+ 			reg = <0x17c60000 0x1000>;
+-- 
+2.56.0
+

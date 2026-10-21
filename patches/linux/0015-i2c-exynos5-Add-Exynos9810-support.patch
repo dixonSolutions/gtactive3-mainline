@@ -1,0 +1,265 @@
+From 7d686481e5abef1bacfe1725cbb857038d51861d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:53:19 +1100
+Subject: [PATCH 15/27] i2c: exynos5: Add Exynos9810 support
+
+The Exynos9810 HSI2C is the I2C function of a USIv2 block. Compared to
+the ExynosAutoV9 variant it needs:
+
+- its own timing set-up. The vendor kernel programs CLK_DIV so that
+  FSCL = IPCLK / ((CLK_DIV + 1) * 16) and sets the TSCL_H and TSTART_HD
+  fields as slot masks sized from a minimal time per bus mode (2.5 us,
+  0.9 us, 0.4 us and 70 ns), keeping the other fields at their reset
+  values. Do the same.
+
+- the USI reset to be released. USI_CON[0] resets to 1, which keeps the
+  controller in reset. For channels described with an exynos-usi parent
+  node the USI driver releases it, but the camera I2C channels have no
+  SW_CONF register and no USI node. When the register window given in
+  DT covers USI_CON (0xc4), clear the reset at probe and resume, like
+  the vendor driver does for every channel.
+
+The FIFO depth is set to 16 bytes, matching the vendor driver's polling
+limit; the reset value of FIFO_CTL (trigger levels at 8) agrees with it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/i2c/busses/i2c-exynos5.c | 122 ++++++++++++++++++++++++++++++-
+ 1 file changed, 121 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/i2c/busses/i2c-exynos5.c b/drivers/i2c/busses/i2c-exynos5.c
+index dd826997f..b4f2495fc 100644
+--- a/drivers/i2c/busses/i2c-exynos5.c
++++ b/drivers/i2c/busses/i2c-exynos5.c
+@@ -5,8 +5,10 @@
+  * Copyright (C) 2013 Samsung Electronics Co., Ltd.
+ */
+ 
++#include <linux/bitfield.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
++#include <linux/units.h>
+ 
+ #include <linux/i2c.h>
+ #include <linux/time.h>
+@@ -59,6 +61,10 @@
+ #define HSI2C_TIMING_SLA	0x6C
+ #define HSI2C_ADDR		0x70
+ 
++/* USI control register, inside the HSI2C window on Exynos9810 */
++#define HSI2C_USI_CON		0xC4
++#define HSI2C_USI_CON_RESET	(1u << 0)
++
+ /* I2C_CTL Register bits */
+ #define HSI2C_FUNC_MODE_I2C			(1u << 0)
+ #define HSI2C_MASTER				(1u << 3)
+@@ -156,6 +162,11 @@
+ #define HSI2C_MASTER_ST_WAIT			0xd
+ #define HSI2C_MASTER_ST_WAIT_CMD		0xe
+ 
++/* I2C_TIMING_xS1/2/3 register fields on Exynos9810 */
++#define HSI2C_TSTART_HD_MASK			GENMASK(23, 16)
++#define HSI2C_TSCL_H_MASK			GENMASK(7, 0)
++#define HSI2C_CLK_DIV_MASK			GENMASK(23, 16)
++
+ /* I2C_ADDR register bits */
+ #define HSI2C_SLV_ADDR_SLV(x)			((x & 0x3ff) << 0)
+ #define HSI2C_SLV_ADDR_MAS(x)			((x & 0x3ff) << 10)
+@@ -169,6 +180,7 @@ enum i2c_type_exynos {
+ 	I2C_TYPE_EXYNOS7,
+ 	I2C_TYPE_EXYNOSAUTOV9,
+ 	I2C_TYPE_EXYNOS8895,
++	I2C_TYPE_EXYNOS9810,
+ };
+ 
+ struct exynos5_i2c {
+@@ -203,6 +215,9 @@ struct exynos5_i2c {
+ 	/* Controller operating frequency */
+ 	unsigned int		op_clock;
+ 
++	/* USI_CON is part of our register window and has to be released */
++	bool			usi_con;
++
+ 	/* Version of HS-I2C Hardware */
+ 	const struct exynos_hsi2c_variant *variant;
+ };
+@@ -246,6 +261,11 @@ static const struct exynos_hsi2c_variant exynos8895_hsi2c_data = {
+ 	.hw		= I2C_TYPE_EXYNOS8895,
+ };
+ 
++static const struct exynos_hsi2c_variant exynos9810_hsi2c_data = {
++	.fifo_depth	= 16,
++	.hw		= I2C_TYPE_EXYNOS9810,
++};
++
+ static const struct of_device_id exynos5_i2c_match[] = {
+ 	{
+ 		.compatible = "samsung,exynos5-hsi2c",
+@@ -265,6 +285,9 @@ static const struct of_device_id exynos5_i2c_match[] = {
+ 	}, {
+ 		.compatible = "samsung,exynos8895-hsi2c",
+ 		.data = &exynos8895_hsi2c_data
++	}, {
++		.compatible = "samsung,exynos9810-hsi2c",
++		.data = &exynos9810_hsi2c_data
+ 	}, {},
+ };
+ MODULE_DEVICE_TABLE(of, exynos5_i2c_match);
+@@ -275,6 +298,71 @@ static void exynos5_i2c_clr_pend_irq(struct exynos5_i2c *i2c)
+ 				i2c->regs + HSI2C_INT_STATUS);
+ }
+ 
++/*
++ * In case of HSI2C controllers in Exynos9810:
++ *
++ * FSCL = IPCLK / ((CLK_DIV + 1) * 16)
++ *
++ * Each SCL period is made of 16 slots of (CLK_DIV + 1) IPCLK cycles. The
++ * TSCL_H and TSTART_HD fields are bit masks rather than cycle counts: the
++ * number of zeroes, counted from the LSB, extends the SCL low period and the
++ * START hold time. Samsung's vendor kernel sizes them from a minimal time of
++ * 2.5us (Standard), 0.9us (Fast), 0.4us (Fast-Plus) or 70ns (High Speed).
++ */
++static int exynos9810_i2c_set_timing(struct exynos5_i2c *i2c, bool hs_timings,
++				     unsigned int clkin, unsigned int op_clk)
++{
++	unsigned int div, t_ns, n_scl, n_hd;
++	void __iomem *s1, *s2, *s3;
++	u32 val;
++
++	div = DIV_ROUND_UP(clkin, 16 * op_clk);
++	if (div < 1 || div > 256) {
++		dev_err(i2c->dev, "%s clock set-up failed\n",
++			hs_timings ? "HS" : "FS");
++		return -EINVAL;
++	}
++	div--;
++
++	if (hs_timings)
++		t_ns = 70;
++	else if (op_clk <= I2C_MAX_STANDARD_MODE_FREQ)
++		t_ns = 2500;
++	else if (op_clk <= I2C_MAX_FAST_MODE_FREQ)
++		t_ns = 900;
++	else
++		t_ns = 400;
++
++	n_scl = min_t(unsigned int, 7,
++		      t_ns * (clkin / HZ_PER_MHZ) / ((div + 1) * 1000));
++	n_hd = max(n_scl, 1U) - 1;
++
++	if (hs_timings) {
++		s1 = i2c->regs + HSI2C_TIMING_HS1;
++		s2 = i2c->regs + HSI2C_TIMING_HS2;
++		s3 = i2c->regs + HSI2C_TIMING_HS3;
++	} else {
++		s1 = i2c->regs + HSI2C_TIMING_FS1;
++		s2 = i2c->regs + HSI2C_TIMING_FS2;
++		s3 = i2c->regs + HSI2C_TIMING_FS3;
++	}
++
++	val = readl(s3) & ~HSI2C_CLK_DIV_MASK;
++	writel(val | FIELD_PREP(HSI2C_CLK_DIV_MASK, div), s3);
++
++	val = readl(s2) & ~HSI2C_TSCL_H_MASK;
++	writel(val | FIELD_PREP(HSI2C_TSCL_H_MASK, (0xff << n_scl) & 0xff), s2);
++
++	val = readl(s1) & ~HSI2C_TSTART_HD_MASK;
++	writel(val | FIELD_PREP(HSI2C_TSTART_HD_MASK, (0xff << n_hd) & 0xff), s1);
++
++	dev_dbg(i2c->dev, "%s: IPCLK %u Hz, SCL %u Hz, CLK_DIV %u, TIMING %08x %08x %08x\n",
++		hs_timings ? "HS" : "FS", clkin, clkin / ((div + 1) * 16), div,
++		readl(s1), readl(s2), readl(s3));
++
++	return 0;
++}
++
+ /*
+  * exynos5_i2c_set_timing: updates the registers with appropriate
+  * timing values calculated
+@@ -303,6 +391,9 @@ static int exynos5_i2c_set_timing(struct exynos5_i2c *i2c, bool hs_timings)
+ 		i2c->op_clock;
+ 	int div, clk_cycle, temp;
+ 
++	if (i2c->variant->hw == I2C_TYPE_EXYNOS9810)
++		return exynos9810_i2c_set_timing(i2c, hs_timings, clkin, op_clk);
++
+ 	/*
+ 	 * In case of HSI2C controllers in ExynosAutoV9:
+ 	 *
+@@ -446,6 +537,26 @@ static int exynos5_hsi2c_clock_setup(struct exynos5_i2c *i2c)
+ 	return exynos5_i2c_set_timing(i2c, true);
+ }
+ 
++/*
++ * The USI wrapping an Exynos9810 HSI2C holds it in reset after power-on. When
++ * no USI node describes the wrapper (the camera I2C channels have no SW_CONF
++ * register), the USI_CON register lies inside the HSI2C window and the reset
++ * has to be released here, as the vendor driver does for every channel.
++ */
++static void exynos5_i2c_usi_release(struct exynos5_i2c *i2c)
++{
++	u32 val;
++
++	if (!i2c->usi_con)
++		return;
++
++	val = readl(i2c->regs + HSI2C_USI_CON);
++	if (val & HSI2C_USI_CON_RESET) {
++		writel(val & ~HSI2C_USI_CON_RESET, i2c->regs + HSI2C_USI_CON);
++		udelay(1);
++	}
++}
++
+ /*
+  * exynos5_i2c_init: configures the controller for I2C functionality
+  * Programs I2C controller for Master mode operation
+@@ -516,6 +627,8 @@ static irqreturn_t exynos5_i2c_irq(int irqno, void *dev_id)
+ 	switch (i2c->variant->hw) {
+ 	case I2C_TYPE_EXYNOSAUTOV9:
+ 		fallthrough;
++	case I2C_TYPE_EXYNOS9810:
++		fallthrough;
+ 	case I2C_TYPE_EXYNOS8895:
+ 		fallthrough;
+ 	case I2C_TYPE_EXYNOS7:
+@@ -888,6 +1001,7 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+ 	struct exynos5_i2c *i2c;
++	struct resource *res;
+ 	int ret;
+ 
+ 	i2c = devm_kzalloc(&pdev->dev, sizeof(struct exynos5_i2c), GFP_KERNEL);
+@@ -923,7 +1037,7 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		goto err_pclk;
+ 
+-	i2c->regs = devm_platform_ioremap_resource(pdev, 0);
++	i2c->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+ 	if (IS_ERR(i2c->regs)) {
+ 		ret = PTR_ERR(i2c->regs);
+ 		goto err_clk;
+@@ -931,6 +1045,10 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
+ 
+ 	i2c->variant = of_device_get_match_data(&pdev->dev);
+ 
++	i2c->usi_con = i2c->variant->hw == I2C_TYPE_EXYNOS9810 &&
++		       resource_size(res) >= HSI2C_USI_CON + sizeof(u32);
++	exynos5_i2c_usi_release(i2c);
++
+ 	i2c->adap.dev.of_node = np;
+ 	i2c->adap.algo_data = i2c;
+ 	i2c->adap.dev.parent = &pdev->dev;
+@@ -1011,6 +1129,8 @@ static int exynos5_i2c_resume_noirq(struct device *dev)
+ 	if (ret)
+ 		goto err_pclk;
+ 
++	exynos5_i2c_usi_release(i2c);
++
+ 	ret = exynos5_hsi2c_clock_setup(i2c);
+ 	if (ret)
+ 		goto err_clk;
+-- 
+2.56.0
+

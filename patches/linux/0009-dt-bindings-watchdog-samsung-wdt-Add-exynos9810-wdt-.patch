@@ -1,0 +1,58 @@
+From d248e1451028faf3da4f3eaad343649702be754f Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:41:43 +1100
+Subject: [PATCH 09/27] dt-bindings: watchdog: samsung-wdt: Add exynos9810-wdt
+ compatible
+
+Exynos9810 has two watchdog timers, one per CPU cluster. Their reset
+outputs are gated in the PMU through the AUTOMATIC_WDT_RESET_DISABLE
+and MASK_WDT_RESET_REQUEST registers like on Exynos7, but each cluster
+uses its own bit there, so the driver needs to know which cluster a
+watchdog belongs to. Add the compatible, require samsung,cluster-index
+and the PMU phandle, and use the same bus/source clock pair as
+Exynos850.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Documentation/devicetree/bindings/watchdog/samsung-wdt.yaml | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/watchdog/samsung-wdt.yaml b/Documentation/devicetree/bindings/watchdog/samsung-wdt.yaml
+index 41aee1655..940bab99e 100644
+--- a/Documentation/devicetree/bindings/watchdog/samsung-wdt.yaml
++++ b/Documentation/devicetree/bindings/watchdog/samsung-wdt.yaml
+@@ -25,6 +25,7 @@ properties:
+           - samsung,exynos7-wdt                   # for Exynos7
+           - samsung,exynos850-wdt                 # for Exynos850
+           - samsung,exynos990-wdt                 # for Exynos990
++          - samsung,exynos9810-wdt                # for Exynos9810
+           - samsung,exynosautov9-wdt              # for Exynosautov9
+           - samsung,exynosautov920-wdt            # for Exynosautov920
+       - items:
+@@ -51,13 +52,13 @@ properties:
+     enum: [0, 1, 2]
+     description:
+       Index of CPU cluster on which watchdog is running (in case of Exynos850,
+-      Exynos990 or Google gs101).
++      Exynos990, Exynos9810 or Google gs101).
+ 
+   samsung,syscon-phandle:
+     $ref: /schemas/types.yaml#/definitions/phandle
+     description:
+       Phandle to the PMU system controller node (in case of Exynos5250,
+-      Exynos5420, Exynos7, Exynos850, Exynos990 and gs101).
++      Exynos5420, Exynos7, Exynos850, Exynos990, Exynos9810 and gs101).
+ 
+ required:
+   - compatible
+@@ -75,6 +76,7 @@ allOf:
+             enum:
+               - google,gs101-wdt
+               - samsung,exynos850-wdt
++              - samsung,exynos9810-wdt
+               - samsung,exynosautov9-wdt
+               - samsung,exynosautov920-wdt
+     then:
+-- 
+2.56.0
+

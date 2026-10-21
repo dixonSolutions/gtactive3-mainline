@@ -1,0 +1,202 @@
+From be4352e5dc57eef7fda8175e43811ee005f3be48 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:10:00 +1100
+Subject: [PATCH 23/27] arm64: dts: exynos: gtactive3wifi: Describe HSI2C buses
+ with USI wrappers
+
+The MAX77705 bus (HSI2C_40) timed out, most likely because its USI block
+was still in reset (the transfer ran before init cleared USI_CON), and the
+node used the Exynos8895 timing variant, which does not match the
+Exynos9810 controller. Use the SoC USI_CMGP03 / HSI2C_40 nodes instead,
+which release the USI reset and select the I2C function via SW_CONF.
+
+Clock rates are the ones the bootloader leaves in CMU_TOP, CMU_CMGP and
+CMU_PERIC0/1 (read back on the device): 200 MHz for the CMGP USIs, the
+PERIC USI_I2C channels and the camera I2C, 50 MHz for PERIC1 USI07/08.
+
+Only HSI2C_40 is enabled for now; the other buses get their clocks so
+they can be enabled together with their devices. Keep HSI2C_40 as i2c0,
+which the bring-up console uses.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 151 ++++++++++++++----
+ 1 file changed, 118 insertions(+), 33 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index edbbecdea..7fc8db162 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -230,51 +230,136 @@ usbdrd_phy: phy@11100000 {
+ 	};
+ };
+ 
++&gpg3 {
++	/* USB D+/D- mux: low = USB-C port, high = pogo connector */
++	usb-mux-sel-hog {
++		gpio-hog;
++		gpios = <2 GPIO_ACTIVE_HIGH>;
++		output-low;
++		line-name = "usb-mux-sel";
++	};
++};
++
+ / {
+ 	/*
+-	 * HSI2C_40 IP clock. The real rate depends on the CMGP mux/divider init
+-	 * prints; declaring it high only makes the bus slower than 100 kHz.
++	 * USI / HSI2C clocks as programmed by the bootloader (no clock driver
++	 * yet). PLL_SHARED2 = 26 MHz * 400 / 13 = 800 MHz; CLKCMU_CMGP_BUS,
++	 * CLKCMU_PERIC0_IP and CLKCMU_PERIC1_IP = PLL_SHARED2 / 2 / 2 = 200 MHz.
++	 * USI_CMGP00/03, PERIC0/1 USI_I2C and I2C_CAM0-3 are undivided from
++	 * those (200 MHz), PERIC1 USI07/08_USI are divided by 4 (50 MHz).
++	 * The bus clocks are only gated, their rate does not matter.
+ 	 */
+-	clk_hsi2c40: clock-hsi2c40 {
++	clk_usi_200m: clock-usi-200m {
+ 		compatible = "fixed-clock";
+ 		#clock-cells = <0>;
+-		clock-frequency = <400000000>;
++		clock-frequency = <200000000>;
++		clock-output-names = "usi_200m";
+ 	};
+-};
+ 
+-&pinctrl_cmgp {
+-	hsi2c40_bus: hsi2c40-bus-pins {
+-		samsung,pins = "gpm14-0", "gpm15-0";
+-		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+-		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+-		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
++	clk_usi_50m: clock-usi-50m {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <50000000>;
++		clock-output-names = "usi_50m";
+ 	};
+-};
+ 
+-&gpg3 {
+-	/* USB D+/D- mux: low = USB-C port, high = pogo connector */
+-	usb-mux-sel-hog {
+-		gpio-hog;
+-		gpios = <2 GPIO_ACTIVE_HIGH>;
+-		output-low;
+-		line-name = "usb-mux-sel";
++	aliases {
++		/* the debug console's i2cr/i2cw use /dev/i2c-0 */
++		i2c0 = &hsi2c_40;
+ 	};
+ };
+ 
+-&soc {
+-	/* MAX77705 (charger / fuel gauge / USB-C) and SM5504 (pogo MUIC) */
+-	hsi2c_40: i2c@14360000 {
+-		compatible = "samsung,exynos8895-hsi2c";
+-		reg = <0x14360000 0x1000>;
+-		interrupts = <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>;
+-		clocks = <&clk_hsi2c40>;
+-		clock-names = "hsi2c";
+-		clock-frequency = <100000>;
+-		pinctrl-0 = <&hsi2c40_bus>;
+-		pinctrl-names = "default";
+-		#address-cells = <1>;
+-		#size-cells = <0>;
+-	};
++/* Camera I2C: S5K3L6 rear sensor @2d */
++&hsi2c_0 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* Camera I2C: GC5035 front sensor @37 */
++&hsi2c_1 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* Camera I2C: unused */
++&hsi2c_2 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* Camera I2C: DW9808 actuator @0c, rear camera EEPROM @58 */
++&hsi2c_3 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* RT5665 audio codec @1b */
++&usi01_i2c {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "pclk", "ipclk";
++};
++
++&hsi2c_7 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* RT5510 speaker amplifier @34 (hw_rev 4) */
++&usi07_usi {
++	clocks = <&clk_usi_200m>, <&clk_usi_50m>;
++	clock-names = "pclk", "ipclk";
++};
++
++&hsi2c_18 {
++	clocks = <&clk_usi_50m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* S.LSI NFC @27 */
++&usi08_usi {
++	clocks = <&clk_usi_200m>, <&clk_usi_50m>;
++	clock-names = "pclk", "ipclk";
++};
++
++&hsi2c_20 {
++	clocks = <&clk_usi_50m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* Wacom W90xx S Pen digitiser @56 */
++&usi09_i2c {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "pclk", "ipclk";
++};
++
++&hsi2c_23 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* A96T3X6 grip sensor @20 */
++&usi_cmgp00 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "pclk", "ipclk";
++};
++
++&hsi2c_34 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++};
++
++/* MAX77705 PMIC @66 (+ USB-C @25, fuel gauge @36, ...), SM5504 MUIC @14 */
++&usi_cmgp03 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "pclk", "ipclk";
++	status = "okay";
++};
++
++&hsi2c_40 {
++	clocks = <&clk_usi_200m>, <&clk_usi_200m>;
++	clock-names = "hsi2c", "hsi2c_pclk";
++	clock-frequency = <100000>;
++	status = "okay";
+ };
+ 
+ / {
+-- 
+2.56.0
+

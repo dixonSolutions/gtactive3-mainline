@@ -1,0 +1,474 @@
+From d85a893271a6c345f6b05e31676aefc663347b1d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:08:04 +1100
+Subject: [PATCH 19/27] backlight: Add DCS backlight for bootloader-initialised
+ Exynos9810 DSIM
+
+The Galaxy Tab Active3 (SM-T570) panel, a Himax HX83102E TDDI on two
+DSI links, has no backlight IC on I2C: Samsung's panel driver
+(hx83102e_gtactive3_lcd_ctrl.c) sends DCS SET_DISPLAY_BRIGHTNESS (0x51)
+with a 12-bit value, high nibble first, as a DCS long write on both
+links (dsim_write_data_dual()).
+
+Do the same on the DSIMs left running in video mode by S-Boot: put the
+payload into DSIM_PAYLOAD (0x5c), release it with DSIM_PKTHDR (0x58)
+and wait for DSIM_FIFOCTRL (0x68) to report the header FIFO empty. The
+link sends it in the vertical front porch (S-Boot programs
+VFP_CMD_ALLOW = 4 lines). Offsets and bits come from Samsung's
+dpu_9810 regs-dsim.h; the packet sequence from dsim_drv.c
+dsim_write_data()/dsim_long_data_wr(). Clocks, PHY, timings and link
+state are never touched, and probe refuses links whose version or FIFO
+reset bits read back wrong.
+
+Besides brightness, a "cabc_mode" attribute selects the panel's content
+adaptive backlight control (DCS 0x55, 0..3; Samsung's init uses 1), and
+debugfs "dcs" sends arbitrary DCS long writes for bring-up.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/video/backlight/Kconfig              |  15 +
+ drivers/video/backlight/Makefile             |   1 +
+ drivers/video/backlight/exynos9810-dsim-bl.c | 393 +++++++++++++++++++
+ 3 files changed, 409 insertions(+)
+ create mode 100644 drivers/video/backlight/exynos9810-dsim-bl.c
+
+diff --git a/drivers/video/backlight/Kconfig b/drivers/video/backlight/Kconfig
+index dbf4ca23a..9370b448c 100644
+--- a/drivers/video/backlight/Kconfig
++++ b/drivers/video/backlight/Kconfig
+@@ -191,6 +191,21 @@ config BACKLIGHT_KTD253
+ 	  which is a 1-wire GPIO-controlled backlight found in some mobile
+ 	  phones.
+ 
++config BACKLIGHT_EXYNOS9810_DSIM
++	tristate "DCS backlight on a bootloader-initialised Exynos9810 DSIM"
++	depends on ARCH_EXYNOS || COMPILE_TEST
++	depends on OF && HAS_IOMEM
++	help
++	  Say Y to control the brightness of a MIPI DSI panel that takes
++	  DCS SET_DISPLAY_BRIGHTNESS commands, such as the Himax HX83102E in
++	  the Samsung Galaxy Tab Active3, while the Exynos9810 DECON/DSIM
++	  are still running as set up by the bootloader (simple-framebuffer).
++	  The driver only queues DCS packets into the running DSIM command
++	  FIFOs; it does not configure the display pipeline.
++
++	  To compile this driver as a module, choose M here: the module will
++	  be called exynos9810-dsim-bl.
++
+ config BACKLIGHT_KTD2801
+ 	tristate "Backlight Driver for Kinetic KTD2801"
+ 	depends on GPIOLIB
+diff --git a/drivers/video/backlight/Makefile b/drivers/video/backlight/Makefile
+index 34469711c..5c3abbcef 100644
+--- a/drivers/video/backlight/Makefile
++++ b/drivers/video/backlight/Makefile
+@@ -32,6 +32,7 @@ obj-$(CONFIG_BACKLIGHT_CLASS_DEVICE)	+= backlight.o
+ obj-$(CONFIG_BACKLIGHT_DA903X)		+= da903x_bl.o
+ obj-$(CONFIG_BACKLIGHT_DA9052)		+= da9052_bl.o
+ obj-$(CONFIG_BACKLIGHT_EP93XX)		+= ep93xx_bl.o
++obj-$(CONFIG_BACKLIGHT_EXYNOS9810_DSIM)	+= exynos9810-dsim-bl.o
+ obj-$(CONFIG_BACKLIGHT_GPIO)		+= gpio_backlight.o
+ obj-$(CONFIG_BACKLIGHT_HP680)		+= hp680_bl.o
+ obj-$(CONFIG_BACKLIGHT_HP700)		+= jornada720_bl.o
+diff --git a/drivers/video/backlight/exynos9810-dsim-bl.c b/drivers/video/backlight/exynos9810-dsim-bl.c
+new file mode 100644
+index 000000000..62992b2fc
+--- /dev/null
++++ b/drivers/video/backlight/exynos9810-dsim-bl.c
+@@ -0,0 +1,393 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Backlight through MIPI DCS on a bootloader-initialised Exynos9810 DSIM
++ *
++ * Until there is a DECON/DSIM DRM driver for Exynos9810, the display keeps
++ * running in the video mode set up by the bootloader and the kernel only
++ * scans out its framebuffer (simple-framebuffer). Panels such as the Himax
++ * HX83102E in the Galaxy Tab Active3 take their brightness over DSI
++ * (DCS SET_DISPLAY_BRIGHTNESS, 0x51) and generate the LED PWM themselves,
++ * so the only way to dim them is to push DCS packets through the DSIM
++ * command (SFR) FIFOs of the running links.
++ *
++ * This driver does exactly that and nothing else: it never touches clocks,
++ * the PHY, timings or the link state. A packet is queued into the header and
++ * payload FIFOs and the link inserts it into the vertical front porch.
++ *
++ * Register layout from Samsung's dpu_9810 driver (regs-dsim.h, DSIM v2.1).
++ */
++
++#include <linux/backlight.h>
++#include <linux/bits.h>
++#include <linux/clk.h>
++#include <linux/debugfs.h>
++#include <linux/device.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/kernel.h>
++#include <linux/kstrtox.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/slab.h>
++#include <linux/sysfs.h>
++#include <video/mipi_display.h>
++
++#define DSIM_VERSION			0x00
++#define DSIM_LINK_STATUS0		0x08
++#define DSIM_LINK_STATUS0_VIDEO_MODE	BIT(24)
++#define DSIM_CONFIG			0x4c
++#define DSIM_INTSRC			0x50
++#define DSIM_INTSRC_SFR_PL_FIFO_EMPTY	BIT(29)
++#define DSIM_INTSRC_SFR_PH_FIFO_EMPTY	BIT(28)
++#define DSIM_PKTHDR			0x58
++#define DSIM_PKTHDR_DATA1(x)		((x) << 16)
++#define DSIM_PKTHDR_DATA0(x)		((x) << 8)
++#define DSIM_PKTHDR_ID(x)		((x) << 0)
++#define DSIM_PAYLOAD			0x5c
++#define DSIM_FIFOCTRL			0x68
++#define DSIM_FIFOCTRL_FULL_PH_SFR	BIT(11)
++#define DSIM_FIFOCTRL_EMPTY_PH_SFR	BIT(10)
++#define DSIM_FIFOCTRL_FULL_PL_SFR	BIT(9)
++/* active-low FIFO resets: all three must read 1 on a running link */
++#define DSIM_FIFOCTRL_INIT_ALL		GENMASK(2, 0)
++
++#define DSIM_MAX_LINKS			2
++/* the payload FIFO is much deeper, but no command we send is longer */
++#define DSIM_MAX_PAYLOAD		64
++/* one frame at 60 Hz is 16.7 ms; Samsung uses 50 ms (MIPI_WR_TIMEOUT) */
++#define DSIM_CMD_TIMEOUT_US		50000
++
++#define DCS_CABC_MAX			3
++
++struct dsim_bl {
++	struct device *dev;
++	struct backlight_device *bd;
++	void __iomem *link[DSIM_MAX_LINKS];
++	unsigned int nlinks;
++	unsigned int brightness_bytes;
++	int cabc;			/* -1: as left by the bootloader */
++	struct mutex lock;		/* serialises the command FIFOs */
++};
++
++static int dsim_bl_wait_not_full(void __iomem *base, u32 full)
++{
++	u32 val;
++
++	return readl_poll_timeout(base + DSIM_FIFOCTRL, val, !(val & full),
++				  20, DSIM_CMD_TIMEOUT_US);
++}
++
++static int dsim_bl_queue(void __iomem *base, const u8 *buf, size_t len)
++{
++	size_t i;
++	int ret;
++
++	ret = dsim_bl_wait_not_full(base, DSIM_FIFOCTRL_FULL_PH_SFR);
++	if (ret)
++		return ret;
++
++	writel(DSIM_INTSRC_SFR_PH_FIFO_EMPTY | DSIM_INTSRC_SFR_PL_FIFO_EMPTY,
++	       base + DSIM_INTSRC);
++
++	/* payload first, little-endian words, then the header releases it */
++	for (i = 0; i < len; i += 4) {
++		u32 word = 0;
++		size_t j;
++
++		for (j = 0; j < 4 && i + j < len; j++)
++			word |= (u32)buf[i + j] << (8 * j);
++
++		ret = dsim_bl_wait_not_full(base, DSIM_FIFOCTRL_FULL_PL_SFR);
++		if (ret)
++			return ret;
++		writel(word, base + DSIM_PAYLOAD);
++	}
++
++	writel(DSIM_PKTHDR_ID(MIPI_DSI_DCS_LONG_WRITE) |
++	       DSIM_PKTHDR_DATA0(len & 0xff) |
++	       DSIM_PKTHDR_DATA1((len >> 8) & 0xff),
++	       base + DSIM_PKTHDR);
++
++	return 0;
++}
++
++/*
++ * Send one DCS long write to every link. As in Samsung's
++ * dsim_write_data_dual(), the packet is queued on all links first and the
++ * header FIFOs are then drained, so both halves of a dual-DSI panel get it
++ * in the same frame.
++ */
++static int dsim_bl_dcs_write(struct dsim_bl *bl, const u8 *buf, size_t len)
++{
++	unsigned int i;
++	u32 val;
++	int ret;
++
++	if (!len || len > DSIM_MAX_PAYLOAD)
++		return -EINVAL;
++
++	mutex_lock(&bl->lock);
++
++	for (i = 0; i < bl->nlinks; i++) {
++		ret = dsim_bl_queue(bl->link[i], buf, len);
++		if (ret) {
++			dev_err(bl->dev, "link %u: command FIFO stuck (%#x)\n",
++				i, readl(bl->link[i] + DSIM_FIFOCTRL));
++			goto out;
++		}
++	}
++
++	for (i = 0; i < bl->nlinks; i++) {
++		ret = readl_poll_timeout(bl->link[i] + DSIM_FIFOCTRL, val,
++					 val & DSIM_FIFOCTRL_EMPTY_PH_SFR,
++					 100, DSIM_CMD_TIMEOUT_US);
++		if (ret) {
++			dev_err(bl->dev, "link %u: DCS %#04x not sent (%#x)\n",
++				i, buf[0], val);
++			goto out;
++		}
++	}
++
++out:
++	mutex_unlock(&bl->lock);
++	return ret;
++}
++
++static int dsim_bl_update_status(struct backlight_device *bd)
++{
++	struct dsim_bl *bl = bl_get_data(bd);
++	int brightness = backlight_get_brightness(bd);
++	u8 cmd[3] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS };
++
++	if (bl->brightness_bytes == 2) {
++		cmd[1] = brightness >> 8;
++		cmd[2] = brightness & 0xff;
++	} else {
++		cmd[1] = brightness;
++	}
++
++	return dsim_bl_dcs_write(bl, cmd, 1 + bl->brightness_bytes);
++}
++
++static const struct backlight_ops dsim_bl_ops = {
++	.options = BL_CORE_SUSPENDRESUME,
++	.update_status = dsim_bl_update_status,
++};
++
++/*
++ * Content adaptive backlight control (DCS 0x55): 0 off, 1 user interface,
++ * 2 still picture, 3 moving image. Samsung's HX83102E init selects 1, which
++ * makes the visible brightness depend on the picture.
++ */
++static ssize_t cabc_mode_show(struct device *dev, struct device_attribute *attr,
++			      char *buf)
++{
++	struct dsim_bl *bl = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", bl->cabc);
++}
++
++static ssize_t cabc_mode_store(struct device *dev, struct device_attribute *attr,
++			       const char *buf, size_t count)
++{
++	struct dsim_bl *bl = dev_get_drvdata(dev);
++	u8 cmd[2] = { MIPI_DCS_WRITE_POWER_SAVE };
++	unsigned int mode;
++	int ret;
++
++	ret = kstrtouint(buf, 0, &mode);
++	if (ret)
++		return ret;
++	if (mode > DCS_CABC_MAX)
++		return -EINVAL;
++
++	cmd[1] = mode;
++	ret = dsim_bl_dcs_write(bl, cmd, sizeof(cmd));
++	if (ret)
++		return ret;
++
++	bl->cabc = mode;
++	return count;
++}
++static DEVICE_ATTR_RW(cabc_mode);
++
++static struct attribute *dsim_bl_attrs[] = {
++	&dev_attr_cabc_mode.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(dsim_bl);
++
++/* debugfs "dcs": write hex bytes "51 04 00" to send one DCS long write */
++static ssize_t dsim_bl_dcs_debugfs_write(struct file *file,
++					 const char __user *ubuf,
++					 size_t count, loff_t *ppos)
++{
++	struct dsim_bl *bl = file->private_data;
++	u8 cmd[DSIM_MAX_PAYLOAD];
++	char *kbuf, *p, *tok;
++	size_t len = 0;
++	int ret;
++
++	if (count > 4 * DSIM_MAX_PAYLOAD)
++		return -E2BIG;
++
++	kbuf = memdup_user_nul(ubuf, count);
++	if (IS_ERR(kbuf))
++		return PTR_ERR(kbuf);
++
++	p = kbuf;
++	while ((tok = strsep(&p, " \t\n,")) != NULL) {
++		if (!*tok)
++			continue;
++		if (len == ARRAY_SIZE(cmd)) {
++			ret = -E2BIG;
++			goto out;
++		}
++		ret = kstrtou8(tok, 16, &cmd[len++]);
++		if (ret)
++			goto out;
++	}
++
++	ret = dsim_bl_dcs_write(bl, cmd, len);
++out:
++	kfree(kbuf);
++	return ret ? ret : count;
++}
++
++static const struct file_operations dsim_bl_dcs_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.write = dsim_bl_dcs_debugfs_write,
++	.llseek = noop_llseek,
++};
++
++static void dsim_bl_debugfs_remove(void *data)
++{
++	debugfs_remove_recursive(data);
++}
++
++static int dsim_bl_check_link(struct dsim_bl *bl, unsigned int i)
++{
++	void __iomem *base = bl->link[i];
++	u32 ver = readl(base + DSIM_VERSION);
++	u32 fifo = readl(base + DSIM_FIFOCTRL);
++	u32 status = readl(base + DSIM_LINK_STATUS0);
++
++	dev_dbg(bl->dev, "link %u: version %#x config %#x status %#x fifo %#x\n",
++		i, ver, readl(base + DSIM_CONFIG), status, fifo);
++
++	if (!ver || ver == ~0U ||
++	    (fifo & DSIM_FIFOCTRL_INIT_ALL) != DSIM_FIFOCTRL_INIT_ALL)
++		return dev_err_probe(bl->dev, -ENODEV,
++				     "link %u is not running (version %#x, fifo %#x)\n",
++				     i, ver, fifo);
++
++	if (!(status & DSIM_LINK_STATUS0_VIDEO_MODE))
++		dev_info(bl->dev, "link %u is not in video mode\n", i);
++
++	return 0;
++}
++
++static int dsim_bl_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct backlight_properties props = {
++		.type = BACKLIGHT_RAW,
++		.scale = BACKLIGHT_SCALE_LINEAR,
++	};
++	struct dentry *dir;
++	struct dsim_bl *bl;
++	unsigned int i;
++	u32 max, val;
++	int ret;
++
++	bl = devm_kzalloc(dev, sizeof(*bl), GFP_KERNEL);
++	if (!bl)
++		return -ENOMEM;
++
++	bl->dev = dev;
++	bl->cabc = -1;
++	ret = devm_mutex_init(dev, &bl->lock);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < DSIM_MAX_LINKS; i++) {
++		if (!platform_get_resource(pdev, IORESOURCE_MEM, i))
++			break;
++		bl->link[i] = devm_platform_ioremap_resource(pdev, i);
++		if (IS_ERR(bl->link[i]))
++			return PTR_ERR(bl->link[i]);
++	}
++	bl->nlinks = i;
++	if (!bl->nlinks)
++		return dev_err_probe(dev, -EINVAL, "no DSIM registers\n");
++
++	/* none today: the bootloader leaves the display clocks running */
++	ret = devm_clk_bulk_get_all_enabled(dev, NULL);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "failed to enable clocks\n");
++
++	for (i = 0; i < bl->nlinks; i++) {
++		ret = dsim_bl_check_link(bl, i);
++		if (ret)
++			return ret;
++	}
++
++	max = 4095;
++	device_property_read_u32(dev, "max-brightness", &max);
++	if (!max || max > 0xffff)
++		return dev_err_probe(dev, -EINVAL, "invalid max-brightness %u\n",
++				     max);
++	bl->brightness_bytes = max > 0xff ? 2 : 1;
++
++	val = max;
++	device_property_read_u32(dev, "default-brightness", &val);
++	props.max_brightness = max;
++	props.brightness = min(val, max);
++
++	platform_set_drvdata(pdev, bl);
++
++	bl->bd = devm_backlight_device_register(dev, dev_name(dev), dev, bl,
++						&dsim_bl_ops, &props);
++	if (IS_ERR(bl->bd))
++		return dev_err_probe(dev, PTR_ERR(bl->bd),
++				     "failed to register backlight\n");
++
++	/* the bootloader's level is unknown: start from a known one */
++	ret = backlight_update_status(bl->bd);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to set brightness\n");
++
++	dir = debugfs_create_dir(dev_name(dev), NULL);
++	debugfs_create_file("dcs", 0200, dir, bl, &dsim_bl_dcs_fops);
++	ret = devm_add_action_or_reset(dev, dsim_bl_debugfs_remove, dir);
++	if (ret)
++		return ret;
++
++	dev_info(dev, "%u DSI link(s), brightness %u/%u\n", bl->nlinks,
++		 props.brightness, props.max_brightness);
++
++	return 0;
++}
++
++static const struct of_device_id dsim_bl_of_match[] = {
++	{ .compatible = "samsung,exynos9810-dsim-backlight" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, dsim_bl_of_match);
++
++static struct platform_driver dsim_bl_driver = {
++	.probe = dsim_bl_probe,
++	.driver = {
++		.name = "exynos9810-dsim-bl",
++		.of_match_table = dsim_bl_of_match,
++		.dev_groups = dsim_bl_groups,
++	},
++};
++module_platform_driver(dsim_bl_driver);
++
++MODULE_DESCRIPTION("DCS backlight on a bootloader-initialised Exynos9810 DSIM");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

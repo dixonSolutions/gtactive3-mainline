@@ -1,0 +1,35 @@
+From 95c4a7a2457689fc3bb85cfd60fb1666079e69ea Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 15:42:47 +1100
+Subject: [PATCH 12/27] arm64: dts: exynos: gtactive3wifi: Enable cluster 0
+ watchdog
+
+The bootloader leaves the cluster 0 watchdog running with its reset
+masked in the PMU. Enable it so the driver can take it over and use it
+as a reset safety net. The cluster 1 counter does not tick while the
+Mongoose cores are offline, so leave that one disabled.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index edbbecdea..4caeaf973 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -322,3 +322,11 @@ ufs: ufs@11120000 {
+ 		phy-names = "ufs-phy";
+ 	};
+ };
++
++/*
++ * Only the cluster 0 (A55) watchdog: the cluster 1 counter does not run while
++ * the M3 cores are off (WTCNT stays at WTDAT).
++ */
++&watchdog_cl0 {
++	status = "okay";
++};
+-- 
+2.56.0
+

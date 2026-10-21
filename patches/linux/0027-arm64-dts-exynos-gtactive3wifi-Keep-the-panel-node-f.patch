@@ -1,0 +1,48 @@
+From 0217e457db861cd676a9558266f0e204e31b503a Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:52:41 +1100
+Subject: [PATCH 27/27] arm64: dts: exynos: gtactive3wifi: Keep the panel node
+ from blocking simpledrm
+
+The framebuffer's "panel" phandle is parsed by fw_devlink (parse_panel
+in drivers/of/property.c), so it becomes a supplier link from the
+framebuffer to /panel. /panel has no compatible and no parent device,
+so it never gets a struct device and is never marked NOT_DEVICE:
+fw_devlink_create_devlink() keeps returning -EAGAIN and simpledrm
+defers with "wait for supplier /panel". With CONFIG_MODULES=y and
+CONFIG_DRIVER_DEFERRED_PROBE_TIMEOUT=0, fw_devlink_probing_done() never
+runs, so it would stay deferred and the console would be lost.
+
+of_link_to_phandle() skips suppliers that are not available, while
+simpledrm reads width-mm, height-mm and rotation through
+of_parse_phandle() regardless of the status. Disable the node.
+
+Fixes: 6ebe9ae81aa1 ("arm64: dts: exynos: gtactive3wifi: Describe the boot framebuffer for simpledrm")
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 1943aeec2..51a746fde 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -48,8 +48,15 @@ framebuffer0: framebuffer-0 {
+ 	 * panel and this node only describes it for simpledrm (physical size,
+ 	 * mounting) and links the DCS backlight. Change "rotation" here if
+ 	 * userspace should treat another edge as the top.
++	 *
++	 * The node is disabled on purpose: "panel" is a fw_devlink supplier
++	 * property, and an enabled node that never becomes a device would
++	 * keep simpledrm in deferred probe forever ("wait for supplier
++	 * /panel"; this config has no deferred probe timeout). simpledrm
++	 * reads width-mm/height-mm/rotation regardless of the status.
+ 	 */
+ 	panel: panel {
++		status = "disabled";
+ 		width-mm = <108>;
+ 		height-mm = <172>;
+ 		rotation = <0>;
+-- 
+2.56.0
+
