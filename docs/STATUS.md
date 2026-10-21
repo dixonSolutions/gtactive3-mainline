@@ -78,3 +78,17 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
   stock kernel or trace acpm_ipc_send_data's q_len 1 behaviour.
 - The force-polling patch was reverted (each request would block until the
   TX timeout).
+
+## Night Light (2026-10-22, 26102205, measured)
+
+- The window scans out from IDMA_VGRF (moved at probe) without problems.
+- Turning Night Light on (GNOME 2700 K, gamma LUT -> VGRF HDR gamut matrix
+  with HDR_ON|GM_ON, EOTF/TM off) turned the screen green and garbled; from
+  that moment the HX83102E TDDI reported bad touch checksums (`ec ec ...`
+  frames) and the panel went dark: the colour write broke the video stream
+  and the panel side of the TDDI faulted. Only a reboot (S-Boot panel init)
+  recovered it.
+- Next: program the HDR block only between frames (frame-done / shadow
+  update window, as Samsung's dpp_reg does), test the EOTF+GM+TM path with
+  linear curves in the bring-up kernel first, and do not expose GAMMA_LUT to
+  GNOME again until a warm tint is confirmed by eye.
