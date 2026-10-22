@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 17:49:50 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: QEMU virt machine drivers
+
+A small built-in fragment (PCIe ECAM host, virtio blk/net/console/input/
+rng/gpu, PL011, PL031, PL061, fw_cfg) so the same UKI boots in
+qemu-system-aarch64 -M virt: CI and the laptop can smoke-test every Phosh
+and GNOME image (first boot, UI, journal, podman, A/B sysupdate with boot
+counting) without the tablet. None of these devices exist on the tablet.
+
+gen-kernel-config.sh takes the device fragments from a list now, so the
+next topic fragment is one word.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/gen-kernel-config.sh               | 27 +++++++-----
+ .../samsung-gtactive3wifi/kernel/virt.config  | 44 +++++++++++++++++++
+ 2 files changed, 61 insertions(+), 10 deletions(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/virt.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index 2b541b9..d9f8c1c 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -5,9 +5,9 @@
+ #
+ #   base      : build/bringup/.config (the lead's live-tested config, from
+ #               configs/gtactive3-bringup.config)
+-#   fragments : pmos-deps.config, pmos-fragment.config, gtactive3wifi.config
+-#               (in this order; later ones win, except that an "=m" from the
+-#               pmOS fragment never downgrades a "=y")
++#   fragments : pmos-deps.config, pmos-fragment.config, then the device
++#               fragments $DEVFRAGS (in this order; later ones win, except
++#               that an "=m" from the pmOS fragment never downgrades a "=y")
+ #   source    : git archive of src/linux $KREF (default gtactive3wifi), which
+ #               is tree-identical to the aport's tarball + patches
+ #   output    : <pmaports>/device/testing/linux-postmarketos-exynos9810/
+@@ -15,7 +15,7 @@
+ #
+ # olddefconfig runs in the package builder container (same cross compiler
+ # and pahole as the package build, so CONFIG_DEBUG_INFO_BTF survives).
+-# Fails if any line of gtactive3wifi.config did not survive olddefconfig, or
++# Fails if any line of a device fragment did not survive olddefconfig, or
+ # if the pmbootstrap kconfigcheck categories of the APKBUILD do not pass.
+ set -eu
+ 
+@@ -28,6 +28,8 @@ APORT=$PMAPORTS/device/testing/linux-postmarketos-exynos9810
+ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
++# device fragments, applied in this order
++DEVFRAGS="gtactive3wifi.config virt.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
+@@ -38,16 +40,21 @@ mkdir -p "$work/src" "$work/out" "$work/in"
+ git -C "$ROOT/src/linux" archive "$KREF" | tar -x -C "$work/src"
+ cp "$BASE" "$work/in/base.config"
+ cp "$HERE"/mergecfg.py "$HERE"/pmos-deps.config "$HERE"/pmos-fragment.config \
+-	"$HERE"/gtactive3wifi.config "$work/in/"
++	"$work/in/"
++for f in $DEVFRAGS; do cp "$HERE/$f" "$work/in/"; done
+ 
++# shellcheck disable=SC2016 # expanded by the container shell
+ flock "$LOCK" nice -n 19 podman run --rm --entrypoint "" \
+-	-v "$work:/w:Z" -w /w/src "$BUILDER" sh -euc '
+-	python3 /w/in/mergecfg.py /w/in/base.config /w/out/.config \
+-		/w/in/pmos-deps.config /w/in/pmos-fragment.config /w/in/gtactive3wifi.config
++	-v "$work:/w:Z" -w /w/src -e DEVFRAGS="$DEVFRAGS" "$BUILDER" sh -euc '
++	cd /w/in
++	python3 mergecfg.py base.config /w/out/.config \
++		pmos-deps.config pmos-fragment.config $DEVFRAGS
++	cd /w/src
+ 	make -s O=/w/out ARCH=arm64 CROSS_COMPILE=aarch64-alpine-linux-musl- olddefconfig
+ 	'
+ 
+-missing=$(grep -E '^(CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set)' "$HERE/gtactive3wifi.config" |
++missing=$(for f in $DEVFRAGS; do cat "$HERE/$f"; done |
++	grep -E '^(CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set)' |
+ 	while IFS= read -r line; do
+ 		case "$line" in
+ 		"# "*)	sym=${line#\# }; sym=${sym%% *}
+@@ -56,7 +63,7 @@ missing=$(grep -E '^(CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set)' "
+ 		esac
+ 	done)
+ if [ -n "$missing" ]; then
+-	echo "gtactive3wifi.config lines not applied by olddefconfig:" >&2
++	echo "device fragment lines not applied by olddefconfig:" >&2
+ 	printf '  %s\n' "$missing" >&2
+ 	exit 1
+ fi
+diff --git a/contrib/samsung-gtactive3wifi/kernel/virt.config b/contrib/samsung-gtactive3wifi/kernel/virt.config
+new file mode 100644
+index 0000000..71bfec1
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/virt.config
+@@ -0,0 +1,44 @@
++# QEMU "virt" machine support for linux-postmarketos-exynos9810, applied
++# after gtactive3wifi.config by gen-kernel-config.sh.
++#
++# Why a tablet kernel carries this: the same UKI then boots unchanged in
++# qemu-system-aarch64 -M virt (edk2 + systemd-boot, tests/virt/ in the
++# gtactive3-mainline repository), so CI and the laptop smoke-test every
++# Phosh / GNOME image (boot, first boot, UI, journal, podman, A/B sysupdate
++# with boot counting) without the tablet. Everything is built in (the initrd
++# needs the disk, the console and the GPU before modules load) and only
++# drivers QEMU's virt board actually instantiates are enabled: about 300 KB
++# of Image, no effect on the tablet (none of these devices exist in its DT).
++
++# PCIe: ECAM host bridge; MSI through the GICv3 ITS the tablet config has
++CONFIG_PCI_HOST_GENERIC=y
++
++# virtio over PCI (modern only: QEMU's virtio-*-pci devices offer it)
++CONFIG_VIRTIO_MENU=y
++CONFIG_VIRTIO_PCI=y
++# CONFIG_VIRTIO_PCI_LEGACY is not set
++CONFIG_VIRTIO_BLK=y
++CONFIG_VIRTIO_NET=y
++CONFIG_VIRTIO_CONSOLE=y
++CONFIG_VIRTIO_INPUT=y
++CONFIG_HW_RANDOM_VIRTIO=y
++# the UI's display: Phosh / GNOME on virtio-gpu (KMS, software rendering)
++CONFIG_DRM_VIRTIO_GPU=y
++
++# PL011 UART: early boot log and serial console (console=ttyAMA0)
++CONFIG_SERIAL_AMBA_PL011=y
++CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
++
++# PL031 RTC: wall-clock time at boot (journal timestamps, TLS for sysupdate);
++# the tablet has no RTC driver, so the RTC class is new here too
++CONFIG_RTC_CLASS=y
++CONFIG_RTC_DRV_PL031=y
++# CONFIG_RTC_NVMEM is not set
++
++# PL061 GPIO: QEMU's power button (gpio-keys KEY_POWER), so a QMP
++# system_powerdown shuts the guest down cleanly
++CONFIG_GPIO_PL061=y
++
++# fw_cfg: systemd reads credentials from QEMU's fw_cfg
++# (-fw_cfg name=opt/io.systemd.credentials/NAME,...)
++CONFIG_FW_CFG_SYSFS=y

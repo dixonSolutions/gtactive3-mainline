@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 17:59:52 +1100
+Subject: [PATCH] contrib: gtactive3wifi: a sysupdate keyring that exists, no
+ staging channel
+
+- write import-pubring.pgp with gpg --dearmor and check it with
+  --show-keys: gpg --keyring X --import with a fresh GnuPG 2.5 home (CI)
+  uses keyboxd and ignores --keyring ("Specified keyrings are ignored due
+  to option use-keyboxd"), so the published 26102201 images had no
+  keyring at all and every update failed with "No OpenPGP keyrings found"
+- duranium-set-channel only knows the postmarketOS /images/staging/
+  layout and would freeze every transfer into /etc/sysupdate.d: replace
+  it with one that prints this image's channel
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/mkosi.finalize | 34 ++++++++++++++++----
+ 1 file changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/mkosi.finalize b/contrib/samsung-gtactive3wifi/mkosi.finalize
+index c3c5414..574eb17 100755
+--- a/contrib/samsung-gtactive3wifi/mkosi.finalize
++++ b/contrib/samsung-gtactive3wifi/mkosi.finalize
+@@ -42,17 +42,39 @@ done
+ [ "$n" -gt 0 ] || { echo "no sysupdate transfer pointed at the postmarketOS server" >&2; exit 1; }
+ echo "sysupdate: $n transfers -> ${BASE}%M_%W_%w${suffix}/"
+ 
+-# the channel switcher only knows the postmarketOS server
++# duranium-set-channel only knows the postmarketOS server layout
++# (/images/ vs /images/staging/): on this device it would copy every transfer
++# unchanged into /etc/sysupdate.d, freezing them. Our channels are fixed per
++# image (release or -dev, see update-channel below).
+ if [ -f "$BUILDROOT"/usr/bin/duranium-set-channel ]; then
+-	sed -i "s|^BASE_URL=.*|BASE_URL=\"$BASE\"|" "$BUILDROOT"/usr/bin/duranium-set-channel
++	cat > "$BUILDROOT"/usr/bin/duranium-set-channel <<'EOF'
++#!/bin/sh
++# samsung-gtactive3wifi: one update channel per image (gtactive3-mainline
++# GitHub releases), there is no staging channel. Prints the channel.
++set -eu
++. /usr/lib/gtactive3wifi/update-channel
++case "${1:-}" in
++"") echo "$UPDATE_CHANNEL" ;;
++main) echo "$UPDATE_CHANNEL" ;;
++*) echo "this device has no '$1' channel; images follow $UPDATE_CHANNEL" >&2; exit 1 ;;
++esac
++EOF
++	chmod 0755 "$BUILDROOT"/usr/bin/duranium-set-channel
+ fi
+ 
++# A plain binary OpenPGP key file is a valid keyring for the gpg that
++# systemd-pull runs. Never "gpg --keyring X --import": a GnuPG 2.4 with a
++# fresh home (CI) keeps keys in keyboxd and silently ignores --keyring, and
++# the image then has no keyring at all (26102201: every update failed with
++# "No OpenPGP keyrings found").
+ ring="$BUILDROOT"/usr/lib/systemd/import-pubring.pgp
+ rm -f "$ring" "$ring~"
+-gpg --no-default-keyring --keyring "$ring" --import "$HERE"/sysupdate-public-key.asc
+-rm -f "$ring~"
+-gpg --no-default-keyring --keyring "$ring" --list-keys --with-colons | grep -c '^pub' |
+-	grep -qx 1 || { echo "the sysupdate keyring must hold exactly one key" >&2; exit 1; }
++gpg --dearmor < "$HERE"/sysupdate-public-key.asc > "$ring"
++chmod 0644 "$ring"
++gh=$(mktemp -d)
++n=$(GNUPGHOME=$gh gpg --batch --show-keys --with-colons "$ring" | grep -c '^pub' || true)
++rm -rf "$gh"
++[ "$n" = 1 ] || { echo "$ring must hold exactly one key, has $n" >&2; exit 1; }
+ 
+ # which channel this image follows, for duranium-update and humans
+ mkdir -p "$BUILDROOT"/usr/lib/gtactive3wifi
