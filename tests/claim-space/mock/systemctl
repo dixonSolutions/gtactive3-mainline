@@ -1,0 +1,42 @@
+#!/bin/sh
+# mock systemctl: start/stop the units the crypttab and fstab generators
+# would make, from $GTA3_CLAIM_ROOT/etc/{crypttab,fstab}
+set -eu
+S=$MOCK_STATE R=$GTA3_CLAIM_ROOT
+echo "systemctl $*" >> "$S/calls"
+[ "${MOCK_SYSTEMCTL_FAIL:-0}" = 0 ] || [ "$1" != start ] || exit 1
+unesc() { echo "$1" | sed 's/-/\//g; s/\\x2d/-/g'; }
+op=$1; shift
+case $op in daemon-reload) exit 0 ;; start | stop) ;; *) exit 0 ;; esac
+for u; do
+	case $u in
+	systemd-cryptsetup@*.service)
+		n=$(unesc "${u#systemd-cryptsetup@}"); n=${n%.service}
+		if [ "$op" = stop ]; then rm -f "$R/dev/mapper/$n" "$S/map/$n"; continue; fi
+		line=$(grep "^$n[[:space:]]" "$R/etc/crypttab") || exit 1
+		uuid=$(echo "$line" | awk '{ print $2 }'); uuid=${uuid#UUID=}
+		key=$(echo "$line" | awk '{ print $3 }')
+		echo "$line" | grep -q 'nofail' || exit 1
+		dev=
+		for v in "$S"/luks/*/uuid; do
+			[ "$(cat "$v")" = "$uuid" ] && dev=$R/dev/$(basename "$(dirname "$v")")
+		done
+		[ -n "$dev" ] || exit 1
+		h=$(sha256sum < "$R$key" | cut -d' ' -f1)
+		grep -qx "$h" "$S/luks/${dev##*/}/slots" || exit 1
+		mkdir -p "$R/dev/mapper" "$S/map"
+		: > "$R/dev/mapper/$n"; echo "$dev" > "$S/map/$n" ;;
+	*.mount)
+		p=/$(unesc "${u%.mount}")
+		k=$S/mnt/$(echo "$R$p" | tr / _)
+		if [ "$op" = stop ]; then
+			[ "${MOCK_BUSY:-}" != "$R$p" ] || exit 1
+			rm -f "$k"; continue
+		fi
+		line=$(awk -v p="$p" '$2 == p' "$R/etc/fstab")
+		[ -n "$line" ] || exit 1
+		src=$(echo "$line" | awk '{ print $1 }')
+		[ -e "$R$src" ] || exit 1
+		mkdir -p "$S/mnt"; echo "$src" > "$k" ;;
+	esac
+done

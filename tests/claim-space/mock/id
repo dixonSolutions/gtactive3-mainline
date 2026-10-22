@@ -1,0 +1,3 @@
+#!/bin/sh
+# mock id -u
+echo "${MOCK_UID:-0}"

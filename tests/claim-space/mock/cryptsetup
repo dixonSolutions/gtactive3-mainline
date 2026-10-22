@@ -1,0 +1,73 @@
+#!/bin/sh
+# mock cryptsetup: LUKS volumes are directories in $MOCK_STATE/luks/<device
+# basename> (uuid, label, slots = sha256 of each key); mappings are files in
+# $GTA3_CLAIM_ROOT/dev/mapper plus $MOCK_STATE/map/<name> (the backing device)
+set -eu
+S=$MOCK_STATE R=$GTA3_CLAIM_ROOT
+echo "cryptsetup $*" >> "$S/calls"
+cmd= kf= label= test=0 p1= p2=
+while [ $# -gt 0 ]; do
+	case $1 in
+	--key-file=*) kf=${1#*=} ;;
+	--key-file) kf=$2; shift ;;
+	--label) label=$2; shift ;;
+	--test-passphrase) test=1 ;;
+	--type | --offset | --pbkdf | --pbkdf-force-iterations) shift ;;
+	--batch-mode | -q) ;;
+	-*) echo "mock cryptsetup: unknown option $1" >&2; exit 99 ;;
+	*) if [ -z "$cmd" ]; then cmd=$1; elif [ -z "$p1" ]; then p1=$1; else p2=$1; fi ;;
+	esac
+	shift
+done
+keyhash() { # the key from --key-file (- = stdin)
+	if [ "$kf" = - ]; then sha256sum | cut -d' ' -f1; else sha256sum < "$kf" | cut -d' ' -f1; fi
+}
+vol() { echo "$S/luks/${1##*/}"; }
+has_key() { [ -f "$(vol "$1")/slots" ] && grep -qx "$2" "$(vol "$1")/slots"; }
+case $cmd in
+status)
+	if [ "$p1" = root ]; then
+		printf '/dev/mapper/root is active and is in use.\n  type:    LUKS2\n  device:  /dev/loop0p3\n'
+	elif [ -e "$R/dev/mapper/$p1" ]; then
+		echo "/dev/mapper/$p1 is active."
+	else
+		exit 4
+	fi ;;
+open)
+	h=$(keyhash)
+	has_key "$p1" "$h" || { echo "No key available with this passphrase." >&2; exit 2; }
+	[ "$test" = 1 ] && exit 0
+	[ ! -e "$R/dev/mapper/$p2" ] || { echo "Device $p2 already exists." >&2; exit 5; }
+	mkdir -p "$R/dev/mapper" "$S/map"
+	: > "$R/dev/mapper/$p2"
+	echo "$p1" > "$S/map/$p2" ;;
+luksFormat)
+	case $p1 in "$R"/dev/sd*) ;; *) echo "mock: luksFormat on $p1" >&2; exit 98 ;; esac
+	h=$(keyhash)
+	v=$(vol "$p1")
+	rm -rf "$v"
+	mkdir -p "$v"
+	n=$(($(cat "$S/uuid-counter" 2>/dev/null || echo 0) + 1))
+	echo "$n" > "$S/uuid-counter"
+	echo "0000000$n-1111-2222-3333-${p1##*/}" | cut -c1-36 > "$v/uuid"
+	echo "$label" > "$v/label"
+	echo "$h" > "$v/slots"
+	printf 'LUKS\272\276' | dd of="$p1" conv=notrunc 2>/dev/null ;;
+luksAddKey)
+	h=$(keyhash)
+	has_key "$p1" "$h" || { echo "No key available with this passphrase." >&2; exit 2; }
+	sha256sum < "$p2" | cut -d' ' -f1 >> "$(vol "$p1")/slots" ;;
+luksRemoveKey)
+	h=$(keyhash)
+	has_key "$p1" "$h" || exit 2
+	grep -vx "$h" "$(vol "$p1")/slots" > "$S/slots.tmp" || true
+	mv "$S/slots.tmp" "$(vol "$p1")/slots" ;;
+luksUUID)
+	cat "$(vol "$p1")/uuid" ;;
+close)
+	rm -f "$R/dev/mapper/$p1" "$S/map/$p1" ;;
+erase)
+	: > "$(vol "$p1")/slots" ;;
+*)
+	echo "mock cryptsetup: unsupported $cmd" >&2; exit 99 ;;
+esac

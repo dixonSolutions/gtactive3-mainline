@@ -187,8 +187,9 @@ Android system" and offers a factory reset: refuse it, put Duranium back
 with `./setup.sh redo`, or use `restore-android`. The installer asks you to
 type `UNDO` in that case.
 
-**Full stock firmware**: if Android's system was erased (only on tablets
-prepared by hand; the installer never erases it), flash your complete stock
+**Full stock firmware**: if Android's system was erased (on tablets
+prepared by hand, or after `gtactive3wifi-claim-android-space`; the
+installer never erases it), flash your complete stock
 firmware: Odin on Windows (BL, AP, CP, HOME_CSC), or heimdall with every
 image from the AP file. Never flash a modified `vbmeta`: the bootloader
 then stops in Download mode without USB.
@@ -218,6 +219,47 @@ installs it as a one-off A/B update through `scripts/duranium-update`. `~`
 sorts below the plain version, so the next official update replaces the
 test build; the tablet's update channel is not changed (the installer
 checks it before and after).
+
+## More space: Android's system partitions (optional)
+
+Duranium lives in Android's data partition; Android's own operating system
+stays on the tablet unused, so that `./setup.sh restore-android` can start
+it again. If you will not go back to Android, its `super` partition
+(7.13 GB: system, vendor, product) can become extra encrypted storage. On
+the tablet, in a terminal:
+
+```sh
+sudo gtactive3wifi-claim-android-space --dry-run   # what it would do
+sudo gtactive3wifi-claim-android-space             # type ERASE-ANDROID, then your disk passphrase
+```
+
+**This erases Android's operating system.** Afterwards only a complete
+stock firmware flash (Odin: BL, AP, CP, HOME_CSC) brings Android back;
+`./setup.sh restore-android` and Samsung's recovery cannot. Duranium and
+your files are not touched.
+
+- The space is a LUKS2-encrypted ext4 volume on `/var/mnt/android-space`
+  with a folder for you, linked as `~/android-space`. Its passphrase is
+  your disk passphrase (checked before anything is changed); at every
+  start a key file on the encrypted root unlocks it, and the boot never
+  waits for it or asks for it if it is missing (`nofail`).
+- `--with-prism` also claims `prism` (0.63 GB, Samsung's CSC data) as a
+  second volume on `/var/mnt/android-space-prism`. The bootloader checks
+  prism's signature block at every start, so that part of it is kept
+  byte for byte (checked after formatting).
+- `--containers` puts your podman and distrobox images and containers
+  (normally `~/.local/share/containers`, on the root) on the new volume.
+  Not the default: containers then need that volume, and existing images
+  are not moved (pull them again).
+- `--status` shows the state; `--undo` stops using it (the data stays and
+  your passphrase still opens it); `--undo --wipe` erases it for good.
+- After a reset of the root partition (all settings gone), running it
+  again attaches the existing volume without formatting.
+
+Only partitions named `super` and `prism` on the internal storage are ever
+written; EFS, the bootloaders, param, persistent, vbmeta, BOOT, RECOVERY
+and the rest are never touched. Tests: `tests/claim-space/run.sh` (and
+`busybox.sh` for BusyBox ash).
 
 ## Commands
 

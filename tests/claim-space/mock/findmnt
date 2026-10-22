@@ -1,0 +1,4 @@
+#!/bin/sh
+# mock findmnt -n -o SOURCE /
+echo "findmnt $*" >> "$MOCK_STATE/calls"
+echo /dev/mapper/root

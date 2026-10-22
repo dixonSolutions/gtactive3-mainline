@@ -1,0 +1,4 @@
+#!/bin/sh
+# mock mountpoint -q DIR
+for d; do :; done
+[ -f "$MOCK_STATE/mnt/$(echo "$d" | tr / _)" ]

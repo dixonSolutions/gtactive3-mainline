@@ -1,0 +1,5 @@
+#!/bin/sh
+# mock wipefs: drops the mock LUKS signature
+echo "wipefs $*" >> "$MOCK_STATE/calls"
+for dev; do :; done
+rm -rf "$MOCK_STATE/luks/${dev##*/}"

@@ -1,0 +1,25 @@
+#!/bin/sh
+# mock mkfs.ext4 [opts] /dev/mapper/NAME [BLOCKS]: marks the first and the
+# last block the filesystem would use on the backing partition (behind the
+# 16 MiB LUKS2 header); MOCK_MKFS_OVERRUN=1 also writes the partition's
+# last block, as a filesystem that grew too far would
+set -eu
+echo "mkfs.ext4 $*" >> "$MOCK_STATE/calls"
+dev= blocks=
+while [ $# -gt 0 ]; do
+	case $1 in
+	-L | -m | -b | -E) shift ;;
+	-*) ;;
+	*) if [ -z "$dev" ]; then dev=$1; else blocks=$1; fi ;;
+	esac
+	shift
+done
+back=$(cat "$MOCK_STATE/map/${dev##*/}")
+size=$(stat -c %s "$back")
+[ -n "$blocks" ] || blocks=$(((size - 16777216) / 4096))
+printf 'EXT4-FIRST' | dd of="$back" bs=4096 seek=4096 conv=notrunc 2>/dev/null
+printf 'EXT4-LAST' | dd of="$back" bs=4096 seek=$((4096 + blocks - 1)) conv=notrunc 2>/dev/null
+echo "$blocks" > "$MOCK_STATE/mkfs-blocks.${dev##*/}"
+if [ "${MOCK_MKFS_OVERRUN:-0}" = 1 ]; then
+	printf 'OVERRUN' | dd of="$back" bs=4096 seek=$((size / 4096 - 1)) conv=notrunc 2>/dev/null
+fi

@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "chown $*" >> "$MOCK_STATE/calls"

@@ -1,0 +1,5 @@
+#!/bin/sh
+# mock mount SRC DIR
+echo "mount $*" >> "$MOCK_STATE/calls"
+mkdir -p "$MOCK_STATE/mnt" "$2"
+echo "$1" > "$MOCK_STATE/mnt/$(echo "$2" | tr / _)"

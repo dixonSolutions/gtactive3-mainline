@@ -1,0 +1,6 @@
+#!/bin/sh
+echo "umount $*" >> "$MOCK_STATE/calls"
+k=$MOCK_STATE/mnt/$(echo "$1" | tr / _)
+[ -f "$k" ] || { echo "umount: $1: not mounted" >&2; exit 32; }
+[ "${MOCK_BUSY:-}" != "$1" ] || { echo "umount: $1: target is busy" >&2; exit 32; }
+rm -f "$k"
