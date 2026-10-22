@@ -14,7 +14,8 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | Block (stock spec) | Driver / state | Bring-up | Duranium | What is left |
 |---|---|---|---|---|
 | **CPU** Exynos 9810: 4× Mongoose M3 (2.7 GHz) + 4× Cortex-A55 (1.9 GHz) | A55 ×4 via PSCI. M3 ×4: powered by EL3 but cluster 1 hangs the bus on power-up | ◐ 4 of 8 cores | ◐ 4 of 8 cores | ACPM DVFS init (ECT/fvmap) so cluster 1 has a clock, then the PMU wake-event sequence (found), then online 4-7 |
-| **CPU frequency** | none: clocks as S-Boot set them; ACPM DVFS reads 0 kHz (DVFS not initialised) | ✘ | ✘ | ACPM DVFS (FREQ_REQ on channel 5) + fvmap/ECT, cpufreq driver |
+| **CPU frequency** | cpufreq-dt on the ACPM DVFS clock, requests on ACPM channel 0 (drv/dvfs2); APM sets the voltage | ✔ A55 208-1950 MHz, PLL measured, schedutil | ? (next kernel; image blacklists cpufreq-dt until then) | boot it in Duranium; M3 cluster with the big cores |
+| **CPU idle** | PSCI core power-down C2 (stock: 0x10000, 70/160/2000 us on A55) + flexpmu CPU_INFORM/pmu-intr-gen hints in exynos-pmu (drv/dvfs2); no cluster power-down (stock never powers down the A55 cluster) | ◐ psci_idle registers, hotplug core power-down verified (PMU status 0); C2 residency not yet measured | ? | measure C2 usage/residency in long idle (needs NO_HZ_IDLE, see below) |
 | **GPU** Mali-G72 MP18 | panfrost probes, runs jobs, fixed 260 MHz (S-Boot level) | ◐ jobs run | ✘ not used: GNOME renders in software | GPU via the new KMS driver + Mesa kmsro (built, untested in GNOME); then GPU DVFS through ACPM |
 | **RAM** 4 GB LPDDR4X | 3.9 GiB usable; 128 MiB CMA added for scanout | ✔ | ✔ (boots, 2 GB+ in use) | MIF DVFS (bandwidth) later |
 | **Storage** 64 GB UFS 2.1 | ufs-exynos; 32-bit DMA, inline crypto/FMP PRDT format | ✔ (byte-exact 6.9 GB writes) | ✔ (boots, verity /usr, LUKS root) | — |
@@ -38,7 +39,7 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | **Audio** A-Box + RT5665 codec + RT5510 amp, speaker, 3.5 mm jack, mics | firmware-less A-Box, machine driver, UCM profile (new) | ◐ both PCMs stream; audibility unconfirmed | ? (no UCM until now) | verify speaker/headphones/mic in GNOME; jack detection (JD1+JD2 mode) |
 | **USB-C** charging / data | MAX77705 charger + USB-C BC1.2 input, DWC3 gadget | ✔ (SDP 475 mA, charging) | ◐ charging; host mode untested | USB host/OTG role switching (SM5504 role switch missing) |
 | **Battery** 5050 mAh | max17042 fuel gauge; temperature from the battery NTC (AP ADC ch1) | ✔ capacity/voltage; temp: was a stale 29.5 °C (FG in host-temperature mode), now the NTC | ◐ NTC + temperature policy verified with test modules on 26102209; ADC driver + DT not booted yet (drv/battemp) | boot drv/battemp; wall-charger measurement |
-| **Thermal** | TMU 8 zones; battery/charger/USB NTCs (exynos_adc 9810 + generic-adc-thermal) | ✔ TMU | ◐ NTC zones via test module | cooling via cpufreq (needs DVFS) |
+| **Thermal** | TMU 8 zones; battery/charger/USB NTCs (exynos_adc 9810 + generic-adc-thermal) | ✔ TMU | ◐ NTC zones via test module | LITTLE zone: cpufreq cooling bound to a passive 86 C trip (bring-up; not yet driven by real heat) |
 | **PMIC** S2MPS18 | ACPM read-only regulators | ◐ read-only | ◐ | regulator control through ACPM (LDO40/41 for grip/NFC) |
 | **Grip sensor** A96T3x6 | driver, bus at 100 kHz | ✘ needs LDO40 | ? | PMIC regulator control |
 | **Pogo pins** SM5504 MUIC | extcon-sm5502 | ✘ probe fails (no USB role switch) | ? | dwc3 role switch |
@@ -61,23 +62,56 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | Updates instead of 6.9 GB reinstalls | ✔ `scripts/duranium-update` (A/B usr + verity, UKI with boot counting, dev-tools sysext/confext per version in /var/lib/duranium-extensions) |
 | distrobox / podman / brew | ✔ podman 6.1.4 + distrobox 1.8.2.5 (dev-tools sysext), Fedora 44 box, `distrobox-export --bin` tested (26102209) |
 
-## DVFS findings (2026-10-22, bring-up #76/#77, measured)
+## CPU DVFS and idle (2026-10-22, measured)
 
-- cpufreq-dt + clk-acpm accept every rate, but the CPU PLL
-  (PLL_CON0_PLL_CPUCL0 @ 0x1d000140, F = 26 MHz * M / (P * 2^S)) stays at
-  1053 MHz (M=243 P=3 S=1) and a CPU-bound loop runs at the same speed at
-  208, 1053 and 1950 MHz: **DVFS has no effect yet**.
-- Cause 1: ACPM channel 5 (DVFS) is interrupt mode (ap_poll 0) and the
-  mainline driver rejects it (-EOPNOTSUPP, "Interrupt mode not supported").
-- Cause 2: forcing polling sends the request, but channel 5 has q_len 1
-  (all queue pointers 0), and the "next TX front != RX front / TX rear"
-  checks (mainline and Samsung acpm_ipc.c alike) never allow a send:
-  "RX front can not keep up with TX front". Stock does send DVFS on channel
-  5 (cal-if: dvfs_cpucl0 is an ACPM vclk -> acpm_ipc_send_data(5)), so its
-  runtime queue state or path differs; next: dump channel 5 SRAM under the
-  stock kernel or trace acpm_ipc_send_data's q_len 1 behaviour.
-- The force-polling patch was reverted (each request would block until the
-  TX timeout).
+Earlier (bring-up #76/#77): cpufreq-dt + clk-acpm accepted every rate but
+the PLL stayed at 1053 MHz, because requests went to ACPM channel 5.
+
+- **Channel 5 is the wrong channel.** APM SRAM channel table (framework
+  header at SRAM + 0x7f00): ch5 is type 2 (buffer), q_len 1, ap_poll 0,
+  the DVFS plugin's APM-to-AP notification buffer (stock registers a MIF
+  callback on it). Stock sends FREQ_REQ on **channel 0**: cal-if asks
+  acpm_ipc_request_channel() for the clock-controller node, which has no
+  acpm-ipc-channel, the lookup fails and ch_num stays 0. Ch0: same plugin
+  (owner 0x10), queue, q_len 15, 16-byte messages, polled.
+- Hand-made FREQ_REQ on ch0 (console pokes, Duranium 26102208): PLL
+  1053 -> 949 -> 832 -> 949 -> 455 -> 1053 MHz; requests are rounded down
+  to a table level; FREQ_GET answers 0 (stock caches rates too).
+- Fix: clk-acpm exynos9810 mbox_chan_id 5 -> 0. Bring-up, cpufreq-dt policy0
+  (CPUs 0-3), userspace governor, PLL_CON0_PLL_CPUCL0 read back + a
+  4-instruction dependent loop:
+
+  | requested | PLL | loop |
+  |---|---|---|
+  | 208 MHz | 208 MHz | 51 Miter/s |
+  | 455 MHz | 455 MHz | 113 Miter/s |
+  | 1053 MHz | 1053 MHz | 262 Miter/s |
+  | 1456 MHz | 1456 MHz | 363 Miter/s |
+  | 1950 MHz | 1950 MHz | 487 Miter/s |
+
+  schedutil: 1950 MHz within 250 ms of load, back down when idle (2254
+  transitions in ~4 min). Thermal: cooling_device cpufreq-cpu0 (12 states)
+  bound to the cpu-little-thermal passive trip at 86 C (stock LITTLE alerts
+  76-101 C); not exercised (40 C, no THERMAL_EMULATION).
+- CPU idle: stock uses only C2 (PSCI power_state 0x10000) per core and no
+  A55 cluster power-down. Before CPU_SUSPEND/CPU_OFF stock writes
+  CPU_INFORM(cpu) = 1 (PMU + 0x860 + 4n), sets the CPU's bit in pmu-intr-gen
+  (0x14070000) GRP2_INTR_BID_ENABLE and PMU + 0x7f08, clears its GRP1
+  pending bit; the A55 cores are bits 4-7. Same scheme as mainline's gs101
+  code in exynos-pmu.c, extended for 9810. CPU3 hotplug: PMU
+  CLUSTER0_CPU3_STATUS 0x0f -> 0x00 (core off) -> 0x0f, CPU3 runs again.
+- C2 was **not entered** in the bring-up: its config was HZ_PERIODIC
+  without HIGH_RES_TIMERS, so there is no tick broadcast (no global timer
+  in the DT; the hrtimer broadcast needs a oneshot tick) and cpuidle never
+  picks a timer-stop state. Bring-up config now has NO_HZ_IDLE +
+  HIGH_RES_TIMERS (the Duranium kernel already does). The v2 test kernel
+  was built but not booted (reboot not approved in that window): C2
+  residency in long idle is still to be measured, in the next Duranium
+  kernel. Later: the MCT (0x10040000, stock clockevent) as a real broadcast
+  timer so all four cores can power down at once.
+- Battery current in the bring-up (USB SDP input, console idle, no C2):
+  net -6 mA (gauge, 20 s average). Duranium (coordinator): 214 mA screen
+  on, 184 mA blanked.
 
 ## Night Light (2026-10-22, 26102205, measured)
 
