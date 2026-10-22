@@ -24,12 +24,15 @@
 #   EXTENSIONS="dev-tools waydroid" ...  extensions to deliver ("" = none)
 #   UI=phosh ...                         image variant (default gnome); a
 #                                        switch is an A/B update like any other
+#   OUT=DIR ...                          where the image files are (default:
+#                                        build/wt/duranium/mkosi.output/<image>;
+#                                        ./setup.sh update --test uses it)
 #   then reboot the tablet ("tab reboot" or from GNOME)
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 UI=${UI:-gnome}
 NAME=samsung-gtactive3wifi_${UI}_edge
-OUT=$P/build/wt/duranium/mkosi.output/$NAME
+OUT=${OUT:-$P/build/wt/duranium/mkosi.output/$NAME}
 LL=fe80::57:aff:fe00:1
 W=$P/build/.upd
 mkdir -p "$W"
@@ -131,8 +134,8 @@ log "inactive slot: usr $TU, verity $TV (booted: $CU / $CV)"
 # The UKI of the version that lived in the inactive slot is about to point at
 # a partition being rewritten: retire it before writing (never the booted
 # version's UKI, which stays as the fallback).
-OLDV=$(echo "$PARTS" | awk -v n="$TU" '$1 == n { print $2 }' | sed -n 's/^duranium_\([0-9]*\)_usr$/\1/p')
-BOOTV=$(echo "$PARTS" | awk -v u="$CU" '$4 == u { print $2 }' | sed -n 's/^duranium_\([0-9]*\)_usr$/\1/p')
+OLDV=$(echo "$PARTS" | awk -v n="$TU" '$1 == n { print $2 }' | sed -n 's/^duranium_\([0-9][0-9a-z~]*\)_usr$/\1/p')
+BOOTV=$(echo "$PARTS" | awk -v u="$CU" '$4 == u { print $2 }' | sed -n 's/^duranium_\([0-9][0-9a-z~]*\)_usr$/\1/p')
 if [ -n "$OLDV" ] && [ "$OLDV" != "$BOOTV" ] && [ "$OLDV" != "$V" ]; then
 	ESP0=$(echo "$PARTS" | awk '$3 == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" { print $1 }')
 	[ "$(echo "$ESP0" | wc -w)" = 1 ] || die "expected one ESP, got '$ESP0'"
