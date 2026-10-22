@@ -1,0 +1,15 @@
+#!/bin/bash
+# Mark the committed pmos/ export as passed on the device, so the next CI run
+# also builds and publishes the public release channels (until then only the
+# -dev channels get it, as pre-releases). Only on the device coordinator's
+# word (docs/COORDINATION.md), after an on-device pass of exactly this export.
+#
+#   scripts/pmos-verify "r12: boots, Wi-Fi/touch/GPU ok"   then commit + push
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+[ -n "${1:-}" ] || { echo "usage: $0 'what passed on the device'" >&2; exit 1; }
+git -C "$P" diff --quiet HEAD -- pmos/aports || { echo "commit the export first" >&2; exit 1; }
+tree=$(git -C "$P" rev-parse HEAD:pmos/aports)
+kc=$(sed -n 's/^_commit="\(.*\)"/\1/p' "$P"/pmos/aports/device/testing/linux-postmarketos-exynos9810/APKBUILD)
+printf '%s kernel=%s %s %s\n' "$tree" "${kc:0:12}" "$(date -u +%Y-%m-%d)" "$1" > "$P/pmos/VERIFIED"
+cat "$P/pmos/VERIFIED"

@@ -105,9 +105,16 @@ owners (boot image built from their stock boot.img) is not published yet.
 1. Change the kernel / a driver / the device package as usual (src/linux
    branches, build/wt/pmaports-duranium, build/wt/duranium), test on the
    tablet with `scripts/duranium-update`.
-2. When it passed: `scripts/pmos-export`, review `git diff pmos/`, commit,
-   push. The push builds and publishes.
-3. If a run warns that our duranium-build patches no longer apply upstream:
+2. Export only kernels / drivers the device coordinator (docs/COORDINATION.md)
+   reported as passed on the device; the integration branch for that is
+   `integ/gtactive3wifi`, `cand/*` are candidates. `scripts/pmos-export`,
+   review `git diff pmos/`, commit, push: the push builds and publishes the
+   **dev channels only**, as pre-releases.
+3. When the coordinator confirms that exact export on the device:
+   `scripts/pmos-verify "what passed"`, commit, push. Only an export named
+   in `pmos/VERIFIED` is built for and published to the public release
+   channels (`ci/state` output `verified`).
+4. If a run warns that our duranium-build patches no longer apply upstream:
    rebase `build/wt/duranium` (branch `gtactive3wifi`) on `origin/main`,
    export, push. If upstream pmaports gained one of our aport names, drop
    ours.

@@ -8,6 +8,8 @@
 #   fingerprint  both together; it is stored in every release's notes
 #   build      yes when no channel has been published with this
 #              fingerprint yet (or FORCE=1)
+#   verified   yes when pmos/VERIFIED matches the exported aports: only
+#              then are the release (non-dev) channels built and published
 #   version    the next image version: YYMMDDNN, above everything any
 #              channel ever published
 set -euo pipefail
@@ -24,7 +26,7 @@ max=0
 while read -r ui ch tag; do
 	body=$(gh release view "$tag" -R "$REPO" --json body -q .body 2>/dev/null || true)
 	f=$(printf '%s\n' "$body" | sed -n 's/^Fingerprint: `\(.*\)`$/\1/p' | head -1)
-	[ "$ch" = release ] && [ "$ui" = phosh ] && last=$f
+	[ "$ch" = dev ] && [ "$ui" = phosh ] && last=$f
 	for v in $(gh release view "$tag" -R "$REPO" --json assets -q '.assets[].name' 2>/dev/null |
 		sed -n 's/.*_\([0-9]\{8\}\)\.efi$/\1/p'); do
 		[ "$v" -gt "$max" ] && max=$v
@@ -42,7 +44,14 @@ else
 	version=${today}01
 fi
 
+# Release channels only carry an export the device coordinator passed on the
+# tablet: pmos/VERIFIED names that exact aports tree (scripts/pmos-verify).
+# Anything else goes to the dev channels only, as pre-releases.
+verified=no
+[ -f pmos/VERIFIED ] && [ "$(cut -d' ' -f1 pmos/VERIFIED)" = "$(git rev-parse HEAD:pmos/aports)" ] && verified=yes
+
 echo "upstream=$upstream"
+echo "verified=$verified"
 echo "fingerprint=$fingerprint"
 echo "last=$last"
 echo "build=$build"

@@ -7,7 +7,9 @@
 # firmware; without this, Wi-Fi, Bluetooth, audio DSPs, NFC, S Pen and the
 # other blobs are missing.
 #
-#   scripts/firmware-to-tablet            over the USB debug ssh (dev images)
+#   scripts/firmware-to-tablet            over the bring-up console (TCP 23,
+#                                         dev images; the default)
+#   scripts/firmware-to-tablet --ssh      over the USB debug ssh instead
 #   scripts/firmware-to-tablet --tar F    only write a tarball F to copy by hand:
 #       on the tablet:  sudo tar -xf F -C /var/lib/firmware --no-same-owner
 #   then reboot, or reload the drivers.
@@ -26,6 +28,25 @@ pack() { tar -C "$SRC" --exclude=samsung/gtactive3wifi/camera --owner=0 --group=
 if [ "${1:-}" = --tar ]; then
 	pack > "${2:?tarball path}"
 	echo "wrote $2 ($(($(stat -c %s "$2") >> 10)) KiB)"
+	exit 0
+fi
+
+if [ "${1:-}" != --ssh ]; then
+	t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
+	W=$(mktemp -d)
+	trap 'rm -rf "$W"' EXIT
+	pack > "$W/fw.tar"
+	sum=$(sha256sum "$W/fw.tar" | cut -c1-64)
+	flock "$P/build/tab.lock" "$P/scripts/tab-put" "$W/fw.tar" /run/gta3-fw.tar
+	printf '%s\n' "set -e" \
+		"echo '$sum  /run/gta3-fw.tar' | sha256sum -c -" \
+		"mkdir -p /var/lib/firmware" \
+		"tar -xf /run/gta3-fw.tar -C /var/lib/firmware --no-same-owner" \
+		"rm -f /run/gta3-fw.tar; sync" \
+		'echo "files: $(find /var/lib/firmware -type f | wc -l)"' > "$W/fw.sh"
+	flock "$P/build/tab.lock" "$P/scripts/tab-put" "$W/fw.sh" /run/gta3-fw.sh
+	t "run /bin/sh /run/gta3-fw.sh"
+	echo "firmware installed in /var/lib/firmware (takes effect at the next driver load or boot)"
 	exit 0
 fi
 
