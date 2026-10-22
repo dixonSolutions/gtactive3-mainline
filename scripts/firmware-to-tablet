@@ -14,6 +14,10 @@
 #       on the tablet:  sudo tar -xf F -C /var/lib/firmware --no-same-owner
 #   then reboot, or reload the drivers.
 #
+# Firmware installed this way is the owner's choice: it drops the marker
+# /var/lib/firmware/.imported, so the device package's first-boot import
+# from the ESP (/boot/gtactive3wifi-firmware.tar.zst) never replaces it.
+#
 # Not disruptive (writes files only), but follow docs/COORDINATION.md for
 # the shared tablet.
 set -euo pipefail
@@ -42,6 +46,7 @@ if [ "${1:-}" != --ssh ]; then
 		"echo '$sum  /run/gta3-fw.tar' | sha256sum -c -" \
 		"mkdir -p /var/lib/firmware" \
 		"tar -xf /run/gta3-fw.tar -C /var/lib/firmware --no-same-owner" \
+		"rm -f /var/lib/firmware/.imported" \
 		"rm -f /run/gta3-fw.tar; sync" \
 		'echo "files: $(find /var/lib/firmware -type f | wc -l)"' > "$W/fw.sh"
 	flock "$P/build/tab.lock" "$P/scripts/tab-put" "$W/fw.sh" /run/gta3-fw.sh
@@ -53,5 +58,5 @@ fi
 IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
 [ -n "$IFC" ] || { echo "tablet USB network not present" >&2; exit 1; }
 pack | ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "root@$LL%$IFC" \
-	'mkdir -p /var/lib/firmware && tar -xf - -C /var/lib/firmware --no-same-owner && find /var/lib/firmware -type f | wc -l'
+	'mkdir -p /var/lib/firmware && tar -xf - -C /var/lib/firmware --no-same-owner && rm -f /var/lib/firmware/.imported && find /var/lib/firmware -type f | wc -l'
 echo "firmware installed in /var/lib/firmware (takes effect at the next driver load or boot)"
