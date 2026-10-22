@@ -1,0 +1,106 @@
+From 73b0eac4bf17ed55c74a6261a66d2e3d1b42250d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:07:47 +1100
+Subject: [PATCH 2/2] libcamera: sensor: Add Samsung S5K3L6 and GalaxyCore
+ GC5035
+
+Add the camera sensor properties and the sensor helpers of the Samsung
+S5K3L6 (13MP, 1.12um) and the GalaxyCore GC5035 (5MP, 1.12um), the rear
+and front cameras of the Samsung Galaxy Tab Active3.
+
+The S5K3L6 analogue gain code is the gain in 1/32 (0x20 = 1x to
+0x200 = 16x). The GC5035 driver exposes the total gain in 1/256: it
+picks the largest analogue step below the request and makes up the
+rest with digital gain, so the code maps linearly as well.
+
+Signed-off-by: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+---
+ src/ipa/libipa/camera_sensor_helper.cpp       | 25 +++++++++++++++++++
+ .../sensor/camera_sensor_properties.cpp       | 21 ++++++++++++++++
+ 2 files changed, 46 insertions(+)
+
+diff --git a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+index 9457d62..f37f56a 100644
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -520,6 +520,19 @@ public:
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("gc08a3", CameraSensorHelperGc08a3)
+ 
++class CameraSensorHelperGc5035 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperGc5035()
++	{
++		/* 64 at 10bits. */
++		blackLevel_ = 4096;
++		/* Total gain in 1/256: analogue steps, digital for the rest. */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 256 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("gc5035", CameraSensorHelperGc5035)
++
+ class CameraSensorHelperHm1246 : public CameraSensorHelper
+ {
+ public:
+@@ -827,6 +840,18 @@ public:
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("ov13858", CameraSensorHelperOv13858)
+ 
++class CameraSensorHelperS5k3l6 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5k3l6()
++	{
++		/* 64 at 10bits. */
++		blackLevel_ = 4096;
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5k3l6", CameraSensorHelperS5k3l6)
++
+ class CameraSensorHelperVd55g1 : public CameraSensorHelper
+ {
+ public:
+diff --git a/src/libcamera/sensor/camera_sensor_properties.cpp b/src/libcamera/sensor/camera_sensor_properties.cpp
+index 2804315..7b9047b 100644
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -132,6 +132,16 @@ const CameraSensorProperties *CameraSensorProperties::get(const std::string &sen
+ 				.hblankDelay = 2
+ 			},
+ 		} },
++		{ "gc5035", {
++			.unitCellSize = { 1120, 1120 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
+ 		{ "hi846", {
+ 			.unitCellSize = { 1120, 1120 },
+ 			.testPatternModes = {
+@@ -503,6 +513,17 @@ const CameraSensorProperties *CameraSensorProperties::get(const std::string &sen
+ 			},
+ 			.sensorDelays = { },
+ 		} },
++		{ "s5k3l6", {
++			.unitCellSize = { 1120, 1120 },
++			.testPatternModes = {
++				{ controls::draft::TestPatternModeOff, 0 },
++				{ controls::draft::TestPatternModeSolidColor, 1 },
++				{ controls::draft::TestPatternModeColorBars, 2 },
++				{ controls::draft::TestPatternModeColorBarsFadeToGray, 3 },
++				{ controls::draft::TestPatternModePn9, 4 },
++			},
++			.sensorDelays = { },
++		} },
+ 		{ "vd55g1", {
+ 			.unitCellSize = { 2160, 2160 },
+ 			.testPatternModes = {
+-- 
+2.56.0
+
