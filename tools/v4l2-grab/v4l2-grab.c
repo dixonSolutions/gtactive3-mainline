@@ -8,7 +8,7 @@
  *   v4l2-grab ctrl DEV ID [VAL]        read (and set) control ID (hex, e.g.
  *                                      0x009f0903 test pattern) on a video
  *                                      or v4l-subdev node
- *   v4l2-grab grab VIDEO SUBDEV WxH OUT [FRAMES] [SKIP]
+ *   v4l2-grab grab VIDEO SUBDEV WxH OUT [FRAMES] [SKIP] [p10]
  *                                      set the sensor subdev to the mode
  *                                      nearest WxH and the video node to
  *                                      match, stream, drop SKIP (default 4)
@@ -48,7 +48,14 @@ static const struct {
 	{ MEDIA_BUS_FMT_SGBRG10_1X10, V4L2_PIX_FMT_SGBRG10 },
 	{ MEDIA_BUS_FMT_SGRBG10_1X10, V4L2_PIX_FMT_SGRBG10 },
 	{ MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_PIX_FMT_SRGGB10 },
+}, raw10p[] = {
+	/* MIPI RAW10 packed, 4 pixels in 5 bytes */
+	{ MEDIA_BUS_FMT_SBGGR10_1X10, V4L2_PIX_FMT_SBGGR10P },
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, V4L2_PIX_FMT_SGBRG10P },
+	{ MEDIA_BUS_FMT_SGRBG10_1X10, V4L2_PIX_FMT_SGRBG10P },
+	{ MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_PIX_FMT_SRGGB10P },
 };
+static int packed;		/* "p10" after the buffer count */
 
 static void fourcc_str(unsigned int f, char *s)
 {
@@ -176,7 +183,7 @@ static int cmd_grab(const char *vdev, const char *sdev, unsigned int w,
 	}
 	fmt.fmt.pix.width = sf.format.width;
 	fmt.fmt.pix.height = sf.format.height;
-	fmt.fmt.pix.pixelformat = raw10[i].fourcc;
+	fmt.fmt.pix.pixelformat = packed ? raw10p[i].fourcc : raw10[i].fourcc;
 	fmt.fmt.pix.field = V4L2_FIELD_NONE;
 	if (xioctl(vf, VIDIOC_S_FMT, &fmt, "VIDIOC_S_FMT") < 0)
 		return 1;
@@ -280,6 +287,7 @@ int main(int argc, char **argv)
 		return cmd_ctrl(argv[2], argv[3], argc > 4 ? argv[4] : NULL);
 	/* the console's "run" passes at most 7 arguments: WxH is one */
 	if (argc >= 6 && !strcmp(argv[1], "grab")) {
+		packed = argc > 8 && !strcmp(argv[8], "p10");
 		char *x;
 		unsigned int w = strtoul(argv[4], &x, 0);
 		unsigned int h = *x == 'x' ? strtoul(x + 1, NULL, 0) : 0;
