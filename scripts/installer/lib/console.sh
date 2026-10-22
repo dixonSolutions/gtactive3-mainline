@@ -71,6 +71,17 @@ part() {
 	printf '%s' "${PART_DEV[$1]}"
 }
 
+# android_os_live: "erased" when Android's super partition now holds a LUKS
+# volume (gtactive3wifi-claim-android-space on Duranium; the laptop's state
+# does not know about it), else the saved state. Needs the live console.
+android_os_live() {
+	if con_py get "$(part super)" 8 /dev/null 2>/dev/null |
+		python3 -I -c 'import sys; sys.exit(sys.stdin.buffer.read(6) != b"LUKS\xba\xbe")'; then
+		state_set ANDROID_OS erased
+	fi
+	state_get ANDROID_OS intact
+}
+
 # con_put LOCAL|- NAME|PATH LEN [LABEL]: write to a partition (by GPT name)
 # or a plain path, after the guard
 con_put() {

@@ -284,7 +284,7 @@ firmware_acquire() {
 	elif [ -n "$sup" ] && [ -f "$sup" ]; then
 		info "reading the firmware out of $(basename "$sup") (~1 minute)..."
 		fw_from_super_stream "$out" lz4 -dc "$sup"
-	elif [ "$where" = live ] && [ "$(state_get ANDROID_OS intact)" = intact ]; then
+	elif [ "$where" = live ] && [ "$(android_os_live)" = intact ]; then
 		info "reading the firmware out of Android's super partition on the tablet..."
 		end=$(con_py get "$(part super)" $((1 << 20)) /dev/null | PY_SUPERFS end vendor) ||
 			die "could not read Android's partition table"

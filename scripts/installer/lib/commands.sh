@@ -84,6 +84,8 @@ cmd_restore_android() {
 		die "Android's system is not on the tablet"
 	fi
 	ensure_live
+	[ "$(android_os_live)" = intact ] ||
+		die "Android's super partition is Duranium storage now (claim-android-space): flash the full stock firmware instead, see docs/INSTALL.md"
 	PAYLOAD_MKFS=${GTA3_MKFS:-/usr/sbin/mkfs.f2fs}
 	con_cmd "ls ${PAYLOAD_MKFS%/*}" | grep -qx "${PAYLOAD_MKFS##*/}" ||
 		die "this live environment has no mkfs.f2fs (update the boot chain: ./setup.sh --refresh)"

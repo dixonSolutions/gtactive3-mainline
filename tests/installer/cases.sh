@@ -446,6 +446,23 @@ t_restore_android_formats_userdata() {
 	no_violation
 }
 
+t_restore_android_refuses_claimed_super() {
+	live_tablet
+	setup install --yes-wipe --channel samsung-gtactive3wifi_phosh_edge-dev
+	rc_is 0
+	mock 's["sh"] = {}'
+	sed -i '/^ANDROID_BACKUP=/d' "$CASE/st/state.env"
+	# gtactive3wifi-claim-android-space on the tablet: super is LUKS now
+	printf 'LUKS\272\276\000\002' | dd of="$ROOT/dev/sda25" conv=notrunc status=none
+	cp "$ROOT/dev/sda31" "$CASE/userdata.before"
+	setup restore-android --yes-wipe --stock-recovery
+	rc_is 1
+	out_has "super partition is Duranium storage now"
+	st_is ANDROID_OS erased
+	cmp "$ROOT/dev/sda31" "$CASE/userdata.before" || fail "userdata was touched"
+	no_violation
+}
+
 t_restore_android_offers_backup() {
 	live_tablet
 	setup backup-android --yes
