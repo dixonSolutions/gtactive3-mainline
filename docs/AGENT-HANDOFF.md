@@ -5,6 +5,34 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-22 afternoon (coordinator)
+
+- Tablet: GNOME 26102209 is the known-good version. 26102210 (kernel r11)
+  hung at boot in C2 and was marked bad by boot counting. At ~13:54 the
+  "MCT" session's RECOVERY test kernel hung the tablet with no USB: the user
+  must force-reset; its RECOVERY backup (sha256 4412b2b8...) is in that
+  session's scratchpad (2107732b.../scratchpad/recovery-backup.img).
+- Kernel candidate: src/linux `cand/1022` = integ + drv/gpu-ui (AArch64 Mali
+  page tables: GPU memory test 0/230 failures, MMU IRQ unmask, DPU refuses
+  foreign dma-bufs) + drv/dvfs2 (ACPM DVFS on channel 0, PLL measured
+  208-1950 MHz; CPU idle) + drv/blank (backlight off on screen blank) +
+  drv/battemp-stage1 (ADC NTC zones, 1.5 A caps) + C2 disabled in the board
+  DT. Package r12 (build/wt/duranium-localpkgs); r9-r11 in build/wt/held-apks
+  (never use). Merge cand/1022 into integ/gtactive3wifi after r12 boots fine.
+- Images: the image session builds GNOME 26102212 + Phosh 26102213 on r12
+  with device r23. Deliver with scripts/duranium-update (also works from the
+  initrd prompt now; extensions are skipped there).
+- Night Light works through the HX83102E panel's own digital gamma (DCS
+  0xC1 banks 1-3), NOT the DPU HDR block (that garbled the picture and once
+  faulted the panel).
+- Open: C2 wake-up (PMU wake events / MCT broadcast; CPU-idle + MCT
+  sessions), big cores (cluster powers on via GRP1, core never runs:
+  CRP_PM_CC1_0), charging current 3.1 A (waits for the user), cameras
+  (drv/cam, first power-up test pending), auto-rotate (sensor-hub session),
+  suspend (nobody yet).
+- Laptop: 16 GB disk swapfile under zram + vm.min_free_kbytes=131072 after
+  an OOM killed the desktop app; heavy jobs hold build/kbuild.lock, -j8.
+
 ## Who / what
 
 - Device: Samsung Galaxy Tab Active3 Wi-Fi, **SM-T570** "gtactive3wifi", Exynos 9810
@@ -17,8 +45,9 @@ yourself, autonomously, overnight. Keep going until the mission is met.
 - **Mission (user's words, condensed):** postmarketOS **Duranium** (immutable,
   systemd, UKI + systemd-boot, A/B sysupdate) with a **GNOME-family UI**
   (`postmarketos-base-ui-gnome-duranium`; never KDE Plasma; the user only
-  excluded Plasma). 2026-10-22 the user chose **Phosh** (phone-style app grid,
-  `UI=phosh`) and wants several UI download options later, with releases
+  excluded Plasma). 2026-10-22: **maintain both a GNOME image (`UI=gnome`,
+  the daily system / fallback) and a Phosh image (`UI=phosh`, the one to test
+  now)**; the user wants several UI download options later, with releases
   rebuilt automatically on new postmarketOS publishes, so the project only
   maintains drivers and kernel: keep device packages UI-neutral. Every piece of hardware working and verified on the device, drivers
   built from Samsung's GPL kernel + stock DT + the reverse-engineered firmware,
@@ -45,8 +74,10 @@ yourself, autonomously, overnight. Keep going until the mission is met.
    serial or the MAC addresses (firmware/device-snapshot). Raw REA/Ghidra output
    stays in gitignored `firmware/re-targets/`; write our own interface docs to
    `docs/re/`.
-6. The user stopped all background sub-agents; do NOT relaunch agents unless
-   the user asks. Work yourself.
+6. 2026-10-22 the user asked for parallel sessions/agents. Several Claude
+   sessions now share the tablet and the laptop: follow docs/COORDINATION.md
+   (device lock, A/B updates only, one image builder, memory rules). The
+   coordinator session is "PostmarketOS duranium bootloader unlock".
 7. Don't use `pkill -f`/`pgrep -f` with patterns that also match your own shell
    command line (it killed/matched our own shells several times). Use PIDs.
 8. Some destructive/remote-write actions get blocked by the auto-mode
