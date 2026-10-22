@@ -3,56 +3,80 @@
 #
 #   upstream   postmarketOS's newest published Duranium version (their
 #              weekly image build, https://duranium.nura.eco/images/)
-#   ours       tree hash of what we maintain (pmos/ and ci/ and the
-#              workflow), i.e. a kernel / driver / device change
-#   fingerprint  both together; it is stored in every release's notes
-#   build      yes when no channel has been published with this
-#              fingerprint yet (or FORCE=1)
-#   verified   yes when pmos/VERIFIED matches the exported aports: only
-#              then are the release (non-dev) channels built and published
-#   version    the next image version: YYMMDDNN, above everything any
-#              channel ever published
+#   fingerprint  upstream + a hash of what we maintain and what makes the
+#              images (pmos/, ci/{prepare,channels,publish,check-image},
+#              images.yml); stored in every release's notes
+#   verified   yes when pmos/VERIFIED names the exported aports and
+#              duranium-build trees: only then are the release (non-dev)
+#              channels built and published
+#   build      yes when a channel that this run would publish does not carry
+#              this fingerprint yet (or FORCE=1)
+#   version    the next image version, YYMMDDNN: above every version any
+#              channel ever published and above MIN_VERSION (local builds
+#              that tablets run, so the next remote update replaces them)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO=${GITHUB_REPOSITORY:-dixonSolutions/gtactive3-mainline}
+warn() { echo "::warning::$*" >&2; }
 
-upstream=$(curl -fsSL --retry 3 https://duranium.nura.eco/images/mkosi.version | tr -dc 0-9)
-[ ${#upstream} = 8 ] || { echo "cannot read postmarketOS's mkosi.version" >&2; exit 1; }
-ours=$(git rev-parse HEAD:pmos)-$(git rev-parse HEAD:ci)-$(git rev-parse HEAD:.github/workflows)
-fingerprint="pmos-$upstream/ours-$(echo "$ours" | sha256sum | cut -c1-16)"
+# shellcheck disable=SC2016 # literal backquotes
+fp_of() { sed -n 's/^Fingerprint: `\(.*\)`$/\1/p' | head -1; }
 
-last=
+verified=no
+aports=$(git rev-parse HEAD:pmos/aports)
+dbuild=$(git rev-parse HEAD:pmos/duranium-build)
+if [ -f pmos/VERIFIED ] &&
+	grep -q "^aports=$aports duranium-build=$dbuild " pmos/VERIFIED; then
+	verified=yes
+fi
+
+declare -A have
 max=0
 while read -r ui ch tag; do
-	body=$(gh release view "$tag" -R "$REPO" --json body -q .body 2>/dev/null || true)
-	f=$(printf '%s\n' "$body" | sed -n 's/^Fingerprint: `\(.*\)`$/\1/p' | head -1)
-	[ "$ch" = dev ] && [ "$ui" = phosh ] && last=$f
-	for v in $(gh release view "$tag" -R "$REPO" --json assets -q '.assets[].name' 2>/dev/null |
-		sed -n 's/.*_\([0-9]\{8\}\)\.efi$/\1/p'); do
+	json=$(gh release view "$tag" -R "$REPO" --json body,assets 2>/dev/null || echo '{}')
+	have[$ui-$ch]=$(jq -r '.body // ""' <<<"$json" | fp_of)
+	for v in $(jq -r '.assets[]?.name' <<<"$json" | sed -n 's/.*_\([0-9]\{8\}\)\.efi$/\1/p'); do
 		[ "$v" -gt "$max" ] && max=$v
 	done
 done < <(sh ci/channels)
 
+if upstream=$(curl -fsSL --retry 3 https://duranium.nura.eco/images/mkosi.version | tr -dc 0-9) &&
+	[ ${#upstream} = 8 ]; then
+	:
+else
+	# their server is down: build on the base the dev channel was built on
+	upstream=$(sed -n 's|^pmos-\([0-9]\{8\}\)/.*|\1|p' <<<"${have[phosh-dev]:-}")
+	[ -n "$upstream" ] || { echo "cannot read postmarketOS's mkosi.version" >&2; exit 1; }
+	warn "duranium.nura.eco unreachable: assuming postmarketOS base $upstream"
+fi
+ours=$(git rev-parse HEAD:pmos)
+for f in ci/prepare ci/channels ci/publish ci/check-image .github/workflows/images.yml; do
+	ours="$ours-$(git rev-parse "HEAD:$f")"
+done
+fingerprint="pmos-$upstream/ours-$(echo "$ours" | sha256sum | cut -c1-16)"
+
 build=no
-[ "$fingerprint" != "$last" ] && build=yes
+for ui in phosh gnome; do
+	[ "${have[$ui-dev]:-}" = "$fingerprint" ] || build=yes
+	[ $verified = no ] || [ "${have[$ui-release]:-}" = "$fingerprint" ] || build=yes
+done
 [ "${FORCE:-}" = 1 ] && build=yes
 
+floor=${MIN_VERSION:-0}
+[[ $floor =~ ^[0-9]{8}$ ]] || [ "$floor" = 0 ] || { echo "MIN_VERSION must be YYMMDDNN, not '$floor'" >&2; exit 1; }
+[ "$floor" -gt "$max" ] && max=$floor
 today=$(date -u +%y%m%d)
-if [ "${max:0:6}" = "$today" ]; then
-	version=$today$(printf %02d $((10#${max:6:2} + 1)))
+if [ "${max:0:6}" -ge "$today" ]; then
+	# same day (or a floor ahead of today): next revision of that day
+	nn=$((10#${max:6:2} + 1))
+	[ "$nn" -le 99 ] || { echo "no revision left after $max" >&2; exit 1; }
+	version=${max:0:6}$(printf %02d "$nn")
 else
 	version=${today}01
 fi
 
-# Release channels only carry an export the device coordinator passed on the
-# tablet: pmos/VERIFIED names that exact aports tree (scripts/pmos-verify).
-# Anything else goes to the dev channels only, as pre-releases.
-verified=no
-[ -f pmos/VERIFIED ] && [ "$(cut -d' ' -f1 pmos/VERIFIED)" = "$(git rev-parse HEAD:pmos/aports)" ] && verified=yes
-
 echo "upstream=$upstream"
 echo "verified=$verified"
 echo "fingerprint=$fingerprint"
-echo "last=$last"
 echo "build=$build"
 echo "version=$version"
