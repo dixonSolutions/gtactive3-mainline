@@ -11,6 +11,9 @@
  *     link-local: dmesg, peek/poke of physical registers, reboot.
  *  5. If no USB host configures the gadget within the timeout, reboots into
  *     Download mode so the host can flash the next attempt.
+ *  6. When it runs because the watchdog reset a Duranium that U-Boot had
+ *     already handed over to, restarts Duranium after 15 s, at most twice
+ *     in a row (see os_hang_check()).
  */
 #include <linux/input.h>
 #include <linux/reboot.h>
@@ -26,7 +29,10 @@
 #define PMU_BASE	0x14060000UL
 #define PMU_INFORM2	0x0808
 #define PMU_INFORM3	0x080c
+#define PMU_RST_STAT	0x0404
+#define RST_CL0_WDTRESET	(1u << 24)
 #define SEC_POWER_RESET		0x12345678
+#define SEC_REASON_NORMAL	0x12345670
 #define SEC_REASON_DOWNLOAD	0x12345671
 
 #define CMU_TOP_BASE	0x1a240000UL
@@ -254,6 +260,94 @@ static void reboot_to(const char *mode)
 	__nolibc_syscall4(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
 			  LINUX_REBOOT_CMD_RESTART2, mode);
 }
+
+/* ---------- restarting a hung Duranium (bring-up init only) ---------- */
+
+#ifndef CONSOLE_STDIO
+/*
+ * uniLoader's boot record, the 4 KiB page after U-Boot's RAM log, as U-Boot
+ * reads it (exynos_show_uniloader_record()): word 0 "ULCH", word 5 RST_STAT
+ * of this boot, word 19 the stage. U-Boot sets stage 7 when it hands over
+ * to the OS; stage 3 makes uniLoader's next regular boot chain U-Boot again
+ * (scripts/duranium-boot writes the same).
+ */
+#define UL_RECORD	0x8ff1ff000UL
+#define UL_MAGIC	0x48434c55
+#define UL_RST_STAT	(UL_RECORD + 4 * 5)
+#define UL_STAGE	(UL_RECORD + 4 * 19)
+#define UL_STAGE_CHAIN	3
+#define UL_STAGE_OS	7
+
+/*
+ * Our restart record, the last 16 bytes of that page: "HRTY", restarts in
+ * a row, and a flag set while a restart is on its way. U-Boot clears the
+ * flag, and the count on any boot that is not such a restart, so only
+ * hangs in a row count (exynos_account_hang_retry()). DRAM keeps it over
+ * resets and Download mode, not over a power-off.
+ */
+#define HR_BASE		(UL_RECORD + 0xff0)
+#define HR_MAGIC	0x59545248
+#define HR_COUNT	(HR_BASE + 4)
+#define HR_PENDING	(HR_BASE + 8)
+#define HR_MAX		2
+#define HR_DELAY_S	15
+/* the "stay" console command leaves this behind */
+#define HR_STAY_FILE	"/stay"
+
+static unsigned int hang_restarts(void)
+{
+	unsigned int magic = 0, n = 0;
+
+	if (peek(HR_BASE, &magic) || magic != HR_MAGIC || peek(HR_COUNT, &n))
+		return 0;
+	return n;
+}
+
+/*
+ * Did the watchdog reset an OS that U-Boot had already started (stage 7)?
+ * Then a kernel hung, not this chain: say so and return 1 if Duranium may
+ * be restarted once more. The stage goes back to 3 either way, so that a
+ * later reset of this Linux is not taken for another OS hang. A watchdog
+ * reset before the handover (U-Boot's "Bring-up Linux" menu entry, which
+ * fires it on purpose) leaves the stage at 4 and is not touched.
+ */
+static int os_hang_check(void)
+{
+	unsigned int magic = 0, rst = 0, now = 0, stage = 0, n;
+	char b[96];
+
+	if (peek(UL_RECORD, &magic) || magic != UL_MAGIC ||
+	    peek(UL_STAGE, &stage) || peek(UL_RST_STAT, &rst))
+		return 0;
+	peek(PMU_BASE + PMU_RST_STAT, &now);
+	if (stage != UL_STAGE_OS || !((rst | now) & RST_CL0_WDTRESET))
+		return 0;
+
+	poke(UL_STAGE, UL_STAGE_CHAIN);
+	n = hang_restarts();
+	if (n >= HR_MAX) {
+		snprintf(b, sizeof(b), "\nDuranium stopped responding, %u restarts in a row did not help:\n", n);
+		out(b);
+		out("staying in the recovery console.\n");
+		return 0;
+	}
+	snprintf(b, sizeof(b), "\nDuranium stopped responding; restarting it in %d s\n", HR_DELAY_S);
+	out(b);
+	out("(Volume Up: stay in the recovery console; console command \"stay\" too)\n");
+	return 1;
+}
+
+static void os_restart(void)
+{
+	poke(HR_COUNT, hang_restarts() + 1);
+	poke(HR_PENDING, 1);
+	poke(HR_BASE, HR_MAGIC);
+	/* undo arm_download_on_reset(): back through uniLoader to U-Boot */
+	poke(PMU_BASE + PMU_INFORM2, SEC_POWER_RESET);
+	poke(PMU_BASE + PMU_INFORM3, SEC_REASON_NORMAL);
+	reboot_to("normal");
+}
+#endif /* !CONSOLE_STDIO */
 
 /* ---------- MAX77705: route USB D+/D- to the AP ---------- */
 
@@ -610,6 +704,14 @@ static void serve(int c)
 			}
 		} else if (!strcmp(line, "ulog")) {
 			ulog_print(c);
+#ifndef CONSOLE_STDIO
+		} else if (!strcmp(line, "stay")) {
+			/* cancel a pending restart of a hung Duranium (main loop) */
+			int fd = open(HR_STAY_FILE, O_WRONLY | O_CREAT, 0644);
+
+			if (fd >= 0) close(fd);
+			wr(c, fd < 0 ? "error\n" : "ok\n");
+#endif
 		} else if (!strncmp(line, "dump ", 5)) {
 			/* dump ADDR COUNT: COUNT 32-bit registers */
 			const char *e;
@@ -876,7 +978,7 @@ int main(void)
 	char udc[64] = "", path[128];
 	int host_seen = 0;
 	struct input_event ev;
-	int keys, lsock, i;
+	int keys, lsock, i, restart;
 
 	mkdir("/proc", 0755); mkdir("/sys", 0755); mkdir("/dev", 0755);
 	mount("proc", "/proc", "proc", 0, 0);
@@ -992,14 +1094,38 @@ int main(void)
 	if (lsock >= 0)
 		__nolibc_syscall3(__NR_fcntl, lsock, 4 /* F_SETFL */, O_NONBLOCK);
 
+	/* countdown in main-loop ticks (100 ms) to restarting Duranium, 0 = none */
+	restart = os_hang_check() ? HR_DELAY_S * 10 : 0;
+
 	for (i = 0;; i++) {
 		int c;
 
 		if (keys >= 0 && read(keys, &ev, sizeof(ev)) == sizeof(ev) &&
 		    ev.type == EV_KEY && ev.value == 1) {
 			out("Key: "); out(keyname(ev.code)); out("\n");
-			if (ev.code == KEY_VOLUMEUP)
+			if (ev.code == KEY_VOLUMEUP && restart) {
+				restart = 0;
+				out("Staying in the recovery console. VOLUME UP again = Download mode.\n");
+			} else if (ev.code == KEY_VOLUMEUP) {
 				reboot_to("download");
+			}
+		}
+		if (restart) {
+			int fd = open(HR_STAY_FILE, O_RDONLY);
+
+			if (fd >= 0) {
+				close(fd);
+				restart = 0;
+				out("Staying in the recovery console (\"stay\" from the host).\n");
+			} else if (--restart == 0) {
+				out("Restarting Duranium.\n");
+				os_restart();
+			} else if (restart % 50 == 0) {
+				char b[32];
+
+				snprintf(b, sizeof(b), "  restarting in %d s\n", restart / 10);
+				out(b);
+			}
 		}
 		if (lsock >= 0) {
 			c = __nolibc_syscall4(__NR_accept4, lsock, 0, 0, 0);
