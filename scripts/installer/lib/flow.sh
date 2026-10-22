@@ -74,9 +74,11 @@ to_download() {
 	kg_screen_check
 }
 
-# flash_boot linux|chain|stock: Download mode, then BOOT
+# flash_boot linux|chain|stock [PART FILE ...]: Download mode, then BOOT
+# (and the extra partitions in the same session)
 flash_boot() {
 	local what=$1 img
+	shift
 	case $what in
 		linux) img=$(state_get BOOT_LINUX) ;;
 		chain) img=$(state_get BOOT_CHAIN) ;;
@@ -86,9 +88,10 @@ flash_boot() {
 	if [ "$what" = stock ] && [ -s "$img" ] && [ "$(sha256sum "$img" | cut -c1-64)" != "$(state_get STOCK_BOOT_SHA)" ]; then
 		die "the saved stock boot image does not match its recorded hash: $img"
 	fi
+	# no PIT read first: after a heimdall session without reboot the next
+	# one needs --resume, and a stray session confuses later runs
 	to_download
-	pit_check
-	flash BOOT "$img" || die "flashing BOOT failed"
+	flash BOOT "$img" "$@" || die "flashing failed"
 	state_set BOOT_NOW "$what"
 	[ "$what" = stock ] || tablet_box "Next on the tablet" \
 		"\"The bootloader is unlocked and software integrity cannot be" \

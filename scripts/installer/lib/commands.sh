@@ -108,10 +108,11 @@ cmd_restore_android() {
 	con_discard metadata
 	state_set ANDROID_DATA formatted
 	state_set STAGE unlocked
-	flash_boot stock
-	if [ "${OPT_STOCK_RECOVERY:-0}" = 1 ] && [ -s "$(state_get STOCK_RECOVERY)" ]; then
-		to_download
-		flash RECOVERY "$(state_get STOCK_RECOVERY)" || die "flashing RECOVERY failed"
+	if [ "${OPT_STOCK_RECOVERY:-0}" = 1 ]; then
+		[ -s "$(state_get STOCK_RECOVERY)" ] || die "no stock recovery image saved (it comes from --stock-ap)"
+		flash_boot stock RECOVERY "$(state_get STOCK_RECOVERY)"
+	else
+		flash_boot stock
 	fi
 	tablet_box "Android's first start" \
 		"It can take 5-10 minutes and restart once. Then the setup screens," \
@@ -336,8 +337,7 @@ cmd_status() {
 		adb-*)
 			info "Android with adb state ${w#adb-}"; adb_connect 30 || true ;;
 		download)
-			ok "Download mode"
-			pit_names | tr '\n' ' ' | fold -w 76 | sed 's/^/    /'; echo ;;
+			ok "Download mode (heimdall sees the tablet)" ;;
 		live)
 			ok "live environment (our Linux): $(con_cmd 'cat /proc/version' | head -c 80)"
 			read_partitions

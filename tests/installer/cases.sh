@@ -257,7 +257,7 @@ t_stage1_dry_run_changes_nothing() {
 	new_tablet android; start_console
 	setup live --yes --dry-run --stock-ap "$AP_TAR" --payload "$PAYLOAD_DIR"
 	rc_is 0
-	out_has "[dry-run] heimdall flash --BOOT"
+	out_has "[dry-run] flash BOOT: heimdall flash --BOOT"
 	boot_is stock
 	mode_is android
 	log_lacks flash
@@ -430,8 +430,9 @@ t_restore_android_formats_userdata() {
 	rc_is 0
 	mock 's["sh"] = {}'
 	sed -i '/^ANDROID_BACKUP=/d' "$CASE/st/state.env"   # the install made one; pretend there is none
-	setup restore-android --yes-wipe
+	setup restore-android --yes-wipe --stock-recovery
 	rc_is 0
+	log_has "flash RECOVERY stock"
 	log_has "mkfs -gandroid -Oencrypt,extra_attr,project_quota,quota,verity -t0 -ldata /dev/sda31"
 	log_has "discard /dev/sda24"
 	out_has "features 0x499"
@@ -545,7 +546,7 @@ t_status_in_every_mode() {
 	rc_is 0; out_has "SM-T570 (gtactive3wifi)"
 	mock 's["mode"] = "download"'
 	setup status
-	rc_is 0; out_has "Download mode"; out_has "BOOT"
+	rc_is 0; out_has "Download mode (heimdall sees the tablet)"
 	mock 's["mode"] = "bringup"'
 	setup status
 	rc_is 0; out_has "live environment (our Linux)"; out_has "userdata /dev/sda31"
