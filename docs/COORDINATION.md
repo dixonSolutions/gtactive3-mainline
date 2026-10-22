@@ -29,6 +29,13 @@ section 1).
 
 - All kernel / package / image builds hold `build/kbuild.lock` (scripts
   already do). One heavy build at a time; keep `scripts/thermal-guard` running.
+- **Memory (16 GB RAM, the laptop OOM-killed the desktop app on
+  2026-10-22):** every heavy job holds `build/kbuild.lock`, not only builds:
+  Ghidra/`rea` analysis and decompile batches (the JVM takes up to 4 GB),
+  mkosi, podman builds, big `make` runs. Use `-j8` at most for make. Do not
+  leave JVMs, dev servers or other large processes running when idle.
+  zram is RAM-backed and is not a safety net; a 16 GB disk swapfile
+  (/var/swap/swapfile, priority 10) and vm.min_free_kbytes=131072 are.
 - Kernel work happens on your own branch in your own worktree
   (`git -C src/linux worktree add ../../build/wt/<name> -b drv/<name> integ`,
   out of tree `O=build/wt/<name>-out`). Only the coordinator merges into
