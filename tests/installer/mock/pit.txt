@@ -1,0 +1,40 @@
+Heimdall v2.1.0 (test fixture: a reduced SM-T570 partition table)
+
+Entry Count: 6
+--- Entry #0 ---
+Binary Type: 0 (AP)
+Device Type: 8 (UFS)
+Identifier: 1
+Partition Block Count: 5120
+Partition Name: EFS
+Flash Filename: efs.img
+
+--- Entry #1 ---
+Identifier: 12
+Partition Block Count: 15104
+Partition Name: BOOT
+Flash Filename: boot.img
+
+--- Entry #2 ---
+Identifier: 13
+Partition Block Count: 17360
+Partition Name: RECOVERY
+Flash Filename: recovery.img
+
+--- Entry #3 ---
+Identifier: 22
+Partition Block Count: 16
+Partition Name: VBMETA
+Flash Filename: vbmeta.img
+
+--- Entry #4 ---
+Identifier: 25
+Partition Block Count: 1740800
+Partition Name: SUPER
+Flash Filename: super.img
+
+--- Entry #5 ---
+Identifier: 31
+Partition Block Count: 0
+Partition Name: USERDATA
+Flash Filename: userdata.img
