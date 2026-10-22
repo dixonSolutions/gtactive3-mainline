@@ -106,7 +106,7 @@ release_index() {
 
 # choose_image: sets IMG_CHANNEL IMG_VERSION IMG_UI IMG_FLAVOUR
 choose_image() {
-	local idx=$CACHE_DIR/releases.json lines n i c opts=() def=1 ch
+	local idx=$CACHE_DIR/releases.json lines n i c opts=() def=0 ch rec
 	step "Choose the image"
 	release_index "$idx"
 	lines=$(PY_REL channels "$idx")
@@ -116,11 +116,18 @@ choose_image() {
 		c=$(printf '%s\n' "$lines" | grep -n "^$OPT_CHANNEL	" | cut -d: -f1)
 	else
 		i=1
+		# Phosh is the recommended UI (a touch-first shell for the tablet):
+		# its release image is the default, else its dev image
 		while IFS=$'\t' read -r _ ui fl ver _ latest title; do
-			opts+=("$title: $latest$( [ "$fl" = dev ] && printf ' (dev: USB debug layer, passwordless root over USB)')$( [ "$ver" = yes ] && printf ', tested on the device' || printf ', not yet confirmed on a device')")
-			[ "$ui" = phosh ] && [ "$fl" = release ] && def=$i
+			rec=
+			if [ "$ui" = phosh ] && { [ "$fl" = release ] || [ "$def" = 0 ]; }; then
+				def=$i
+			fi
+			[ "$ui" = phosh ] && rec=' [recommended]'
+			opts+=("$title$rec: $latest$( [ "$fl" = dev ] && printf ' (dev: USB debug layer, passwordless root over USB)')$( [ "$ver" = yes ] && printf ', tested on the device' || printf ', not yet confirmed on a device')")
 			i=$((i + 1))
 		done <<< "$lines"
+		[ "$def" != 0 ] || def=1
 		c=$(choose "Which image?" "$def" "${opts[@]}")
 	fi
 	ch=$(printf '%s\n' "$lines" | sed -n "${c}p")

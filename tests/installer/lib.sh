@@ -227,7 +227,7 @@ new_tablet() {
 		    "sys.oem_unlock_allowed": "1", "knox.kg.state": "Completed"},
 		  "settings": {"development_settings_enabled": "1"},
 		  "vendor_readable": True, "image_flavour": "dev", "events": [], "log": [],
-		  "os_release": 'ID=postmarketos\nIMAGE_VERSION="26102213"\nVARIANT_ID=phosh\n',
+		  "os_release": 'ID="nura"\nIMAGE_ID=samsung-gtactive3wifi\nIMAGE_VERSION="26102213"\nVARIANT_ID=phosh\n',
 		  "sh": {"remote": "1111  -\n", "versions": "26102213\n26102201\n",
 		         "status": "image:   samsung-gtactive3wifi_phosh_edge 26102213 (phosh)\n",
 		         "updatectl-check": "26102213 (current)\n", "updatectl-update": "started\n",

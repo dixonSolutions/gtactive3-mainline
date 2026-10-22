@@ -8,7 +8,7 @@ import sys
 
 out, ver = sys.argv[1], sys.argv[2]
 usrhash = sys.argv[3] if len(sys.argv) > 3 else "ab" * 32
-osrel = (f'ID=postmarketos\nIMAGE_ID=samsung-gtactive3wifi_phosh_edge\nIMAGE_VERSION="{ver}"\n'
+osrel = (f'ID=nura\nIMAGE_ID=samsung-gtactive3wifi_phosh_edge\nIMAGE_VERSION="{ver}"\n'
          f"VARIANT_ID=phosh\n").encode()
 cmdline = f"usrhash={usrhash} quiet\n".encode()
 dos = bytearray(64)

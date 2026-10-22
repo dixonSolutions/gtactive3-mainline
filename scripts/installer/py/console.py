@@ -196,7 +196,9 @@ def main():
             r = until_prompt(s).decode(errors="replace")
             s.close()
             kv = dict(ln.split("=", 1) for ln in r.splitlines() if "=" in ln)
-            if kv.get("ID", "").strip('"') == "postmarketos":
+            # Duranium images say ID=nura (upstream's name); the bring-up
+            # Linux has no os-release at all
+            if kv.get("IMAGE_ID", "").strip('"').startswith("samsung-gtactive3wifi"):
                 print("duranium", kv.get("IMAGE_VERSION", "?").strip('"'),
                       kv.get("VARIANT_ID", "?").strip('"'))
             else:

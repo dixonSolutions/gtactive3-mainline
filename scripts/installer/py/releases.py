@@ -99,6 +99,10 @@ def main():
     d = load(a[1])
     chans = d.get("channels", [])
     if a[0] == "channels":
+        # Phosh (recommended) first, release before dev
+        order = {"phosh": 0, "gnome": 1}
+        chans = sorted(chans, key=lambda c: (order.get(c.get("ui"), 2),
+                                             c.get("flavour") != "release"))
         for c in chans:
             if not c.get("latest"):
                 continue

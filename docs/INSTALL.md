@@ -133,7 +133,8 @@ back and starts Android exactly as it was, with apps and data.
 
 `./setup.sh install` (or menu item 2):
 
-1. Choose the image: **Phosh** or **GNOME**, **release** or **dev**. Dev
+1. Choose the image: **Phosh** (recommended, the default: a touch-first
+   shell made for phones and tablets) or **GNOME**, **release** or **dev**. Dev
    images run a root shell, ssh and adb on the USB cable **without a
    password**: only for development tablets. Images marked "not yet
    confirmed on a device" have not passed the on-device test yet.
