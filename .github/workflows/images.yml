@@ -191,6 +191,8 @@ jobs:
           - duranium-build \`${{ needs.packages.outputs.duranium_build }}\`, pmaports \`${{ needs.packages.outputs.pmaports }}\`
           - Vendor firmware is not included: install yours from your own stock firmware (docs/RELEASES.md)
 
+          Verified on the device: ${{ needs.state.outputs.verified }}
+
           Fingerprint: \`${{ needs.state.outputs.fingerprint }}\`
           EOF
           )"
