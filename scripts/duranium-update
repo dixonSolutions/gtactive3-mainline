@@ -138,9 +138,10 @@ if [ -n "$OLDV" ] && [ "$OLDV" != "$BOOTV" ] && [ "$OLDV" != "$V" ]; then
 	[ "$(echo "$ESP0" | wc -w)" = 1 ] || die "expected one ESP, got '$ESP0'"
 	log "retiring the $OLDV boot entry (its slot is rewritten now; booted: $BOOTV)"
 	trun retire "set -e
-E=/run/upd-esp; mkdir -p \$E; mountpoint -q \$E || mount -t vfat /dev/$ESP0 \$E
+E=\$(findmnt -n -o TARGET --source /dev/$ESP0 | head -1)
+if [ -n \"\$E\" ]; then mount -o remount,rw \"\$E\"; else E=/run/upd-esp; mkdir -p \$E; mount -t vfat /dev/$ESP0 \$E; fi
 rm -f \$E/EFI/Linux/*_${OLDV}.efi \$E/EFI/Linux/*_${OLDV}+*.efi
-sync; ls \$E/EFI/Linux; umount \$E"
+sync; ls \$E/EFI/Linux; [ \$E != /run/upd-esp ] || umount \$E"
 fi
 
 IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
@@ -202,6 +203,13 @@ chk "$VTY" "/dev/$TV" "$VLEN" verity
 chk "$UKI" /run/new.efi "$(stat -c %s "$UKI")" UKI
 log "hashes match"
 
+# In the initrd (the disk passphrase not typed yet) /var is the initrd's
+# tmpfs, not the encrypted root: extensions copied there vanish at the reboot.
+INITRD=$(t "cat /etc/initrd-release" 2>/dev/null | grep -c . || true)
+if [ "${#EXTS[@]}" -gt 0 ] && [ "${INITRD:-0}" -gt 0 ]; then
+	log "extensions: skipped, the tablet is in the initrd (root still locked); run the update again from the booted system to install them"
+	EXTS=()
+fi
 if [ "${#EXTS[@]}" -gt 0 ]; then
 	XS=/var/lib/duranium-extensions
 	CURV=$(t "cat /usr/lib/os-release" | sed -n 's/^IMAGE_VERSION="\{0,1\}\([0-9]*\).*/\1/p')
@@ -237,16 +245,22 @@ sfdisk -q --part-uuid \$D $iv $NV 2>&1 | grep -v Re-reading || true
 [ \"\$(sfdisk --part-uuid \$D $iv | tr A-F a-f)\" = $NV ] || { echo 'verity uuid not set'; exit 1; }
 echo \"labels: \$(sfdisk --part-label \$D $iu) \$(sfdisk --part-label \$D $iv)\"
 # the console runs in its own mount namespace: mount the ESP here
-E=/run/upd-esp
-mkdir -p \$E
-mountpoint -q \$E || mount -t vfat /dev/$ESP \$E
-ls \$E/EFI/Linux/*.efi >/dev/null || { echo 'ESP has no UKIs: wrong partition?'; umount \$E; exit 1; }
+# reuse a mount the boot automount may already hold (possibly read-only)
+E=\$(findmnt -n -o TARGET --source /dev/$ESP | head -1)
+if [ -n \"\$E\" ]; then
+	mount -o remount,rw \"\$E\"
+else
+	E=/run/upd-esp
+	mkdir -p \$E
+	mount -t vfat /dev/$ESP \$E
+fi
+ls \$E/EFI/Linux/*.efi >/dev/null || { echo 'ESP has no UKIs: wrong partition?'; [ \$E = /run/upd-esp ] && umount \$E; exit 1; }
 cp /run/new.efi \$E/EFI/Linux/${NAME}_${V}+2-0.efi.tmp
 sync
 mv \$E/EFI/Linux/${NAME}_${V}+2-0.efi.tmp \$E/EFI/Linux/${NAME}_${V}+2-0.efi
 sync
 ls -l \$E/EFI/Linux
-umount \$E
+[ \$E != /run/upd-esp ] || umount \$E
 rm -f /run/new.efi
 echo 'update applied'")
 echo "$R"
