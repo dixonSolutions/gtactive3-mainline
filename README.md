@@ -33,6 +33,19 @@ Exynos 9810), with the goal of running postmarketOS Duranium.
   the tablets update from: see [docs/RELEASES.md](docs/RELEASES.md)
 - `HARDWARE.md`: hardware map from the stock firmware, `PLAN.md`: roadmap
 
+## Install
+
+On a Linux PC, with the tablet on USB:
+
+```
+./setup.sh --stock-ap AP_<your firmware>.tar.md5
+```
+
+It first only puts our Linux into BOOT (Android stays as it is, `./setup.sh
+undo` brings it back), then offers a full Android backup and the install.
+Step by step, requirements and the way back to Android:
+[docs/INSTALL.md](docs/INSTALL.md).
+
 ## Downloads and updates
 
 Images (Phosh, GNOME; release and development channels) are in the
