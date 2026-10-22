@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:23:00 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: CMA 256 MiB for the camera
+ buffers
+
+camera.config raised the CMA size over gtactive3wifi.config's 128 MiB,
+which the fragment check reports as a line not applied (two fragments
+setting one symbol). The size belongs to the one place that sets it:
+256 MiB in gtactive3wifi.config, with the reason (scanout ~40 MiB plus
+contiguous 32-bit camera capture buffers: 16 MiB per full-resolution
+rear frame, 4 queued plus a 20 MiB scratch frame).
+
+Checked: gen-kernel-config.sh against a copy of the aport passes with
+KREF=drv/cam (camera drivers =m) and KREF=cand/1022 (camera symbols
+skipped with warnings).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/camera.config        | 6 ++----
+ contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config | 8 ++++++--
+ 2 files changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/camera.config b/contrib/samsung-gtactive3wifi/kernel/camera.config
+index d931cda..b5355d7 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/camera.config
++++ b/contrib/samsung-gtactive3wifi/kernel/camera.config
+@@ -15,10 +15,8 @@ CONFIG_VIDEO_EXYNOS9810_CSIS=m
+ CONFIG_VIDEO_CAMERA_SENSOR=y
+ CONFIG_VIDEO_S5K3L6=m
+ CONFIG_VIDEO_GC5035=m
+-# The capture buffers are physically contiguous below 4 GiB (the camera
+-# SysMMU is left in bypass): a full-resolution rear frame is 16 MB, the
+-# software ISP keeps several, and the display takes ~40 MB already
+-CONFIG_CMA_SIZE_MBYTES=256
++# The capture buffers come from CMA (CONFIG_CMA_SIZE_MBYTES in
++# gtactive3wifi.config, sized for them)
+ # USB webcams, for when the USB-C port can be a host
+ CONFIG_MEDIA_USB_SUPPORT=y
+ CONFIG_USB_VIDEO_CLASS=m
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index d61d147..9dc8436 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -252,10 +252,14 @@ CONFIG_NO_HZ_IDLE=y
+ CONFIG_BLK_DEV_WRITE_MOUNTED=y
+ 
+ # Display: Exynos9810 DPU takeover KMS driver (GPU scanout through Mesa
+-# kmsro), with a CMA pool for contiguous scanout buffers below 4 GiB
++# kmsro), with a CMA pool for contiguous buffers below 4 GiB. 256 MiB: the
++# scanout buffers take ~40 MiB, and the camera capture buffers (CSIS VC DMA,
++# 32-bit, SysMMU in bypass; camera.config) are contiguous too: a full
++# resolution rear frame is 16 MiB, libcamera queues 4 plus the driver's
++# 20 MiB scratch frame
+ CONFIG_CMA=y
+ CONFIG_DMA_CMA=y
+-CONFIG_CMA_SIZE_MBYTES=128
++CONFIG_CMA_SIZE_MBYTES=256
+ CONFIG_DRM_EXYNOS9810_DPU=y
+ 
+ # CPU DVFS through ACPM (cpufreq-dt on the ACPM DVFS clocks)

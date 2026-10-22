@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 09:10:29 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: gpu fragment (devfreq thermal
+ cooling)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh | 2 +-
+ contrib/samsung-gtactive3wifi/kernel/gpu.config           | 7 +++++++
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/gpu.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index fb9092f..d6504dc 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -29,7 +29,7 @@ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+ # device fragments, applied in this order
+-DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config performance.config sensors.config"
++DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config performance.config sensors.config gpu.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gpu.config b/contrib/samsung-gtactive3wifi/kernel/gpu.config
+new file mode 100644
+index 0000000..6061efe
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/gpu.config
+@@ -0,0 +1,7 @@
++# Mali-G72 (panfrost) on the SM-T570. One reason per option.
++
++# Let panfrost register its devfreq device as a thermal cooling device
++# (otherwise "Failed to register cooling device" at probe), so the G3D
++# thermal zone's passive trip (88 C, the stock G3D control temperature)
++# can cap the GPU clock before the firmware's hardware trip.
++CONFIG_DEVFREQ_THERMAL=y

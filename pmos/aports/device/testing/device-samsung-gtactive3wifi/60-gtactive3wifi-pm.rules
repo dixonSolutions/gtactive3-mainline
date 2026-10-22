@@ -1,0 +1,6 @@
+# Runtime PM that has not been tested on the SM-T570: the USB controller
+# (debug link; it cannot see a cable while runtime-suspended) and the UFS
+# disks (Hibern8 runtime suspend) stay "on" even if a power tool switches
+# every device to "auto".
+ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="dwc3", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="scsi", TEST=="power/control", ATTR{power/control}="on"

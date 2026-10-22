@@ -1,0 +1,16 @@
+[Unit]
+Description=Import the Samsung firmware the installer left on the ESP
+Documentation=file:///usr/share/doc/device-samsung-gtactive3wifi/README
+DefaultDependencies=no
+RequiresMountsFor=/boot /var/lib
+# before udev loads the drivers, so their first probe finds the firmware
+Before=systemd-udev-trigger.service
+After=systemd-remount-fs.service
+ConditionPathExists=/boot/gtactive3wifi-firmware.tar.zst
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gtactive3wifi/firmware-import
+
+[Install]
+WantedBy=sysinit.target

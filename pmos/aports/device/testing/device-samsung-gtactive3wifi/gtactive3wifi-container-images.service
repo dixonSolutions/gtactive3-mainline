@@ -1,0 +1,12 @@
+[Unit]
+Description=Preinstalled container images for root's podman store
+Documentation=file:///usr/share/doc/device-samsung-gtactive3wifi/README
+RequiresMountsFor=/var/lib/containers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gtactive3wifi/container-images
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

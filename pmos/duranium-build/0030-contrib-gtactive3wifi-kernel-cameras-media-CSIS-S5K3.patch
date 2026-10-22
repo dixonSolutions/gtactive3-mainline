@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:09:58 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: cameras (media, CSIS, S5K3L6,
+ GC5035)
+
+camera.config: V4L2 + media controller, the Exynos9810 CSIS raw capture
+driver and both sensor drivers as modules, 256 MB CMA for the
+contiguous capture buffers, UVC. Needs src/linux drv/cam.
+
+gen-kernel-config.sh: a fragment symbol the tree does not define at all
+(a driver branch not merged yet) is skipped with a warning instead of
+failing the whole config, so topic fragments can land before their
+kernel branch; a symbol whose dependencies are missing still fails.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/camera.config                      | 24 +++++++++++++++++++
+ .../kernel/gen-kernel-config.sh               | 12 ++++++++--
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/camera.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/camera.config b/contrib/samsung-gtactive3wifi/kernel/camera.config
+new file mode 100644
+index 0000000..d931cda
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/camera.config
+@@ -0,0 +1,24 @@
++# Cameras: rear Samsung S5K3L6 and front GalaxyCore GC5035, raw Bayer
++# through the Exynos9810 CSIS receivers (src/linux drv/cam), for
++# libcamera's simple pipeline handler with the software ISP (PipeWire,
++# GNOME Snapshot). V4L2_FWNODE, V4L2_CCI_I2C and VIDEOBUF2_DMA_CONTIG are
++# selected by the drivers. No dma-buf CMA heap: libcamera would take the
++# software ISP output buffers from it before udmabuf.
++CONFIG_MEDIA_SUPPORT=m
++CONFIG_MEDIA_SUPPORT_FILTER=y
++CONFIG_MEDIA_CAMERA_SUPPORT=y
++CONFIG_MEDIA_PLATFORM_SUPPORT=y
++CONFIG_MEDIA_CONTROLLER=y
++CONFIG_VIDEO_V4L2_SUBDEV_API=y
++CONFIG_V4L_PLATFORM_DRIVERS=y
++CONFIG_VIDEO_EXYNOS9810_CSIS=m
++CONFIG_VIDEO_CAMERA_SENSOR=y
++CONFIG_VIDEO_S5K3L6=m
++CONFIG_VIDEO_GC5035=m
++# The capture buffers are physically contiguous below 4 GiB (the camera
++# SysMMU is left in bypass): a full-resolution rear frame is 16 MB, the
++# software ISP keeps several, and the display takes ~40 MB already
++CONFIG_CMA_SIZE_MBYTES=256
++# USB webcams, for when the USB-C port can be a host
++CONFIG_MEDIA_USB_SUPPORT=y
++CONFIG_USB_VIDEO_CLASS=m
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index d9f8c1c..cd0be1a 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -29,7 +29,7 @@ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+ # device fragments, applied in this order
+-DEVFRAGS="gtactive3wifi.config virt.config"
++DEVFRAGS="gtactive3wifi.config virt.config camera.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
+@@ -59,7 +59,15 @@ missing=$(for f in $DEVFRAGS; do cat "$HERE/$f"; done |
+ 		case "$line" in
+ 		"# "*)	sym=${line#\# }; sym=${sym%% *}
+ 			grep -q "^$sym=[ym]" "$work/out/.config" && echo "$line" ;;
+-		*)	grep -qxF "$line" "$work/out/.config" || echo "$line" ;;
++		*)	grep -qxF "$line" "$work/out/.config" && continue
++			sym=${line%%=*}
++			# a fragment may be ahead of its driver branch: a symbol
++			# this tree does not define at all is skipped, loudly
++			if grep -qE "^($sym=|# $sym is not set)" "$work/out/.config"; then
++				echo "$line"
++			else
++				echo "warning: $sym is not in $KREF, skipped" >&2
++			fi ;;
+ 		esac
+ 	done)
+ if [ -n "$missing" ]; then

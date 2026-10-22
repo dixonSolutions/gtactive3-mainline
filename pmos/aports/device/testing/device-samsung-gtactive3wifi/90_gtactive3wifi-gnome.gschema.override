@@ -1,0 +1,9 @@
+# Preinstalled extensions (gnome-shell-extension-blur-my-shell, -touchup and
+# this package's fast-animations: shell animations at 0.6x their length)
+[org.gnome.shell]
+enabled-extensions=['blur-my-shell@aunetx', 'touchup@mityax', 'fast-animations@gtactive3wifi']
+
+# IBus Typing Booster (English word completion, learns from what is typed)
+# first, the plain US layout second
+[org.gnome.desktop.input-sources]
+sources=[('ibus', 'typing-booster'), ('xkb', 'us')]

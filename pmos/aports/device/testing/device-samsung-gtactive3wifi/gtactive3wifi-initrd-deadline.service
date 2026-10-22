@@ -20,4 +20,4 @@ Type=simple
 # for the user's passphrase): only 600 s of initrd time without anyone being
 # asked counts. The first deadline counted the prompt too and rebooted a
 # tablet that was simply waiting for its passphrase.
-ExecStart=/bin/sh -c 'n=0; while [ $$n -lt 600 ]; do sleep 5; set -- /run/systemd/ask-password/ask.*; [ -e "$$1" ] || n=$$((n + 5)); done; echo "gtactive3wifi: initrd did not reach switch-root within 600 s (not counting password prompts), rebooting to Download mode" > /dev/kmsg; exec systemctl --force --force reboot download'
+ExecStart=/bin/sh -c 'n=0; while [ $$n -lt 600 ]; do sleep 5; set -- /run/systemd/ask-password/ask.*; [ -e "$$1" ] || n=$$((n + 5)); done; echo "gtactive3wifi: initrd did not reach switch-root within 600 s (not counting password prompts), rebooting to Download mode" > /dev/kmsg; exec systemctl --force --force reboot --reboot-argument=download'

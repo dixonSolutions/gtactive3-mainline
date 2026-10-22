@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:10:32 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: power management fragment
+
+pm.config turns on runtime PM and system sleep (suspend to idle, the
+only state with the firmware's PSCI 0.1), the PM test/debug knobs, the
+SoC RTC for wake-up alarms (not yet trusted as the system clock), the
+PS_HOLD power-off and the watchdog handover from the bootloader. It
+needs a kernel with src/linux drv/suspend. The old "no suspend" block
+in gtactive3wifi.config goes, as the fragment check would flag it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/gen-kernel-config.sh               |  2 +-
+ .../kernel/gtactive3wifi.config               |  7 +---
+ .../samsung-gtactive3wifi/kernel/pm.config    | 40 +++++++++++++++++++
+ 3 files changed, 42 insertions(+), 7 deletions(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/pm.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index cd0be1a..e19279a 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -29,7 +29,7 @@ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+ # device fragments, applied in this order
+-DEVFRAGS="gtactive3wifi.config virt.config camera.config"
++DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index d60d0e8..d61d147 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -240,12 +240,7 @@ CONFIG_DETECT_HUNG_TASK=y
+ CONFIG_PANIC_ON_OOPS=y
+ CONFIG_PANIC_TIMEOUT=3
+ 
+-# --- no suspend: PSCI v0.1 and no SoC PM drivers yet; a failed resume would
+-#     be a silent hang. Runtime PM would let ufshcd/dwc3 power down blocks
+-#     whose clocks and power domains have no driver. ---
+-# CONFIG_SUSPEND is not set
+-# CONFIG_HIBERNATION is not set
+-# CONFIG_PM is not set
++# --- power management (runtime PM, suspend to idle): pm.config ---
+ 
+ # --- interactive desktop basics (the bring-up config is tinyconfig-like) ---
+ CONFIG_HIGH_RES_TIMERS=y
+diff --git a/contrib/samsung-gtactive3wifi/kernel/pm.config b/contrib/samsung-gtactive3wifi/kernel/pm.config
+new file mode 100644
+index 0000000..e0e9128
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/pm.config
+@@ -0,0 +1,40 @@
++# Power management: runtime PM, system sleep (suspend to idle), power-off,
++# RTC wake-up. Needs a kernel with src/linux drv/suspend (GPU power domain
++# link, DPU sleep callbacks, UFS sleep level, RTC and PS_HOLD power-off
++# nodes, watchdog handover); see docs/re/suspend.md.
++
++# System sleep. The firmware implements PSCI 0.1 (no SYSTEM_SUSPEND), so
++# the only state is suspend to idle ("s2idle", also what "mem" means):
++# devices suspended, CPUs in WFI, woken by armed interrupts only.
++CONFIG_PM=y
++CONFIG_PM_SLEEP=y
++CONFIG_SUSPEND=y
++# CONFIG_HIBERNATION is not set
++# CONFIG_PM_AUTOSLEEP is not set
++# CONFIG_PM_WAKELOCKS is not set
++
++# /sys/power/pm_test levels, pm_print_times and wake-up source reporting
++# for the on-device tests (DPM_WATCHDOG would need EXPERT; a stuck suspend
++# is caught by the hardware watchdog, see s3c2410_wdt.run_in_suspend)
++CONFIG_PM_DEBUG=y
++CONFIG_PM_ADVANCED_DEBUG=y
++CONFIG_PM_SLEEP_DEBUG=y
++
++# SoC RTC (ALIVE block): wake-up alarms for rtcwake. It does not set the
++# system time until it has been seen to keep time on the device.
++CONFIG_RTC_CLASS=y
++# CONFIG_RTC_HCTOSYS is not set
++# CONFIG_RTC_SYSTOHC is not set
++CONFIG_RTC_INTF_SYSFS=y
++CONFIG_RTC_INTF_PROC=y
++CONFIG_RTC_INTF_DEV=y
++CONFIG_RTC_DRV_S3C=y
++
++# Power-off: PS_HOLD low through the PMU (syscon-poweroff)
++CONFIG_POWER_RESET_SYSCON_POWEROFF=y
++
++# Watchdog handover: a watchdog the bootloader left armed keeps running and
++# the watchdog core pings it until systemd opens /dev/watchdog; the driver
++# stops it at shutdown, before the power-off
++CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y
++CONFIG_S3C2410_WATCHDOG=y

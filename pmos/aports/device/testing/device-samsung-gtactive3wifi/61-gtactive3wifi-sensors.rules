@@ -1,0 +1,3 @@
+# The sensor hub's proximity channel reads 1 when something covers it
+# (iio-sensor-proxy: values at or above this level are "near")
+SUBSYSTEM=="iio", ATTR{name}=="bcm4775-proximity", ENV{PROXIMITY_NEAR_LEVEL}="1"

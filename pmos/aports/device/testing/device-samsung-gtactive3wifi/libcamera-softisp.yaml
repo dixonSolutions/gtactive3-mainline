@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CC0-1.0
+# SoftISP tuning for the SM-T570 cameras (S5K3L6 rear, GC5035 front): black
+# level 64 at 10 bits (16-bit scale), libcamera's default algorithms.
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Adjust:
+  - Agc:
+...

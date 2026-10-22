@@ -1,0 +1,4 @@
+# The SM-T570 has no modem: no SMS/MMS, visual voicemail or cell broadcasts
+disable mmsd-tng.service
+disable vvmd.service
+disable cellbroadcastd.service

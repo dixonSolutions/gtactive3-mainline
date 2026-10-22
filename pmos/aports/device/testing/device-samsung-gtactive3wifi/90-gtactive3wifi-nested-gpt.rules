@@ -5,6 +5,8 @@
 # systemd-boot) points into it; this rule also covers boots without EFI
 # variables (efi=noruntime, direct uniLoader boot). Both rules pull in the same
 # systemd-loop@<device>.service instance, so they never create two loops.
-SUBSYSTEM=="block", ACTION=="add|change", ENV{DEVTYPE}=="partition", \
+# Only on the UFS (sd*): a microSD card may also carry a partition named
+# "userdata".
+SUBSYSTEM=="block", KERNEL=="sd*", ACTION=="add|change", ENV{DEVTYPE}=="partition", \
   ENV{ID_PART_ENTRY_NAME}=="userdata", ENV{ID_PART_GPT_SECTOR_SIZE}=="?*", \
   ENV{SYSTEMD_WANTS}+="systemd-loop@.service"

@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:22:48 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: hardware gaps fragment
+
+microSD (dw_mmc-exynos) and the USB role switch class, for the drv/hwgaps
+kernel branch: SD card slot, SM5504 pogo MUIC probe, and the MAX77705
+USB-C role control of the OTG DT variant. The DWC3 host role stays off
+until that variant has been tested.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/gen-kernel-config.sh                 |  2 +-
+ .../samsung-gtactive3wifi/kernel/hwgaps.config  | 17 +++++++++++++++++
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/hwgaps.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index e19279a..9c800af 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -29,7 +29,7 @@ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+ # device fragments, applied in this order
+-DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config"
++DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
+diff --git a/contrib/samsung-gtactive3wifi/kernel/hwgaps.config b/contrib/samsung-gtactive3wifi/kernel/hwgaps.config
+new file mode 100644
+index 0000000..568a953
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/hwgaps.config
+@@ -0,0 +1,17 @@
++# Hardware gaps (src/linux drv/hwgaps): microSD slot, PMIC-switched
++# peripheral supplies (grip sensor, NFC), USB role switching.
++#
++# microSD: Exynos9810 FSYS1 DW MSHC (dw_mmc-exynos), card power and
++# signalling from S2MPS18 LDO31/LDO2. Modules: the slot is optional.
++CONFIG_MMC=m
++CONFIG_MMC_BLOCK=m
++CONFIG_MMC_DW=m
++CONFIG_MMC_DW_PLTFM=m
++CONFIG_MMC_DW_EXYNOS=m
++# USB role switch class: lets the SM5504 pogo MUIC probe (without it,
++# usb_role_switch_get() fails with -ENODEV), and the MAX77705 USB-C block
++# drive the DWC3 role in the OTG DT variant. The host role itself also
++# needs CONFIG_USB_DWC3_DUAL_ROLE (instead of USB_DWC3_GADGET in
++# gtactive3wifi.config) and CONFIG_USB_XHCI_HCD, enabled only once the
++# OTG variant has passed its bring-up test.
++CONFIG_USB_ROLE_SWITCH=m

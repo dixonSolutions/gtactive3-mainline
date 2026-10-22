@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 22:18:22 +1100
+Subject: [PATCH] contrib: gtactive3wifi: PipeWire as the audio server
+
+postmarketos-base-ui-audio-backend has two providers; pmaports.py does
+not apply pmbootstrap's _pmb_select default (pipewire), so apk installed
+the higher provider_priority, pulseaudio, next to an enabled
+pipewire-pulse.socket without its service: two audio servers on the
+tablet. Ask for the PipeWire backend explicitly, in dev and release
+images (the device's UCM profile and Bluetooth audio are set up for it).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-image.sh | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-image.sh b/contrib/samsung-gtactive3wifi/build-image.sh
+index db14756..02c0af6 100755
+--- a/contrib/samsung-gtactive3wifi/build-image.sh
++++ b/contrib/samsung-gtactive3wifi/build-image.sh
+@@ -34,10 +34,16 @@ LOCK=$ROOT/build/kbuild.lock
+ UI=${UI:-gnome}
+ RELEASE=edge
+ CHANNEL=${CHANNEL:-dev}
++# PipeWire as the audio server (the UCM profile and Bluetooth audio are set
++# up for it). postmarketos-base-ui-audio-backend has two providers and
++# pmaports.py does not apply pmbootstrap's _pmb_select default (pipewire), so
++# apk took the higher provider_priority: pulseaudio, next to a half-enabled
++# pipewire-pulse.
++AUDIO=postmarketos-base-ui-audio-backend-pipewire
+ case "$CHANNEL" in
+ # comma separated: mkosi splits --environment= values at whitespace
+-dev) GTA3_CHANNEL=dev; EXTRA=duranium-usb-debug,duranium-usb-debug-adb ;;
+-release) GTA3_CHANNEL=; EXTRA= ;;
++dev) GTA3_CHANNEL=dev; EXTRA=$AUDIO,duranium-usb-debug,duranium-usb-debug-adb ;;
++release) GTA3_CHANNEL=; EXTRA=$AUDIO ;;
+ *) echo "CHANNEL must be dev or release" >&2; exit 1 ;;
+ esac
+ 
+@@ -57,7 +63,7 @@ if [ -z "${SKIP_APKS:-}" ]; then
+ 	PKGS=$PKGS PMAPORTS=$PMAPORTS sh "$HERE/build-apks.sh"
+ fi
+ ls "$PKGS"/linux-postmarketos-exynos9810-*.apk "$PKGS"/device-samsung-gtactive3wifi-*.apk >/dev/null
+-[ -z "$EXTRA" ] || ls "$PKGS"/duranium-usb-debug-*.apk >/dev/null
++[ "$CHANNEL" != dev ] || ls "$PKGS"/duranium-usb-debug-*.apk >/dev/null
+ 
+ echo "== 2. mkosi image"
+ if [ -e "$DUR/pmaports" ] && [ ! -L "$DUR/pmaports" ]; then

@@ -1,0 +1,15 @@
+#!/bin/sh
+# udev helper: give the BCM4375 interface this tablet's own MAC address,
+# which Samsung's driver keeps on EFS (wifi/.mac.info), instead of the
+# nvram placeholder 00:90:4c:30:50:01 that every unit shares. The file is
+# read with debugfs, so EFS is never mounted (or written).
+# Usage: wlan-efs-mac <interface>
+set -eu
+efs=/dev/disk/by-partlabel/efs
+[ -b "$efs" ] || exit 0
+mac=$(debugfs -R "cat /wifi/.mac.info" "$efs" 2>/dev/null |
+	tr -d '\r\n\t ' | tr 'ABCDEF' 'abcdef')
+# A unicast, globally administered address that is not all zeros.
+echo "$mac" | grep -Eq '^[0-9a-f][048c](:[0-9a-f]{2}){5}$' || exit 0
+[ "$mac" != 00:00:00:00:00:00 ] || exit 0
+exec ip link set dev "$1" address "$mac"

@@ -1,0 +1,13 @@
+[Unit]
+Description=Preinstalled container images for this user's podman store
+Documentation=file:///usr/share/doc/device-samsung-gtactive3wifi/README
+
+[Service]
+# Type=exec: logind waits for the user manager to finish starting, and a
+# first load takes a few seconds; do not hold up the login for it.
+Type=exec
+ExecStart=/usr/libexec/gtactive3wifi/container-images
+Nice=10
+
+[Install]
+WantedBy=default.target

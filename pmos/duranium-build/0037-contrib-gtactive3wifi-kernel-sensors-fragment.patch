@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 08:57:04 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: sensors fragment
+
+The BCM4775 sensor-hub driver (src/linux drv/shub2) as a module:
+accelerometer, light and proximity for iio-sensor-proxy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh | 2 +-
+ contrib/samsung-gtactive3wifi/kernel/sensors.config       | 6 ++++++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/sensors.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index 29247bf..fb9092f 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -29,7 +29,7 @@ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+ # device fragments, applied in this order
+-DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config performance.config"
++DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config performance.config sensors.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
+diff --git a/contrib/samsung-gtactive3wifi/kernel/sensors.config b/contrib/samsung-gtactive3wifi/kernel/sensors.config
+new file mode 100644
+index 0000000..8553679
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/sensors.config
+@@ -0,0 +1,6 @@
++# Sensors (src/linux drv/shub2): accelerometer, ambient light and
++# proximity behind the sensor hub of the BCM4775 GNSS chip on SPI20. The
++# driver downloads the hub application (the owner's Samsung firmware,
++# samsung/gtactive3wifi/bbd/bcm_sensorhub_a1.patch) and exposes standard
++# IIO devices for iio-sensor-proxy (auto-rotate, auto-brightness).
++CONFIG_IIO_BCM4775_SHUB=m

@@ -1,0 +1,6 @@
+[Unit]
+Description=Check that the USB gadget came back after sleep (SM-T570)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gtactive3wifi/usb-resume-check

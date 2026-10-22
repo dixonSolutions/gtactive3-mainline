@@ -1,0 +1,13 @@
+[Unit]
+Description=Allow suspend only with a proven wake-up path (SM-T570)
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target systemd-logind.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gtactive3wifi/suspend-gate
+
+[Install]
+WantedBy=sysinit.target

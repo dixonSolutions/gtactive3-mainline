@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 08:53:20 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: rear lens voice coil and
+ camera EEPROM
+
+DW9808 voice coil (dw9807-vcm) and the rear module EEPROM (at24 through
+nvmem) of drv/cam. Checked with gen-kernel-config.sh, KREF=drv/cam.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/camera.config | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/camera.config b/contrib/samsung-gtactive3wifi/kernel/camera.config
+index b5355d7..8b8411b 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/camera.config
++++ b/contrib/samsung-gtactive3wifi/kernel/camera.config
+@@ -15,6 +15,12 @@ CONFIG_VIDEO_EXYNOS9810_CSIS=m
+ CONFIG_VIDEO_CAMERA_SENSOR=y
+ CONFIG_VIDEO_S5K3L6=m
+ CONFIG_VIDEO_GC5035=m
++# rear autofocus voice coil (DW9808) and the rear module EEPROM
++# (AF/AWB calibration, read through nvmem)
++CONFIG_VIDEO_CAMERA_LENS=y
++CONFIG_VIDEO_DW9807_VCM=m
++CONFIG_NVMEM=y
++CONFIG_EEPROM_AT24=m
+ # The capture buffers come from CMA (CONFIG_CMA_SIZE_MBYTES in
+ # gtactive3wifi.config, sized for them)
+ # USB webcams, for when the USB-C port can be a host

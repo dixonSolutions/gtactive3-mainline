@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:06:53 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: performance fragment
+
+- LRU_GEN + LRU_GEN_ENABLED (multi-gen LRU): less kswapd time and fewer
+  working-set refaults under memory pressure on a 4 GB tablet swapping to
+  zram (ChromeOS/Android fleet results of the series; Fedora default)
+- MQ_IOSCHED_DEADLINE: the block layer then defaults to mq-deadline on the
+  single-queue UFS LUNs (elevator_set_default()), so reads are not starved
+  by long writes (A/B /usr updates, podman pulls) and I/O priorities apply;
+  today only "none" exists
+- SCHED_MC: per-cluster scheduler domains (arm64 defconfig) for the A55 and
+  M3 clusters; degenerates while only the A55s are online
+- PREEMPT_DYNAMIC: preempt=full|lazy on the command line (default lazy, as
+  before), to measure full preemption (stock kernel, Android GKI) for
+  compositor latency without a rebuild
+
+All four lines survive olddefconfig on cand/1022 (gen-kernel-config.sh).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/gen-kernel-config.sh               |  2 +-
+ .../kernel/performance.config                 | 32 +++++++++++++++++++
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/performance.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index 9c800af..29247bf 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -29,7 +29,7 @@ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+ # device fragments, applied in this order
+-DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config"
++DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config performance.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
+diff --git a/contrib/samsung-gtactive3wifi/kernel/performance.config b/contrib/samsung-gtactive3wifi/kernel/performance.config
+new file mode 100644
+index 0000000..8108e18
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/performance.config
+@@ -0,0 +1,32 @@
++# Responsiveness and memory for the SM-T570: 4 GB RAM swapping to zram,
++# 4 Cortex-A55 now (4 Mongoose M3 later), UFS 2.1. One reason per option.
++
++# Multi-generational LRU: page reclaim that sorts pages into generations by
++# how recently they were used instead of two lists, with less kswapd CPU
++# time and fewer working-set refaults under memory pressure (the series'
++# ChromeOS and Android fleet results: fewer low-memory kills and tab
++# discards; Documentation/admin-guide/mm/multigen_lru.rst). Enabled by
++# default in Fedora's kernels. With zram swap it decides what gets
++# compressed, so the apps in use keep their pages.
++CONFIG_LRU_GEN=y
++CONFIG_LRU_GEN_ENABLED=y
++
++# mq-deadline for the UFS LUNs. With it built in, the block layer picks it
++# by default for single-queue devices (elevator_set_default()); without it
++# only "none" exists. Reads (an app starting, the UI paging in code) get a
++# 500 ms deadline against 5 s for writes, so a long write (an A/B /usr
++# update streams 5 GB, a podman pull) does not starve them, and I/O
++# priorities (ionice, IOSchedulingClass=) take effect. The stock kernel
++# also favours synchronous reads (cfq).
++CONFIG_MQ_IOSCHED_DEADLINE=y
++
++# Scheduler domains per CPU cluster (arm64 defconfig): load balancing and,
++# later, energy-aware placement treat the A55 and M3 clusters (separate
++# caches) as such. With only the A55 cluster online the extra level
++# degenerates and costs nothing.
++CONFIG_SCHED_MC=y
++
++# Preemption model selectable at boot (preempt=full|lazy), default lazy as
++# before: lets the device test full preemption (stock Samsung kernel and
++# Android GKI) for compositor latency without a rebuild.
++CONFIG_PREEMPT_DYNAMIC=y

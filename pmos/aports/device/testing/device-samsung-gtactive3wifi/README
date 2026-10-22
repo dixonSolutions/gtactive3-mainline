@@ -18,18 +18,66 @@ initrd):
 - 90-gtactive3wifi-nested-gpt.rules: exposes the GPT nested in the
   userdata partition as a partitioned loop device.
 
-Booted system: suspend disabled (no SoC PM yet).
+Booted system:
+- Suspend to idle only (PSCI 0.1: no deeper state, no hibernation), and only
+  once the wake-up path has been proven on this tablet:
+  gtactive3wifi-suspend-gate.service allows it for a boot when the kernel
+  can freeze, the power key is a wake-up source and
+  /var/lib/gtactive3wifi/suspend-wake-proven exists (written after the
+  on-device suspend test). Power key: suspend, long press: power off; the
+  book cover (SW_LID) suspends. After a sleep, gtactive3wifi-usb-resume
+  makes sure the USB debug link is enumerated again. dwc3 and the UFS disks
+  keep runtime PM off (60-gtactive3wifi-pm.rules).
+- regulator_ignore_unused until the first ACPM regulator write is proven.
+- Cameras: libcamera simple pipeline + SoftISP (the CSIS driver reports a
+  driver name libcamera knows; SoftISP tuning for S5K3L6 and GC5035).
 - UI-neutral: one device package for every image variant (UI=gnome,
   UI=phosh, ...). PAN_MESA_DEBUG=noafbc for gdm, greetd and user sessions.
 - device-samsung-gtactive3wifi-gnome (installs itself with
   postmarketos-ui-gnome): fast-animations@gtactive3wifi (St slow-down
-  factor 0.6), Blur my Shell and Touchup enabled by default, Home/Recent
-  key bindings, IBus Typing Booster (gschema override).
+  factor 0.6), Blur my Shell and Touchup enabled by default, IBus Typing
+  Booster (gschema override).
+- Home and Recent keys: app grid and overview in GNOME Shell, overview in
+  Phosh (org.gnome.shell.keybindings, read by both).
+- kernel.panic=10 (Alpine's sysctl.d sets 120 s): a panic reboots quickly
+  and boot counting can fall back.
 - New users get /bin/bash (/etc/default/useradd).
+- gtactive3wifi-switch-ui UI: switch to another UI image (phosh, gnome) with the
+  A/B update (sysupdate with the other UI's channel); /etc/os-release is never
+  edited (the next boot's base confext is checked against it).
+- gtactive3wifi-firmware-import.service: installs the owner's Samsung
+  firmware that the installer (setup.sh) left on the ESP
+  (gtactive3wifi-firmware.tar.zst + .sha256) into /var/lib/firmware before
+  udev loads the drivers when /var/lib/firmware is empty or holds an
+  older import (hand-installed firmware is kept); checked, swapped in whole;
+  the tarball stays on the ESP, so a fresh root gets it again.
 - gtactive3wifi-extensions-link.service: links the sysext/confext images
   of this image version from /var/lib/duranium-extensions into
   /run/extensions and /run/confexts before systemd-sysext/-confext merge
   (scripts/duranium-update delivers them with each A/B update).
 
-Regular pmOS boot.img chain: device-samsung-gtactive3wifi-bootimg (installed
-with boot-deploy) pulls uniLoader, the stock DT table and the AVB tools.
+Battery and responsiveness (both UIs):
+- workqueue.power_efficient=1: power-hungry per-CPU work runs on a CPU
+  that is awake instead of waking an idle one.
+- No modem: ModemManager and the user daemons for SMS/MMS, visual
+  voicemail and cell broadcasts are disabled (presets).
+- systemd-oomd prefers apps over GNOME Shell, Phosh and gnome-session
+  (ManagedOOMPreference=avoid); zram swap and its sysctls come from
+  postmarketos-zram (zstd, 150 % of RAM, swappiness 180).
+- Power profiles (tuned-ppd): "power-saver" caps the A55 at 1456 MHz
+  (Samsung's energy table: 25-34 % more energy per cycle above it),
+  "performance" keeps the zram-friendly memory settings
+  (/etc/tuned/profiles, each including the stock TuneD profile).
+
+Containers (device-samsung-gtactive3wifi-containers, recommended by the
+device package, so every image has it):
+- podman, rootless for every user (subordinate IDs from useradd) and
+  rootful for root.
+- Alpine (docker.io/library/alpine:3.24 and :latest) preinstalled as an OCI
+  layout in /usr/lib/gtactive3wifi/container-images/alpine (Alpine's
+  minirootfs as the layer, mkoci.sh), loaded once per image version into
+  root's store at boot (gtactive3wifi-container-images.service) and into
+  each user's store at login (the user unit of the same name), so
+  "podman run --rm alpine cat /etc/alpine-release" works offline.
+- /usr/libexec/gtactive3wifi/containers-selftest: offline checks for the
+  calling user (run it as root and as the user).

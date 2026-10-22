@@ -1,0 +1,3 @@
+# The BCM4375's nvram only carries a placeholder MAC address; take the
+# per-unit one from EFS before NetworkManager manages the interface.
+ACTION=="add", SUBSYSTEM=="net", DRIVERS=="brcmfmac", RUN+="/usr/libexec/gtactive3wifi/wlan-efs-mac %k"

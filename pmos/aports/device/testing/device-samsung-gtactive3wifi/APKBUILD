@@ -3,7 +3,7 @@ maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
 pkgname=device-samsung-gtactive3wifi
 pkgdesc="Samsung Galaxy Tab Active3 (Wi-Fi)"
 pkgver=2
-pkgrel=25
+pkgrel=37
 url="https://github.com/dixonSolutions/gtactive3-mainline"
 license="MIT"
 arch="aarch64"
@@ -13,26 +13,38 @@ depends="
 	linux-postmarketos-exynos9810
 	postmarketos-base
 	systemd-boot
+	zstd
 	"
 # vte3 for /usr/libexec/vte-urlencode-cwd, which vte3-profile's
 # /etc/profile.d/vte.sh runs at every bash prompt. Everything specific to
 # one UI lives in a subpackage that installs itself with that UI (-gnome),
 # so the same device package serves every image variant.
 depends="$depends vte3"
+# iw for Wi-Fi diagnostics, debugfs (e2fsprogs-extra) to read the Wi-Fi MAC
+# address from EFS without mounting it
+depends="$depends iw e2fsprogs-extra"
 # The Duranium USB debug layer (main/duranium-usb-debug) is not a
 # dependency: development images add it (duranium-usb-debug,
 # duranium-usb-debug-adb; build-image.sh CHANNEL=dev), release images leave
 # it out, and the bring-up register console (-console) follows it.
+# podman for every user, with an Alpine image that works offline
+_pmb_recommends="$pkgname-containers"
 makedepends="devicepkg-dev linux-headers"
 subpackages="
 	$pkgname-initramfs:initramfs
 	$pkgname-console:console
+	$pkgname-containers:containers
 	$pkgname-gnome:gnome:noarch
 	"
+# The preinstalled container image: Alpine's minirootfs, the same tarball
+# the docker.io/library/alpine image is made of (not unpacked here: it is
+# the image layer as it is)
+_alpine=3.24.3
+_alpine_created=2026-10-21T21:55:43Z
+_alpine_rootfs=alpine-minirootfs-$_alpine-aarch64.tar.gz
 source="
 	deviceinfo
 	kernel-cmdline.conf
-	modules-initfs
 	gtactive3wifi-usb-prep.c
 	gtactive3wifi-usb-prep.service
 	gta3-console.c
@@ -41,20 +53,44 @@ source="
 	gta3-debug-console@.service
 	gtactive3wifi-initrd-deadline.service
 	90_gtactive3wifi.gschema.override
+	90_gtactive3wifi-gnome.gschema.override
+	sysctl.conf
 	gtactive3wifi-reboot.tmpfiles
 	firmware-path.tmpfiles
+	firmware-import.sh
+	gtactive3wifi-firmware-import.service
 	ucm/gtactive3.conf
 	ucm/HiFi.conf
 	modprobe-gtactive3wifi.conf
 	90-gtactive3wifi-nested-gpt.rules
 	system-watchdog.conf
-	sleep-nosuspend.conf
-	logind-nosuspend.conf
+	sleep.conf
+	logind.conf
+	suspend-gate.sh
+	gtactive3wifi-suspend-gate.service
+	system-sleep-usb.sh
+	system-sleep-wifi.sh
+	usb-resume-check.sh
+	gtactive3wifi-usb-resume.service
+	60-gtactive3wifi-pm.rules
+	modprobe-gtactive3wifi-camera.conf
+	libcamera-softisp.yaml
+	sysupdate-retry.conf
+	switch-ui.sh
 	panfrost-environment.conf
 	gdm-panfrost.conf
+	panfrost-profile.sh
+	nm-wifi-powersave.conf
+	80-gtactive3wifi-wlan-mac.rules
+	wlan-efs-mac
+	61-gtactive3wifi-sensors.rules
 	gtactive3wifi-typing-booster-defaults.sh
 	gtactive3wifi-typing-booster-defaults.service
 	80-device-samsung-gtactive3wifi.preset
+	80-device-samsung-gtactive3wifi.user-preset
+	oomd-avoid.conf
+	tuned/powersave.conf
+	tuned/throughput-performance.conf
 	fast-animations/extension.js
 	fast-animations/metadata.json
 	useradd-defaults
@@ -62,6 +98,12 @@ source="
 	gtactive3wifi-extensions-link.service
 	boot.mount
 	boot.automount
+	$_alpine_rootfs.layer::https://dl-cdn.alpinelinux.org/alpine/v${_alpine%.*}/releases/aarch64/$_alpine_rootfs
+	mkoci.sh
+	container-images.sh
+	containers-selftest.sh
+	gtactive3wifi-container-images.service
+	gtactive3wifi-container-images.user.service
 	README
 	"
 
@@ -79,34 +121,109 @@ build() {
 		-static -DCONSOLE_STDIO -include "$srcdir"/gta3-console-libc.h \
 		-o "$srcdir"/gta3-console "$srcdir"/gta3-console.c $LDFLAGS
 	${CROSS_COMPILE:-}strip "$srcdir"/gta3-console
+
+	ln -sf $_alpine_rootfs.layer "$srcdir"/$_alpine_rootfs
+	rm -rf "$srcdir"/alpine-oci
+	sh "$srcdir"/mkoci.sh "$srcdir"/$_alpine_rootfs "$srcdir"/alpine-oci \
+		docker.io/library/alpine:${_alpine%.*} $_alpine_created arm64
 }
 
 package() {
 	devicepkg_package $startdir $pkgname
 
-	# No SoC suspend/resume support yet: a failed resume is a silent hang
-	install -Dm644 "$srcdir"/sleep-nosuspend.conf \
+	# Suspend to idle only (PSCI 0.1), off until the wake-up path has been
+	# proven on the tablet: the gate allows it per boot (a sleep the user
+	# cannot end strands the tablet)
+	install -Dm644 "$srcdir"/sleep.conf \
 		"$pkgdir"/usr/lib/systemd/sleep.conf.d/50-gtactive3wifi.conf
-	install -Dm644 "$srcdir"/logind-nosuspend.conf \
+	install -Dm644 "$srcdir"/logind.conf \
 		"$pkgdir"/usr/lib/systemd/logind.conf.d/50-gtactive3wifi.conf
+	install -Dm755 "$srcdir"/suspend-gate.sh \
+		"$pkgdir"/usr/libexec/gtactive3wifi/suspend-gate
+	install -Dm644 "$srcdir"/gtactive3wifi-suspend-gate.service \
+		"$srcdir"/gtactive3wifi-usb-resume.service \
+		-t "$pkgdir"/usr/lib/systemd/system/
+	mkdir -p "$pkgdir"/usr/lib/systemd/system/sysinit.target.wants
+	ln -s ../gtactive3wifi-suspend-gate.service \
+		"$pkgdir"/usr/lib/systemd/system/sysinit.target.wants/
+	# the USB debug link must come back after a sleep
+	install -Dm755 "$srcdir"/system-sleep-usb.sh \
+		"$pkgdir"/usr/lib/systemd/system-sleep/gtactive3wifi-usb
+	# Wi-Fi out of the way while asleep (brcmfmac's PCIe D3 fails)
+	install -Dm755 "$srcdir"/system-sleep-wifi.sh \
+		"$pkgdir"/usr/lib/systemd/system-sleep/gtactive3wifi-wifi
+	install -Dm755 "$srcdir"/usb-resume-check.sh \
+		"$pkgdir"/usr/libexec/gtactive3wifi/usb-resume-check
+	install -Dm644 "$srcdir"/60-gtactive3wifi-pm.rules \
+		-t "$pkgdir"/usr/lib/udev/rules.d/
+	# another UI (phosh, gnome, ...) through the A/B update
+	install -Dm755 "$srcdir"/switch-ui.sh \
+		"$pkgdir"/usr/bin/gtactive3wifi-switch-ui
+	# automatic updates retry a download that broke off
+	install -Dm644 "$srcdir"/sysupdate-retry.conf \
+		"$pkgdir"/usr/lib/systemd/system/systemd-sysupdate.service.d/50-gtactive3wifi-retry.conf
+	# cameras: libcamera's simple pipeline + SoftISP
+	install -Dm644 "$srcdir"/modprobe-gtactive3wifi-camera.conf \
+		"$pkgdir"/usr/lib/modprobe.d/gtactive3wifi-camera.conf
+	local s
+	for s in s5k3l6 gc5035; do
+		install -Dm644 "$srcdir"/libcamera-softisp.yaml \
+			"$pkgdir"/usr/share/libcamera/ipa/simple/$s.yaml
+	done
 	install -Dm644 "$srcdir"/80-device-samsung-gtactive3wifi.preset \
 		"$pkgdir"/usr/lib/systemd/system-preset/80-device-samsung-gtactive3wifi.preset
+	install -Dm644 "$srcdir"/80-device-samsung-gtactive3wifi.user-preset \
+		"$pkgdir"/usr/lib/systemd/user-preset/80-device-samsung-gtactive3wifi.preset
+	# systemd-oomd kills apps before the shell (GNOME Shell, Phosh) and the
+	# session leader
+	local u
+	for u in org.gnome.Shell@ mobi.phosh.Shell gnome-session-manager@; do
+		install -Dm644 "$srcdir"/oomd-avoid.conf \
+			"$pkgdir"/usr/lib/systemd/user/$u.service.d/50-gtactive3wifi-oomd.conf
+	done
+	# power-profiles-daemon profiles (tuned-ppd) tuned for this device; TuneD
+	# looks in /etc/tuned/profiles first, and each includes the stock profile
+	install -Dm644 "$srcdir"/powersave.conf \
+		"$pkgdir"/etc/tuned/profiles/powersave/tuned.conf
+	install -Dm644 "$srcdir"/throughput-performance.conf \
+		"$pkgdir"/etc/tuned/profiles/throughput-performance/tuned.conf
 	install -Dm644 "$srcdir"/gtactive3wifi-reboot.tmpfiles \
 		"$pkgdir"/usr/lib/tmpfiles.d/gtactive3wifi-reboot.conf
 	install -Dm644 "$srcdir"/firmware-path.tmpfiles \
 		"$pkgdir"/usr/lib/tmpfiles.d/00-device-samsung-gtactive3wifi-firmware.conf
+	# the owner's firmware, left on the ESP by the installer (setup.sh)
+	install -Dm755 "$srcdir"/firmware-import.sh \
+		"$pkgdir"/usr/libexec/gtactive3wifi/firmware-import
+	install -Dm644 "$srcdir"/gtactive3wifi-firmware-import.service \
+		-t "$pkgdir"/usr/lib/systemd/system/
+	ln -s ../gtactive3wifi-firmware-import.service \
+		"$pkgdir"/usr/lib/systemd/system/sysinit.target.wants/
+	install -Dm644 "$srcdir"/sysctl.conf \
+		"$pkgdir"/usr/lib/sysctl.d/90-device-samsung-gtactive3wifi.conf
+	# hardware key bindings, read by GNOME Shell and Phosh
+	install -Dm644 "$srcdir"/90_gtactive3wifi.gschema.override \
+		-t "$pkgdir"/usr/share/glib-2.0/schemas/
 	# ALSA UCM: speaker, headphones and microphones for PipeWire
 	install -Dm644 "$srcdir"/gtactive3.conf "$srcdir"/HiFi.conf \
 		-t "$pkgdir"/usr/share/alsa/ucm2/conf.d/gtactive3/
 	install -Dm644 "$srcdir"/panfrost-environment.conf \
 		"$pkgdir"/usr/lib/environment.d/90-gtactive3wifi-panfrost.conf
-	# the login screens (gdm for GNOME, greetd + phrog for Phosh, which also
-	# starts the user session) run before any environment.d is read
-	local dm
-	for dm in gdm greetd; do
-		install -Dm644 "$srcdir"/gdm-panfrost.conf \
-			"$pkgdir"/usr/lib/systemd/system/$dm.service.d/90-gtactive3wifi-panfrost.conf
-	done
+	# gdm's gnome-shell runs before any environment.d is read; greetd
+	# (phrog, phoc and the Phosh session) takes it from /etc/profile. The
+	# compositor's setting is the one that matters: Mesa gives every app's
+	# window buffers the first modifier the compositor offers.
+	install -Dm644 "$srcdir"/gdm-panfrost.conf \
+		"$pkgdir"/usr/lib/systemd/system/gdm.service.d/90-gtactive3wifi-panfrost.conf
+	install -Dm644 "$srcdir"/panfrost-profile.sh \
+		"$pkgdir"/etc/profile.d/90-gtactive3wifi-panfrost.sh
+	install -Dm644 "$srcdir"/nm-wifi-powersave.conf \
+		"$pkgdir"/usr/lib/NetworkManager/conf.d/90-gtactive3wifi-powersave.conf
+	# this unit's own Wi-Fi MAC address (the nvram has a shared placeholder)
+	install -Dm644 "$srcdir"/80-gtactive3wifi-wlan-mac.rules \
+		"$srcdir"/61-gtactive3wifi-sensors.rules \
+		-t "$pkgdir"/usr/lib/udev/rules.d/
+	install -Dm755 "$srcdir"/wlan-efs-mac \
+		"$pkgdir"/usr/libexec/gtactive3wifi/wlan-efs-mac
 	install -Dm644 "$srcdir"/useradd-defaults "$pkgdir"/etc/default/useradd
 	# the sysext/confext images of this version (scripts/duranium-update)
 	install -Dm755 "$srcdir"/gtactive3wifi-extensions-link.sh \
@@ -128,8 +245,7 @@ package() {
 		"$pkgdir"/usr/share/doc/$pkgname/README
 }
 
-# GNOME (desktop shell) only: word completion, the preinstalled extensions,
-# hardware key bindings
+# GNOME (desktop shell) only: word completion, the preinstalled extensions
 gnome() {
 	pkgdesc="$pkgdesc (GNOME Shell defaults)"
 	install_if="$pkgname=$pkgver-r$pkgrel postmarketos-ui-gnome"
@@ -152,10 +268,47 @@ gnome() {
 	mkdir -p "$subpkgdir"/usr/lib/systemd/user/default.target.wants
 	ln -s ../gtactive3wifi-typing-booster-defaults.service \
 		"$subpkgdir"/usr/lib/systemd/user/default.target.wants/
-	install -Dm644 "$srcdir"/90_gtactive3wifi.gschema.override \
+	install -Dm644 "$srcdir"/90_gtactive3wifi-gnome.gschema.override \
 		-t "$subpkgdir"/usr/share/glib-2.0/schemas/
 	install -Dm644 "$srcdir"/extension.js "$srcdir"/metadata.json \
 		-t "$subpkgdir"/usr/share/gnome-shell/extensions/fast-animations@gtactive3wifi/
+}
+
+# podman (rootless for every user, rootful for root) with Alpine preinstalled:
+# an OCI layout in /usr, loaded into root's store at boot and into each
+# user's store at login (container-images.sh), so "podman run alpine" works
+# offline from the first boot. Users created by useradd (Duranium's first
+# boot, GNOME Settings/accountsservice) get their subordinate ID ranges from
+# shadow (/etc/subuid exists: shadow-subids, a postmarketos-duranium
+# dependency).
+containers() {
+	pkgdesc="$pkgdesc (podman with a preinstalled Alpine image)"
+	# distrobox: containers of other distributions (Fedora, Arch, ...) that
+	# share the home directory and export their apps to the app grid
+	depends="podman distrobox"
+
+	local img="$subpkgdir"/usr/lib/gtactive3wifi/container-images/alpine
+	mkdir -p "$img"
+	cp -R "$srcdir"/alpine-oci/. "$img"/
+	# the name the image is stored under first, then further tags
+	printf '%s\n' docker.io/library/alpine:${_alpine%.*} \
+		docker.io/library/alpine:latest > "$img"/tags
+	tar -xzOf "$srcdir"/$_alpine_rootfs ./etc/alpine-release > "$img"/alpine-release
+
+	install -Dm755 "$srcdir"/container-images.sh \
+		"$subpkgdir"/usr/libexec/gtactive3wifi/container-images
+	install -Dm755 "$srcdir"/containers-selftest.sh \
+		"$subpkgdir"/usr/libexec/gtactive3wifi/containers-selftest
+	install -Dm644 "$srcdir"/gtactive3wifi-container-images.service \
+		-t "$subpkgdir"/usr/lib/systemd/system/
+	install -Dm644 "$srcdir"/gtactive3wifi-container-images.user.service \
+		"$subpkgdir"/usr/lib/systemd/user/gtactive3wifi-container-images.service
+	mkdir -p "$subpkgdir"/usr/lib/systemd/system/multi-user.target.wants \
+		"$subpkgdir"/usr/lib/systemd/user/default.target.wants
+	ln -s ../gtactive3wifi-container-images.service \
+		"$subpkgdir"/usr/lib/systemd/system/multi-user.target.wants/
+	ln -s ../gtactive3wifi-container-images.service \
+		"$subpkgdir"/usr/lib/systemd/user/default.target.wants/
 }
 
 # The bring-up register console (TCP 23 on the USB debug interface: peek,
@@ -209,31 +362,54 @@ initramfs() {
 }
 
 sha512sums="
-63c51b3756c6d576983fda4a9cba4a405b8d098d040a9a89975cd6c3f324ff761639f6a6f1da8bf57df3ddc2ab8c8710e7c1bbabe0eac1e4bd8adb5994e4e189  deviceinfo
-9d1a02a939e1b4a7eced67bc04d822965e1b1b1b4291486eebec0e97c0799a244e4e3430c408e95e8e090501a49b5da0628877703d4d48543257257d657c676b  kernel-cmdline.conf
-c662f89b7ad53b221d529e20450fc67071e4436cc6670eecd89cf007e586337725e600c1cbaac348af239c9a18e1ffd1014c7c2a03ececbdc0919fa1fb1613b9  modules-initfs
+c6afa71ccf2102f8e986145e21b0b1c40d1b65c00664d2563da8aed0b4158d24d6dd1aaacbef4917a315e0f95feda8a6ba9f11c788a55ad96fdd00ccb2026c58  deviceinfo
+69d9c54126b99d878c9ecf4e682b3cbdfe180acb1a9b0286dcbf1e2eb9ddce9cbde870bfd1d54fa4853c9f029339b8de93fc327452b665363c681cbc7c701e42  kernel-cmdline.conf
 acba813ff0feb882b6cb0cc4b4c9f8dc0b9b58cb3da7c6a87920ecf4ef63670ac90f23d3ca6bc5b057832fe8e4388c1eca60b6c79c7f3e50eab6d5986cd349d7  gtactive3wifi-usb-prep.c
 fcf5c1e3a2c601e30acc506b7996770dfeddf2cc2b920bc9acb2858442b2aad71ab2d0fd50590e0cdacc8ebb14fb1c04bdca0007268ad6f62f5988a8ac61e3ad  gtactive3wifi-usb-prep.service
 28297b58b56192c894ed5a1f60a4834b4490945054b6db21dcf72212605fdf4a5cd153331313eab1b78d65b13402038dfd08f5b41e1da9b3bb02db0d012328dc  gta3-console.c
 7478791a06e1df0b4816ae0764e6a688a8b01b6f776ec6d6ae0c4ee09209d166726529419c4cc36321282956abeb70b2e9d8d9fe8656217fae809c901f75b171  gta3-console-libc.h
 82f330fe364cb36c2562f3681dbe578a2ee24b474b7bc9b6e741dbfd806443009834c66a46ed1ca21e0f266f7523c209a425f420c2aaf915af2d15b54c020d49  gta3-debug-console.socket
 7869dae618647e1c4b943d9900c6e10c06f8382039e1b7b7650467e2ce1b61c52b8ec024b5d5db27cb6b4a0e955b4eaa7721ebc7854e5c090611630a4c6d10af  gta3-debug-console@.service
-6ca2c0aea32361f8800404863cc96efe923615dcc88835bd39d33afc3f4f0e033c1ec4f18ab17a0feadb8009a8214eabbcb751032e3d8235d7bc48444e435ef1  gtactive3wifi-initrd-deadline.service
-2fac1d4b87072416f283d63530f1d915b8f1fc6437003702b5946360b815e81a176af7fe4c994b3a700c62f525da7d51a72c8ca5d00d4cc9723cc3e2acf75bdc  90_gtactive3wifi.gschema.override
+e10f0337888b736636ad6b9733f84e7582b63fbec50af619664ac3b4bac54129347e66aa5332650d1a65704f663f3fae68e53ceaef364b8808cdcf1f953adaa6  gtactive3wifi-initrd-deadline.service
+2060b9ff91fa838860bf76880db2e3bd0b84f4e3f83e8f04f4ece8da62debdd22d511c761bd42e8ee35805fc67dff47dd5d41d20f7ecb2a072d920c086f2b563  90_gtactive3wifi.gschema.override
+aee0c0bcd96abab51fbdc857ef492407e17b7a7e2ede101474680111743fa6e992e82ca50d511c151e96ecbdb8a111fcf8c44f602e7fe94ef9129e33de2c606a  90_gtactive3wifi-gnome.gschema.override
+137e3863252649094db29199172514f7b4276175bd86266756d5d2a734a0f2f4fc12700b96c98cc3688992eff70ce71089617ddb6dd9432488416a2cde1ba7b5  sysctl.conf
 98e0ed79a5eb4a5a82da1ef7869fe373e78d6020705d552e9febbf785a51768a4f7558102abec8c58c009f0d4aa70024e6b0c590792d31d709b13739b0727291  gtactive3wifi-reboot.tmpfiles
 cf731ebb4fba799a6d71a30903bdd65245f8c97eca7c3a657f495ab586a9dae0b2dcf0de9d840ce58ed0ca3e71de9e4b6598e60b986a378482b0fccea5a5a38e  firmware-path.tmpfiles
+03f0f4efcb3d5df19072986f240e963c2f85e858d2c9ca3e753303856a2a043f562911242dfd26129f950a2a9343028c11c5f5bd0e16aa813e7f3fa0999a5597  firmware-import.sh
+4f344a0a2db1e599c019a2aa24f7069e810ef2dacb3d517acd167829a77e08b3b2c7971e1adedcce7ecb65c04e5508a49bf8fb9f1441444ed2ca6d72b9901fd8  gtactive3wifi-firmware-import.service
 7508ebcf2c56ebe955e20de9828f2bd54582bf49eebc6021bfaa4c852f87903aae9e933b81ae7b475482651d5dd93caf3a386bdbeea1de2bed9bea3dedc3b210  gtactive3.conf
-1c64f64b8801f95c4589eecad799fd96d1058c65e9bd7ea5f344f279655cf022fcb181ee22a79094c1c80b184308e64ad8071514c75d1f3990f7196eaad3101e  HiFi.conf
-98152aa63f5419364a7b2a4514282e7ce91c9145646f5cd33b39307594d9375f1c84fb9758a62691b87510258229eb2e4ff3d50f82efdf9d5dc3322c3a678fd8  modprobe-gtactive3wifi.conf
-2e91ae6d39910c7ead65fa957aa868984227496712333eb9944add8cabc3e5467633049b3e576bde7969ec8817e08bb11242bffc2023e1ede5b42d89932c25be  90-gtactive3wifi-nested-gpt.rules
+628dee86e15bc34d605433736de6d40078330e4c4a6c8e45e3a092d6218a516079fe0e93432a048d5e2dc4ad9d2ee74923c9a4fe7ee700bfd4d596a0d493c23c  HiFi.conf
+a775c18d0c38a06a4062a13ea47723c00a13eb7bd88d2b5fb7696998e882981eb0036e8aadc6ed3f3d98599520c0ed86e168860a379e5f855115b95560a6d356  modprobe-gtactive3wifi.conf
+2e08172b09954aa03d39305df134614cecfd6d51af46404b68c6e2122fcf224aebd23b133b520c82df160541a9d02e277869486c924e45a26fbc98413f1984bf  90-gtactive3wifi-nested-gpt.rules
 292acb7ff0c65cc5c82869baad4fff8c233fc5c0d3470b745ef25003c272b4ac0d780b868cd50611f6037d9f3322087b6403f28681f2e7aeb17d4a74000fc228  system-watchdog.conf
-426a19b652d01da101ae6d2b4a07f0ca4cda073dd2516faeb7eb70bd643396e4dfebe0b8ce3c2f8830c8d2df893bfce4992e43e690ffbd4ccad37b54105087df  sleep-nosuspend.conf
-6af1082086ee77a980f1bf4b1a6e2eca6e68a0029098e453bb1eddb222b10a025bb3d0211ec3efd141dbdd483cfe45714f5bd14a511b6c56f18b743e054e6357  logind-nosuspend.conf
+045877096b97e31ecfccb086f3cbd88d12a52de24e74590ea5cd9e5a6f41254b007756ff71869e3a021712b50a69d452abd060c244f9409f500886d627a6c8b4  sleep.conf
+387945088babde1318d3ef42dd7db7497a8c69dffcf9b016b8366b6ecbdc63c21fe3b82b1ecfa4ee16a4b9451df2cbf47b8d2246737ae3ee3a39f579ca09c407  logind.conf
+b3a054807f4cd896e1a18fdfc90249adc8f7e155012220693e49b1141d10c0c571e784a39da646a35e5b5f916be07a895a575c094e26b680caa6cefee81e85f4  suspend-gate.sh
+4019671d606592d9cf1d5d4abe6fb131c0f270fc2cdb0e946368fc8576043b2b79f631ba8dee4215e00f2997301d83b8268280aadbc8c01d0b6dfb593cb5f9c7  gtactive3wifi-suspend-gate.service
+dd982aead67e3cc4d6b0b128395d21bcbcd4065f3cfd5c1733123813a48169032a499ee8788c1de3e6d7618718688707868c512cb66d349f33e4b4d8c5237dfe  system-sleep-usb.sh
+76077674d4eb9571713f718fd5bf7ea2575b95bd65ba76cf7f48c8dceac50a6dcb6eba7bd2e1914b585ef58749accf96effb5c6b02cd1f5cdc883e0f5188b5f6  system-sleep-wifi.sh
+95fa85a3da27ed79aaefbd26b2587ea167f9ee0e37af80650049be237084340330480b95278738b599e6dcfda4b336445122a10f391c818334e57ef77d9a12a6  usb-resume-check.sh
+9d5cf13e6260f3c30417156e013c54dc3806ca0ab732d07396e62fd2438ed1ba15bfc4f2f9275814cd17e82407b281df2b6c51f1176f525590aaaca6366df34d  gtactive3wifi-usb-resume.service
+26af87d4a912495b3f46a120eceab3ebfe58337e7006fae0a9d2057e98ac69507ddb0c44550abc7e3482769e74db2844c013fc12c62916021776fc3cf3bd1e09  60-gtactive3wifi-pm.rules
+80f67a6e205e9998eb10797c0fa0bbcca2863559f87551104b5d1d5fc74d5251a7ec8ab6492fe24a8cc35364a9e9e34e779425b280864d4a60c764f78c0108cb  modprobe-gtactive3wifi-camera.conf
+a901cabb56beff176716df29d79a56a2b97e8e36eb6468497d05c2ebf032ac63c310bc554e7a1200355bc25495b9e551c28656296ab5a94987716ad75c38a8d3  libcamera-softisp.yaml
+ee138d47dfd10ccd3864040abbf7838461178194f605430c9a3f1fa5288efb40432e6dda03df1c98c1ceae013d98d706b3d9919a5593b2c30b39a4fb4d872e6e  sysupdate-retry.conf
+ca7c32843e54ca74e6ea1cc6452e43ffdddd22b2aef11b5f8813f8279a53d07f79bfa800c9972f4f20a90c49956bfd5cd910ed380ab76931ec5c1cd9e78d5748  switch-ui.sh
 fa48039f5feea839f0bcfa4101a2a0ea7b988822ebde3cfb4ac632bd4e2962c5d716e15f5091f9f2f1bb1346ebcab94dc840d8e7f36b4f9e5e51cacaacde5d53  panfrost-environment.conf
-45cff4a5fcde57223ccf4b3c9daf209c36bd9f00d9aa0207de7a513cffc74ce9a0f2e7e59e54e9915318dcbca5916f453d755e7397bbe85dc335d088b1bef886  gdm-panfrost.conf
+28cac460860b0987c4f05bbbf64081a07bbfb4bf6e3a9c9f7eef045442e41491a42466eea29fa3717a76f87d02c55fc24448d24405a00466a37da53d1b2ebf4b  gdm-panfrost.conf
+611a89eac00742d374401fea72c9a38659377b282fc304215531be36bb6b11083b427185d24a70ab5fe4b05ee39c721d6ec9dc86c056c0219e6a41db837fb90d  panfrost-profile.sh
+8f78c7ca8f739750579ede9b4ba16e6b1e51c08296ced929fc7db9176f0bb487bad9a096460d65ec05bfb6530dc83eb2c1e2a17155b1bae96ea4778b5b98acad  nm-wifi-powersave.conf
+cbd57e963b49b08d97b12818d44f19bfc736a538bb04299a8d4d58f8609e2e8773b8af87ecfda0370ff4479b57fe5ffc4637fe5c5ba8d2b9b6546915cbe090d6  80-gtactive3wifi-wlan-mac.rules
+4d2c6c11f751b1ac6d028b01f2eece848330cde5b20d971f8cd19bb3cec94b126edc7f3caf82a964297cd940461690b1e50ef8f23dae33b5919d84655de28313  wlan-efs-mac
+c15bf919861bc0d0db2475c751a7ccb9b2773a10e328465d0eb3a5b89125d8e9c03954698b9c9bdfe5bb0a28a8ded4f7bb8af2d4b7cc8a3364b255a0de810d94  61-gtactive3wifi-sensors.rules
 276873db11bcca166df29b472f32becb6b26fe76d1c8adcaab997a5f6b45c3df5c612057cc667111c521a1628ec550b8083b4cd97859d62350a017c27af9ba7a  gtactive3wifi-typing-booster-defaults.sh
 1ee2d69d7825e35c5cebb37c563267f646e5a18eec0616b99ce460c25d197c23f0d38acaad4fee7cb2f850143e5305af6e744f8345e722b8af1df2ad94aee94c  gtactive3wifi-typing-booster-defaults.service
-46d6724f05f817b1d132a119db3cdfd3dda668c2d71f821a40b50fdc5f135032250fd41f8114320fb38f2e97c7eadf9fd5089858b90da9328deee7a6f7fe21c5  80-device-samsung-gtactive3wifi.preset
+83176124d91fa184b062098da1d48ae0d6ec7ca320a2ba34076ddac54958756bde7fc9c8032ee20cb61e65b958fd3b000809b9ec52b524d60e6c70093ecfcfc9  80-device-samsung-gtactive3wifi.preset
+12ecb8f1960365f7ab82897905f0426dbdbfb7d00a6e1a1c0bbbe3ca3bfbe8fe1c463667124c8244975f63f5c8cedac2ace01f35ed590296e2e5db0065f8374d  80-device-samsung-gtactive3wifi.user-preset
+75283b6d91b9ffa5ccbcf05fd5d4ac522462046ade9a8d411ac209a18fbb2cda9ba4509bdc1d0ad2c7b77d8b7c6c5ebe4d2618ad2625266f8ea4ee1ba7014b80  oomd-avoid.conf
+c049eaa52427f76ad7ada60091e9724a97b1f98cf0c503dc20cb2836b71d5cccfd1cebeb3163374a461952be9efa5a6af4e4f1d01b3acc4f069abfe49d3c94bb  powersave.conf
+50533c0384c6270ade75b1a97c7c4adc04cae53e19118804b82518891326aeaf56c61f7a65efec9b158ea273d34642bceecd5bef425538f3a03716a5d9619b21  throughput-performance.conf
 496eafb8c2e21be8923182ee932bac40100e1940805f4e3dcc37a0b1dbfc4c8e5007f2fee9f0f815ed77ce88add0bfc427909e3a31bc01b9887f75d76e1ec244  extension.js
 ddad1d319f586fa4c5b6f91a00d6e99591c5492923d44f9161b71aa09a97b788261e5bdd3657e1eba4d7f501ad272ef82ef918f6c5bcf0077020e8d24e7e143c  metadata.json
 3f57f5c8098f77bc48a77143ac4e4cc52a28a79dc3e90c4216295405ae33c14450ce18cee0a1d1eb4d552e6b1817662fc7ec165229918e63daafd6188b1ba5df  useradd-defaults
@@ -241,5 +417,11 @@ ce1dd5bccf06b2801ac9c4e93c1a1fd52b0c5dbbe962670d500fac2b44cb449086c5bcddfc9ca897
 58974b2dd0b5b9d34dfc8f58f98078f2bcc948343849f9096f3f6538b8762c44096c11a44ef2726519765be56a97febdc7ad0007c1f97312598fa0a02cfc9e62  gtactive3wifi-extensions-link.service
 bda9ea828f0e94654135d6e33b813961d0e0ae4b0dc1ef3d4447bef977555b70c9c7e0fc06e77826b393f0d8f96fe761d97ae0bf1103663cb68290d7045ecb08  boot.mount
 fb2febe60164d63cb0c02ef81f477fd326f53b9a39bbf9487492c4c6743d0e6d4eec5462ebb0bf94c8f8c843616d489870acb3387089862f056134f4ed53890c  boot.automount
-ce77979cb3e9f2b2b5771e0a4d31003e622a617f89b4f0fae775774046412cc4c9f8daa81ed44eb632d58158c876b60d197014035b07c20491ea06c49895fd54  README
+75e0cc358e93a81c069662bc248fa3e993d5c35c72484a6c91de5f0fc0be8e86b3adae2a93a928c5bdecfb2b1a9bf84dcba51e617de3c7543c1e4125524d5869  alpine-minirootfs-3.24.3-aarch64.tar.gz.layer
+5fb366b91087c4b02792e50072bb758dc7fcc303e7a953a40df6bef18b266e3cfa064f33cb2a89a000df967da745d6d73fbae395d9d2268571cc90d0732b1b70  mkoci.sh
+74f250ceaa802e7b12a1fa11c975dec17846cf509a8c4d56a81712b481dc5b0345baffc03306f31988da706dfdc881f28dc9aa4e5f1ae270f9b8c77632e5aead  container-images.sh
+1c7dea1fc828d397636ad2cefd59d481c39f8827269498587057bb97d723742738b79f1c9e60bd5d4d732411868507079e8b02c6546f2a5800a75c22118783e3  containers-selftest.sh
+2f58d3af193c441d90b2b2a25d8f7f5db160ab63fb26b1f36bb6ac3db35cd50ab71693c6fa588873000c9d59542d7f91e6e8d58700a60603f01282f201f522f9  gtactive3wifi-container-images.service
+e4f4a34f93f43ff0439299269252cc487fe1fb763b42a51c887685607560e8dcd096e6b7290fab45006fcd76727bdcd467d2626f4545b6e234e48eaf61ee9f28  gtactive3wifi-container-images.user.service
+c1771f526732c0adea11f1d4191e89751d265b5d596711ee7afd8eef98c9af8ccd4e1a782265e14c5c1bac46f462861958937c6da34a946d8c1e3f95d1ebc4c8  README
 "
