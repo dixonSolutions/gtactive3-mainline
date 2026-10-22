@@ -102,6 +102,9 @@ def verified_manifest(rel, ring, tmp):
     return sums, extra
 
 
+KINDS = ["install-raw", "uki", "usr", "usr-verity", "sysext", "confext", "manifest", "signature"]
+
+
 def kind(name):
     for pat, k in ((r"\.efi$", "uki"), (r"\.usr-[a-z0-9]+-verity\.[0-9a-f]+\.raw\.zst$", "usr-verity"),
                    (r"\.usr-[a-z0-9]+\.[0-9a-f]+\.raw\.zst$", "usr"), (r"-sysext-[a-z0-9]+\.raw\.zst$", "sysext"),
@@ -135,7 +138,7 @@ def channel(ui, flavour, tag, rel, ring, tmp):
         versions.setdefault(m.group(1), []).append(file_entry(assets[name], sha, k))
     out = []
     for v in sorted(versions, reverse=True):
-        files = sorted(versions[v], key=lambda f: f["name"])
+        files = sorted(versions[v], key=lambda f: (KINDS.index(f["kind"]), f["name"]))
         uki = next((f for f in files if f["kind"] == "uki"), None)
         if not uki:
             warn(f"{tag}: version {v} has no UKI, left out")
@@ -177,7 +180,7 @@ def fingerprint(ring):
     out = subprocess.run(["gpg", "--batch", "--show-keys", "--with-colons", str(ring)],
                          check=True, capture_output=True, text=True,
                          env={**os.environ, "GNUPGHOME": str(ring.parent)}).stdout
-    fpr = next(l.split(":")[9] for l in out.splitlines() if l.startswith("fpr:"))
+    fpr = next(line.split(":")[9] for line in out.splitlines() if line.startswith("fpr:"))
     return " ".join(fpr[i:i + 4] for i in range(0, 40, 4))
 
 
@@ -211,7 +214,7 @@ padding:18px 20px;margin:18px 0}.head{display:flex;flex-wrap:wrap;gap:8px;align-
 .tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:560px}
 th,td{text-align:left;padding:6px 8px;border-top:1px solid var(--line);vertical-align:top}
 th{font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-top:0}
-td.sha{max-width:16ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.sha{max-width:24ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 td.num{white-space:nowrap;text-align:right}nav a{margin-right:14px}
 details summary{cursor:pointer;color:var(--muted)}
 """
