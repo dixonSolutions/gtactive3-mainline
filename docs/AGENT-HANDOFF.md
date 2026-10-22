@@ -258,3 +258,17 @@ image 14 (kernel r2). Issues found and fixed on the way:
    exported (`scripts/export-patches.sh`), pushed.
 5. Keep PLAN.md / HARDWARE.md updated. Report to the user in the morning: what
    works (with evidence), what doesn't, and a short list of finger tests.
+
+## Releases and the update server (2026-10-22)
+
+GitHub is the update server: `.github/workflows/images.yml` rebuilds Phosh +
+GNOME images (release and `-dev` channels) when postmarketOS publishes a new
+Duranium build (checked daily) or `pmos/` changes, and publishes each channel
+as a GitHub release with a signed SHA256SUMS. Images point sysupdate there
+and trust only `pmos/sysupdate-public-key.asc` (key + revocation cert:
+`build/secrets/sysupdate-gnupg`, repo secret `SYSUPDATE_SIGNING_KEY`).
+**Release gate:** run `scripts/pmos-export` (then commit + push) only after
+an on-device test; CI publishes exactly what is in `pmos/`. Images carry no
+vendor firmware: it goes to `/var/lib/firmware` (`scripts/firmware-to-tablet`).
+`build-image.sh CHANNEL=dev` (default) = with the USB debug layer;
+`CHANNEL=release` = without. Details: docs/RELEASES.md.
