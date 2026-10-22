@@ -1059,6 +1059,9 @@ int main(void)
 	load_module("/lib/modules/sec-core.ko");
 	load_module("/lib/modules/sec-acpm.ko");
 	load_module("/lib/modules/s2mps11.ko");
+	/* ACPM DVFS clocks + cpufreq-dt (CPU frequency scaling) */
+	load_module("/lib/modules/clk-acpm.ko");
+	load_module("/lib/modules/cpufreq-dt.ko");
 	load_module("/lib/modules/max77705.ko");
 	/* USB-C/BC1.2 input detection: the charger's input supplier */
 	load_module("/lib/modules/max77705_usbc_psy.ko");
