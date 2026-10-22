@@ -22,6 +22,22 @@ the design summary and the staged on-device test plan for the test skill.
   `blackLevel: 4096` confirmed.
 - Captures: logs/test-runs/20261023-chunk2/{bars,rear,front}.raw (truncated
   at the old sizeimage).
+- e8606290d (16-bit words) live-swapped onto r14: Snapshot shows both
+  cameras. Findings and fixes (drv/cam):
+  - both previews upside down: DT rotation rear 90 -> 270, front 270 -> 90
+    (4ad6ec3fd, needs a kernel package);
+  - front went black after a mode switch, "0 DMA starts, 146 DMA errors":
+    a 2576-pixel line at 16 bits (5152 bytes) did not fit the 5 KiB half of
+    the shared DMA SRAM bank; each receiver now gets a whole 10 KiB bank
+    (2f77c736a), and the error log line shows the DMA status and
+    DMA_ERR_CODE;
+  - bad focus: the rear DW9808 voice coil (stock `fimc-is-actuator-dw9808`
+    @0c on I2C_CAM3) is now described and driven by dw9807-vcm with its
+    supplies (ce0b68d26, 4ad6ec3fd). libcamera 0.7.2's simple pipeline
+    has no lens controls: the position is the V4L2 control
+    `focus_absolute` (0-1023, 0 = infinity end) on the lens subdev;
+  - rear module EEPROM @58 exposed through at24/nvmem (AF infinity/macro
+    DAC codes at 0x3314/0x3320, AWB at 0x3340/0x3364 per the stock DT).
 
 ## Design
 
@@ -91,7 +107,10 @@ CSIS2. The camera driver only toggles the receive-side reset (SYSREG_ISPPRE
   make stage C easier; the static `tools/v4l2-grab` works without them.
 
 SoftISP tuning file (both sensors, same content; black level 64 at 10 bits,
-to be confirmed in stage B4):
+measured). The Ccm below is a generic sensor-to-sRGB matrix (rows sum to 1),
+not calibrated for these modules; it brings the colour saturation up and
+enables the Saturation control, but costs time on the CPU debayer: drop it
+if the SoftISP runs on the CPU (log `falling back to CPU debayer`).
 
 ```yaml
 # SPDX-License-Identifier: CC0-1.0
@@ -102,6 +121,16 @@ algorithms:
   - BlackLevel:
       blackLevel: 4096
   - Awb:
+  - Ccm:
+      ccms:
+        - ct: 2800
+          ccm: [ 1.60, -0.40, -0.20,
+                -0.40,  1.70, -0.30,
+                -0.10, -0.80,  1.90 ]
+        - ct: 6500
+          ccm: [ 1.70, -0.50, -0.20,
+                -0.30,  1.60, -0.30,
+                 0.00, -0.50,  1.50 ]
   - Adjust:
   - Agc:
 ...
