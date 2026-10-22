@@ -1,0 +1,91 @@
+#!/bin/bash
+# Log the user in at the tablet's login screen (GDM for GNOME, greetd +
+# phrog for Phosh) over the USB debug console, for unattended tests after a
+# reboot: a virtual keyboard (tools/uinput-type) types the password.
+# The password comes in GTA3_PASSWORD or on stdin (never an argument), goes
+# to tmpfs on the tablet through a pipe and is deleted right after use.
+#
+#   GTA3_PASSWORD=... scripts/tab-login [USER]
+#   printf '%s' "$PASSWORD" | scripts/tab-login [USER]
+#
+# Exit status: 0 the user has a graphical session, 1 no login screen /
+# setup problem, 2 typed but no session appeared (wrong password, the
+# screen was not ready: look at a scripts/tab-shot).
+# shellcheck disable=SC2016 # the single-quoted snippets run on the tablet
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+K=$P/src/linux
+BIN=$P/build/scratch/lead/bin/uinput-type
+# from GTA3_PASSWORD (ClaudeKeys injects secrets as environment variables)
+# or stdin; the variable is dropped right away
+pw=${GTA3_PASSWORD:-}
+unset GTA3_PASSWORD
+[ -n "$pw" ] || IFS= read -r -d '' pw || true
+[ -n "$pw" ] || { echo "tab-login: no password (GTA3_PASSWORD or stdin)" >&2; exit 1; }
+
+t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@" 2>/dev/null | tr -d '\r'; }
+tput_() { flock "$P/build/tab.lock" "$P/scripts/tab-put" "$@" >/dev/null; }
+trun() {	# run a small shell script on the tablet, print its output
+	local f
+	f=$(mktemp)
+	printf '%s\n' "$1" > "$f"
+	tput_ "$f" /run/gta3-login.sh
+	rm -f "$f"
+	t "run /bin/sh /run/gta3-login.sh"
+}
+
+if [ ! -x "$BIN" ] || [ "$P/tools/uinput-type/uinput-type.c" -nt "$BIN" ]; then
+	mkdir -p "$(dirname "$BIN")"
+	aarch64-linux-gnu-gcc -Os -static -nostdlib -fno-stack-protector -Wall \
+		-I"$K/tools/include/nolibc" -I"$P/build/hdr/usr/include" \
+		-include "$K/tools/include/nolibc/nolibc.h" \
+		-o "$BIN" "$P/tools/uinput-type/uinput-type.c" -lgcc
+	aarch64-linux-gnu-strip "$BIN"
+fi
+
+user=${1:-$(trun 'cat /etc/default_user 2>/dev/null' | head -1)}
+[ -n "$user" ] || { echo "tab-login: no user given and no /etc/default_user" >&2; exit 1; }
+sessions='loginctl list-sessions --no-legend 2>/dev/null | while read -r id _ u _; do
+	[ "$u" = "'"$user"'" ] && [ "$(loginctl show-session "$id" -p Class --value)" = user ] &&
+		[ "$(loginctl show-session "$id" -p Type --value)" = wayland ] && echo "$id"
+done'
+if [ -n "$(trun "$sessions" | grep -v '^run:' || true)" ]; then
+	echo "tab-login: $user is already logged in"
+	exit 0
+fi
+
+dm=$(trun 'for d in gdm greetd; do systemctl -q is-active $d.service && echo $d; done' | grep -m1 -E '^(gdm|greetd)$' || true)
+case $dm in
+	# A blanked screen wakes on the first key and swallows it: Shift first.
+	# GDM: the password field of the default user has the focus
+	gdm) keys=('@shift' '@sleep:2000' '@file:/run/gta3-login.pw' '@enter') ;;
+	# phrog: the lock-screen page first; a key press opens the keypad
+	greetd) keys=('@shift' '@sleep:2000' '@enter' '@sleep:1500' '@file:/run/gta3-login.pw' '@enter') ;;
+	*) echo "tab-login: no login screen running (gdm/greetd)" >&2; exit 1 ;;
+esac
+
+# GDM's greeter user gets the GNOME input sources too, IBus Typing Booster
+# first: it handles hardware key events (the on-screen keyboard bypasses
+# it). Plain US for the greeter while typing, reset afterwards.
+gsrun='u=$(loginctl list-sessions --no-legend | awk "\$4 == \"seat0\" {print \$3; exit}");
+	runuser -u "$u" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$u")/bus gsettings'
+if [ "$dm" = gdm ]; then
+	trun "$gsrun set org.gnome.desktop.input-sources sources \"[('xkb', 'us')]\"" >/dev/null
+fi
+
+tput_ "$BIN" /run/uinput-type
+tput_ <(printf '%s' "$pw") /run/gta3-login.pw
+unset pw
+out=$(trun "chmod 755 /run/uinput-type; /run/uinput-type ${keys[*]}; rc=\$?; rm -f /run/gta3-login.pw; echo rc=\$rc")
+echo "tab-login: typed at $dm ($(echo "$out" | grep -m1 'rc=' || echo "$out"))"
+if [ "$dm" = gdm ]; then
+	trun "$gsrun reset org.gnome.desktop.input-sources sources" >/dev/null || true
+fi
+
+for _ in $(seq 1 20); do
+	sleep 3
+	id=$(trun "$sessions" | grep -v '^run:' | head -1 || true)
+	if [ -n "$id" ]; then echo "tab-login: $user logged in (session $id)"; exit 0; fi
+done
+echo "tab-login: no session for $user after 60 s" >&2
+exit 2

@@ -1,0 +1,37 @@
+#!/bin/bash
+# Check the stored test password against the tablet without using it:
+# the LUKS root (cryptsetup --test-passphrase) and the user's account
+# (unix_chkpwd), so a failing tab-unlock / tab-login can be told apart from
+# a wrong secret. The password comes in GTA3_PASSWORD or on stdin, crosses
+# to tmpfs through a pipe and is deleted right after the checks.
+#
+#   GTA3_PASSWORD=... scripts/tab-checkpw [USER]
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+pw=${GTA3_PASSWORD:-}
+unset GTA3_PASSWORD
+[ -n "$pw" ] || IFS= read -r -d '' pw || true
+[ -n "$pw" ] || { echo "tab-checkpw: no password (GTA3_PASSWORD or stdin)" >&2; exit 1; }
+user=${1:-}
+
+flock "$P/build/tab.lock" "$P/scripts/tab-put" <(printf '%s' "$pw") /run/gta3-check.pw >/dev/null
+unset pw
+script=$(mktemp)
+trap 'rm -f "$script"' EXIT
+cat > "$script" <<EOF
+u=\${1:-\$(cat /etc/default_user)}
+root=\$(lsblk -nro NAME,PARTLABEL | awk '\$2 == "pmOS_root" {print "/dev/" \$1; exit}')
+if cryptsetup open --test-passphrase --key-file /run/gta3-check.pw "\$root" 2>/dev/null; then
+	echo "disk:  ok (\$root)"
+else
+	echo "disk:  WRONG (\$root)"
+fi
+if /usr/sbin/unix_chkpwd "\$u" nullok < /run/gta3-check.pw 2>/dev/null; then
+	echo "login: ok (\$u)"
+else
+	echo "login: WRONG (\$u)"
+fi
+rm -f /run/gta3-check.pw
+EOF
+flock "$P/build/tab.lock" "$P/scripts/tab-put" "$script" /run/gta3-check.sh >/dev/null
+flock "$P/build/tab.lock" "$P/scripts/tab" "run /bin/sh /run/gta3-check.sh $user" | tr -d '\r' | grep -E '^(disk|login):'

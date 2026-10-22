@@ -1,9 +1,10 @@
 #!/bin/bash
 # Answer the tablet's disk passphrase prompt over the USB debug console, so
 # unattended tests can reboot a dev image without a human at the screen.
-# The passphrase comes on stdin (never as an argument or in the
-# environment), goes to tmpfs in the initrd and is deleted right after use:
+# The passphrase comes in GTA3_PASSWORD or on stdin (never as an
+# argument), goes to tmpfs in the initrd and is deleted right after use:
 #
+#   GTA3_PASSWORD=... scripts/tab-unlock [TIMEOUT-SECONDS]
 #   printf '%s' "$PASSPHRASE" | scripts/tab-unlock [TIMEOUT-SECONDS]
 #
 # Waits (default 600 s) for the console and a pending systemd password
@@ -13,8 +14,12 @@
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 timeout=${1:-600}
-IFS= read -r -d '' pw || true
-[ -n "$pw" ] || { echo "tab-unlock: no passphrase on stdin" >&2; exit 1; }
+# from GTA3_PASSWORD (ClaudeKeys injects secrets as environment variables)
+# or stdin; the variable is dropped right away
+pw=${GTA3_PASSWORD:-}
+unset GTA3_PASSWORD
+[ -n "$pw" ] || IFS= read -r -d '' pw || true
+[ -n "$pw" ] || { echo "tab-unlock: no passphrase (GTA3_PASSWORD or stdin)" >&2; exit 1; }
 
 t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@" 2>/dev/null | tr -d '\r'; }
 
