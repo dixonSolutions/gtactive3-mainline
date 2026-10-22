@@ -1,0 +1,182 @@
+#!/bin/bash
+# Build the boot-chain payload the installer (./setup.sh) packs into each
+# owner's BOOT image, from public sources only:
+#
+#   uniLoader-chain   uniLoader -> U-Boot -> EFI (Duranium); our bring-up
+#                     Linux is the fallback after a failed chained boot
+#   uniLoader-linux   uniLoader that always starts the bring-up Linux (the
+#                     installer's live environment, USB console on TCP 23)
+#   ramdisk.cpio.gz   the bring-up Linux's initramfs (init + modules +
+#                     mkfs.f2fs for "restore-android")
+#   MANIFEST          versions and source commits
+#
+# Sources: Linux = torvalds/linux at the Duranium kernel aport's _base +
+# its gtactive3wifi.patch, configured with configs/gtactive3-bringup.config;
+# init = initramfs/init.c; U-Boot and uniLoader = patches/{u-boot,uniLoader}
+# on the commits in their BASE files; mkfs.f2fs = Alpine's aarch64
+# f2fs-tools. No Samsung file goes in: the owner's stock DTB and the AVB
+# footer are added on their PC by the installer. All GPL-2.0 (f2fs-tools
+# GPL-2.0/LGPL-2.1, musl MIT); the sources are the URLs in MANIFEST.
+#
+#   ci/bootchain/build OUTDIR [VERSION]
+# env: WORK (default ./bootchain-work), JOBS (default nproc),
+#      LINUX_GIT / UBOOT_GIT / UNILOADER_GIT: local clones that have the base
+#      commits (skips the downloads), NO_F2FS=1 (no container available)
+set -euo pipefail
+R=$(cd "$(dirname "$0")/../.." && pwd)
+OUT=$(mkdir -p "${1:?usage: ci/bootchain/build OUTDIR [VERSION]}" && cd "$1" && pwd)
+VER=${2:-$(date -u +%Y%m%d).0}
+W=$(mkdir -p "${WORK:-$PWD/bootchain-work}" && cd "${WORK:-$PWD/bootchain-work}" && pwd)
+JOBS=${JOBS:-$(nproc)}
+CC=aarch64-linux-gnu-
+AP=$R/pmos/aports/device/testing/linux-postmarketos-exynos9810
+log() { echo "== $*"; }
+
+# git_at URL COMMIT DIR [LOCAL-CLONE]: a clean tree at COMMIT
+git_at() {
+	rm -rf "$3"
+	mkdir -p "$3"
+	if [ -n "${4:-}" ]; then
+		git -C "$4" archive "$2" | tar -x -C "$3"
+	else
+		git -C "$3" init -q
+		git -C "$3" fetch -q --depth 1 "$1" "$2"
+		git -C "$3" checkout -q FETCH_HEAD
+		rm -rf "$3/.git"
+	fi
+}
+
+apply_series() { # DIR PATCHDIR
+	local p
+	for p in "$2"/*.patch; do
+		patch -d "$1" -p1 -s --no-backup-if-mismatch < "$p" || { echo "patch failed: $p" >&2; exit 1; }
+	done
+}
+
+KBASE=$(sed -n 's/^_base="\([0-9a-f]*\)"/\1/p' "$AP/APKBUILD")
+read -r UB_URL UB_BASE < "$R/patches/u-boot/BASE"
+read -r UL_URL UL_BASE < "$R/patches/uniLoader/BASE"
+[ -n "$KBASE" ] && [ -n "$UB_BASE" ] && [ -n "$UL_BASE" ] || { echo "missing base commits" >&2; exit 1; }
+
+log "Linux $KBASE + $(basename "$AP")/gtactive3wifi.patch"
+K=$W/linux
+if [ -n "${LINUX_GIT:-}" ]; then
+	git_at "" "$KBASE" "$K" "$LINUX_GIT"
+else
+	rm -rf "$K"; mkdir -p "$K"
+	curl -fsSL "https://github.com/torvalds/linux/archive/$KBASE.tar.gz" | tar -xz -C "$K" --strip-components=1
+fi
+patch -d "$K" -p1 -s --no-backup-if-mismatch < "$AP/gtactive3wifi.patch"
+
+log "U-Boot $UB_BASE + patches/u-boot"
+git_at "$UB_URL" "$UB_BASE" "$W/u-boot" "${UBOOT_GIT:-}"
+apply_series "$W/u-boot" "$R/patches/u-boot"
+
+log "uniLoader $UL_BASE + patches/uniLoader"
+git_at "$UL_URL" "$UL_BASE" "$W/uniloader" "${UNILOADER_GIT:-}"
+apply_series "$W/uniloader" "$R/patches/uniLoader"
+
+# ---------- mkfs.f2fs (Alpine aarch64 binaries, no emulation needed) ----------
+F=$W/f2fs
+rm -rf "$F"; mkdir -p "$F"
+F2FS_VER=none
+if [ "${NO_F2FS:-0}" != 1 ]; then
+	log "f2fs-tools (Alpine aarch64)"
+	RT=$(command -v docker || command -v podman)
+	"$RT" run --rm -v "$F:/out:Z" docker.io/library/alpine:3.22 sh -euc '
+		apk add --quiet --no-cache --arch aarch64 --root /out --initdb --no-scripts \
+			--keys-dir /usr/share/apk/keys/aarch64 \
+			--repository https://dl-cdn.alpinelinux.org/alpine/v3.22/main f2fs-tools
+		apk info --root /out -v 2>/dev/null | sort > /out/.versions
+		chown -R '"$(id -u):$(id -g)"' /out'
+	F2FS_VER=$(tr '\n' ' ' < "$F/.versions")
+	[ -x "$F/usr/sbin/mkfs.f2fs" ] || { echo "no mkfs.f2fs from Alpine" >&2; exit 1; }
+fi
+
+# ---------- the bring-up Linux (scripts/build.sh without local extras) ----------
+B=$W/bringup
+P=$W/p           # stands in for the repo root in the @P@ templates
+rm -rf "$P"; mkdir -p "$P/build/initramfs/modules"
+MK="make -s -C $K ARCH=arm64 CROSS_COMPILE=$CC O=$B"
+
+gen_list() {
+	sed "s|@P@|$P|g" "$R/configs/initramfs.list.in"
+	local f
+	for f in "$P"/build/initramfs/modules/*.ko; do
+		[ -e "$f" ] && echo "file /lib/modules/$(basename "$f") $f 0644 0 0"
+	done
+	# mkfs.f2fs with its libraries (musl loader at /lib, libs at /usr/lib)
+	if [ -x "$F/usr/sbin/mkfs.f2fs" ]; then
+		printf 'dir /usr 0755 0 0\ndir /usr/sbin 0755 0 0\ndir /usr/lib 0755 0 0\n'
+		(cd "$F" && find lib usr/lib usr/sbin/mkfs.f2fs -path lib/apk -prune -o \
+			\( -type f -o -type l -o -type d \) -print 2>/dev/null | sort | while read -r e; do
+			case $e in lib|usr/lib) continue ;; esac
+			if [ -L "$e" ]; then echo "slink /$e $(readlink "$e") 0777 0 0"
+			elif [ -d "$e" ]; then echo "dir /$e 0755 0 0"
+			else echo "file /$e $F/$e $(stat -c %a "$e") 0 0"; fi
+		done)
+	fi
+}
+
+log "kernel headers"
+$MK headers_install INSTALL_HDR_PATH="$W/hdr/usr" >/dev/null
+log "init"
+${CC}gcc -Os -static -nostdlib -fno-stack-protector -fno-asynchronous-unwind-tables \
+	-I"$R/initramfs/stub" -I"$K/tools/include/nolibc" -I"$W/hdr/usr/include" \
+	-include "$K/tools/include/nolibc/nolibc.h" \
+	-o "$P/build/initramfs/init" "$R/initramfs/init.c" -lgcc
+
+log "kernel config"
+gen_list > "$P/build/initramfs.list"
+sed "s|@P@|$P|g" "$R/configs/gtactive3-bringup.config" > "$W/bringup.config"
+$MK allnoconfig >/dev/null
+(cd "$K" && KCONFIG_CONFIG=$B/.config scripts/kconfig/merge_config.sh -m -O "$B" "$B/.config" "$W/bringup.config" >/dev/null)
+$MK olddefconfig
+
+log "kernel + modules (-j$JOBS)"
+$MK -j"$JOBS" Image modules
+find "$B" -name '*.ko' -exec cp {} "$P/build/initramfs/modules/" \;
+${CC}strip --strip-debug "$P"/build/initramfs/modules/*.ko
+gen_list > "$P/build/initramfs.list"
+$MK -j"$JOBS" Image exynos/exynos9810-gtactive3wifi.dtb   # relink with the modules
+"$B/usr/gen_init_cpio" "$P/build/initramfs.list" | gzip -9n > "$OUT/ramdisk.cpio.gz"
+
+log "U-Boot"
+UBO=$W/u-boot-out
+make -s -C "$W/u-boot" O="$UBO" CROSS_COMPILE=$CC gtactive3wifi_defconfig
+make -s -C "$W/u-boot" O="$UBO" CROSS_COMPILE=$CC -j"$JOBS"
+[ "$(dd if="$UBO/u-boot.bin" bs=1 skip=56 count=4 2>/dev/null)" = "$(printf 'ARM\x64')" ] ||
+	{ echo "u-boot.bin has no arm64 Image header" >&2; exit 1; }
+
+log "uniLoader (chain, linux)"
+UL=$W/uniloader
+cp "$B/arch/arm64/boot/Image" "$UL/blob/Image"
+cp "$B/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dtb" "$UL/blob/dtb"
+cp "$OUT/ramdisk.cpio.gz" "$UL/blob/ramdisk"
+cp "$UBO/u-boot.bin" "$UL/blob/u-boot.bin"
+for m in chain:0 linux:1; do
+	make -s -C "$UL" ARCH=aarch64 CROSS_COMPILE=$CC clean >/dev/null 2>&1 || true
+	make -s -C "$UL" ARCH=aarch64 CROSS_COMPILE=$CC gtactive3wifi_chain_defconfig
+	sed -i "s/^CONFIG_CHAINLOAD_DEFAULT=.*/CONFIG_CHAINLOAD_DEFAULT=${m#*:}/" "$UL/.config"
+	make -s -C "$UL" ARCH=aarch64 CROSS_COMPILE=$CC -j"$JOBS"
+	grep -q "^#define CONFIG_CHAINLOAD_DEFAULT ${m#*:}\$" "$UL/include/generated/autoconf.h" ||
+		{ echo "CONFIG_CHAINLOAD_DEFAULT did not stick" >&2; exit 1; }
+	cp "$UL/uniLoader" "$OUT/uniLoader-${m%:*}"
+done
+
+{
+	echo "version: $VER"
+	echo "repo: $(git -C "$R" rev-parse HEAD 2>/dev/null || echo unknown)"
+	echo "linux: https://github.com/torvalds/linux $KBASE + pmos/aports/device/testing/linux-postmarketos-exynos9810/gtactive3wifi.patch (sha256 $(sha256sum < "$AP/gtactive3wifi.patch" | cut -c1-64))"
+	echo "linux-config: configs/gtactive3-bringup.config"
+	echo "init: initramfs/init.c"
+	echo "u-boot: $UB_URL $UB_BASE + patches/u-boot ($(find "$R/patches/u-boot" -name "*.patch" | wc -l) patches)"
+	echo "uniloader: $UL_URL $UL_BASE + patches/uniLoader ($(find "$R/patches/uniLoader" -name "*.patch" | wc -l) patches)"
+	echo "f2fs-tools: $F2FS_VER (https://dl-cdn.alpinelinux.org/alpine/v3.22/main, aarch64)"
+	echo "licenses: GPL-2.0 (Linux, U-Boot, uniLoader, init), GPL-2.0/LGPL-2.1 (f2fs-tools), MIT (musl)"
+	echo "contains no Samsung files: the installer adds the owner's stock DTB and the AVB footer"
+	(cd "$OUT" && sha256sum uniLoader-chain uniLoader-linux ramdisk.cpio.gz)
+} > "$OUT/MANIFEST"
+tar -C "$OUT" -czf "$OUT/gtactive3wifi-bootchain_$VER.tar.gz" uniLoader-chain uniLoader-linux ramdisk.cpio.gz MANIFEST
+log "payload: $OUT/gtactive3wifi-bootchain_$VER.tar.gz"
+cat "$OUT/MANIFEST"

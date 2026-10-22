@@ -1,0 +1,50 @@
+#!/bin/bash
+# Publish a boot-chain payload (ci/bootchain/build) to the GitHub release
+# samsung-gtactive3wifi_bootchain, where ./setup.sh fetches it:
+#
+#   ci/bootchain/publish TARBALL
+#
+# Like ci/publish for the images: the new file goes up first, then a new
+# SHA256SUMS (this payload and the previous one) signed with the project key
+# (detached SHA256SUMS.gpg), then older payloads are deleted.
+# Needs: GH_TOKEN, GITHUB_REPOSITORY, GNUPGHOME with the signing key.
+set -euo pipefail
+TAR=${1:?usage: ci/bootchain/publish TARBALL}
+TAG=samsung-gtactive3wifi_bootchain
+REPO=${GITHUB_REPOSITORY:?}
+KEEP=${KEEP:-2}
+HERE=$(cd "$(dirname "$0")" && pwd)
+PUB=$HERE/../../pmos/sysupdate-public-key.asc
+W=$(mktemp -d)
+trap 'rm -rf "$W"' EXIT
+NAME=$(basename "$TAR")
+[[ $NAME =~ ^gtactive3wifi-bootchain_[0-9.]+\.tar\.gz$ ]] || { echo "unexpected name $NAME" >&2; exit 1; }
+
+if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+	gh release create "$TAG" -R "$REPO" --target "${GITHUB_SHA:-main}" --prerelease --latest=false \
+		--title "Boot chain payload (uniLoader + U-Boot + bring-up Linux)" \
+		--notes "GPL boot chain for the SM-T570 installer (./setup.sh). No Samsung files: the installer adds your stock DTB. Sources: MANIFEST in the tarball. Signed SHA256SUMS: project key, see docs/RELEASES.md."
+fi
+
+: > "$W/old"
+if gh release download "$TAG" -R "$REPO" -D "$W/dl" -p SHA256SUMS -p SHA256SUMS.gpg 2>/dev/null; then
+	gpg --batch --no-default-keyring --keyring "$W/ring.pgp" --import "$PUB" 2>/dev/null
+	gpg --batch --no-default-keyring --keyring "$W/ring.pgp" --verify "$W/dl/SHA256SUMS.gpg" "$W/dl/SHA256SUMS"
+	grep -v " $NAME\$" "$W/dl/SHA256SUMS" > "$W/old" || true
+fi
+mapfile -t olds < <(awk '{ print $2 }' "$W/old" | sort -V)
+drop=()
+n=$(( ${#olds[@]} - (KEEP - 1) ))
+[ "$n" -gt 0 ] && drop=("${olds[@]:0:$n}")
+for d in "${drop[@]}"; do sed -i "/ $d\$/d" "$W/old"; done
+
+(cd "$(dirname "$TAR")" && sha256sum "$NAME") > "$W/SHA256SUMS"
+cat "$W/old" >> "$W/SHA256SUMS"
+gpg --batch --yes --detach-sign -o "$W/SHA256SUMS.gpg" "$W/SHA256SUMS"
+
+gh release upload "$TAG" -R "$REPO" --clobber "$TAR"
+gh release upload "$TAG" -R "$REPO" --clobber "$W/SHA256SUMS" "$W/SHA256SUMS.gpg"
+for d in "${drop[@]}"; do
+	gh release delete-asset "$TAG" "$d" -R "$REPO" -y || true
+done
+echo "published $NAME to $TAG"
