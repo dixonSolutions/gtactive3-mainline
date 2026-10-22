@@ -1,0 +1,35 @@
+device-samsung-gtactive3wifi: Samsung Galaxy Tab Active3 Wi-Fi (SM-T570)
+
+Early boot (device-samsung-gtactive3wifi-initramfs, also in the Duranium
+initrd):
+- gtactive3wifi-usb-prep.service: forces the USB 3.0 DRD clock gates on
+  (/dev/mem, no clock driver yet), loads exynos-usi + i2c-exynos5 and routes
+  the MAX77705 USB-C data switch to the AP over i2c-0 (address 0x25,
+  {0x21 0x06 0x09} then {0x41 0x00}), then loads the USB PHY and dwc3.
+  Runs once per boot (/run/gtactive3wifi/usb-prep.done). Off:
+  gtactive3wifi.usb_prep=0 on the kernel command line.
+- RuntimeWatchdogSec=30s on /dev/watchdog0 (PID 1), no reboot/shutdown
+  deadline; U-Boot stops the watchdog uniLoader arms.
+- gtactive3wifi-initrd-deadline.service (initrd only): reboots to Download
+  mode if the initrd has not switched root after 600 s, not counting the
+  time a password prompt is open (PID 1 keeps petting the watchdog while
+  the initrd waits forever for a missing root disk). Off:
+  gtactive3wifi.initrd_deadline=0.
+- 90-gtactive3wifi-nested-gpt.rules: exposes the GPT nested in the
+  userdata partition as a partitioned loop device.
+
+Booted system: suspend disabled (no SoC PM yet).
+- UI-neutral: one device package for every image variant (UI=gnome,
+  UI=phosh, ...). PAN_MESA_DEBUG=noafbc for gdm, greetd and user sessions.
+- device-samsung-gtactive3wifi-gnome (installs itself with
+  postmarketos-ui-gnome): fast-animations@gtactive3wifi (St slow-down
+  factor 0.6), Blur my Shell and Touchup enabled by default, Home/Recent
+  key bindings, IBus Typing Booster (gschema override).
+- New users get /bin/bash (/etc/default/useradd).
+- gtactive3wifi-extensions-link.service: links the sysext/confext images
+  of this image version from /var/lib/duranium-extensions into
+  /run/extensions and /run/confexts before systemd-sysext/-confext merge
+  (scripts/duranium-update delivers them with each A/B update).
+
+Regular pmOS boot.img chain: device-samsung-gtactive3wifi-bootimg (installed
+with boot-deploy) pulls uniLoader, the stock DT table and the AVB tools.

@@ -1,0 +1,10 @@
+[Unit]
+Description=Typing Booster and extension defaults (once per user)
+ConditionPathExists=!%S/gtactive3wifi/typing-booster-defaults
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gtactive3wifi/typing-booster-defaults
+
+[Install]
+WantedBy=default.target

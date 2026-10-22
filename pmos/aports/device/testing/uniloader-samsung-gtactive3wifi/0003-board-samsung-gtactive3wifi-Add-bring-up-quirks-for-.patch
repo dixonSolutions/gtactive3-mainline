@@ -1,0 +1,281 @@
+From e784d7fcff7ca79e584d1cb255baa6f0131893f7 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:03:51 +1100
+Subject: [PATCH 3/3] board: samsung: gtactive3wifi: Add bring-up quirks for
+ mainline Linux
+
+Mainline has no clock or MAX77705 drivers for the SM-T570 yet. Optionally
+do in uniLoader what the bring-up initramfs does, so a generic initramfs
+(postmarketOS) gets working USB:
+
+- GTACTIVE3WIFI_BRINGUP_QUIRKS: force the CMU_TOP/CMU_FSYS0 USB30DRD clock
+  gates on, and switch the MAX77705 USB data lines to the AP with
+  COMMAND_CONTROL1_WRITE (COM_USB) over bit-banged I2C on the HSI2C_40
+  pins (SCL gpm14-0, SDA gpm15-0), since the bootloader leaves the switch
+  open after a warm boot with the cable attached.
+- GTACTIVE3WIFI_RESET_TO_DOWNLOAD: write the "download" reboot reason to
+  PMU INFORM2/3 so any reset lands in Odin mode (development only). With
+  APPENDED_PAYLOAD, a payload that cannot be booted resets the SoC
+  through PMU SWRESET after ~10 s instead of hanging.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ board/Kconfig                       |  22 ++++
+ board/samsung/board-gtactive3wifi.c | 189 ++++++++++++++++++++++++++++
+ 2 files changed, 211 insertions(+)
+
+diff --git a/board/Kconfig b/board/Kconfig
+index cb16ed7..84fa0d3 100644
+--- a/board/Kconfig
++++ b/board/Kconfig
+@@ -358,6 +358,28 @@ menu "Device Support"
+ 		help
+ 		  Say Y if you want to include support for Samsung Galaxy Tab Active3
+ 
++	config GTACTIVE3WIFI_BRINGUP_QUIRKS
++		bool "Galaxy Tab Active3: set up USB for mainline Linux"
++		default n
++		depends on SAMSUNG_GTACTIVE3WIFI
++		help
++		  Until mainline has clock and MAX77705 drivers for this board:
++		  force the USB 3.0 DRD clock gates on and route the USB data
++		  lines to the SoC by talking to the MAX77705 over bit-banged
++		  I2C, so the Linux USB gadget works from the first boot.
++
++	config GTACTIVE3WIFI_RESET_TO_DOWNLOAD
++		bool "Galaxy Tab Active3: any reset enters Download mode"
++		default n
++		depends on SAMSUNG_GTACTIVE3WIFI
++		help
++		  Write the "download" reboot reason to the PMU before Linux
++		  starts, so a panic, watchdog or plain reboot ends up in Odin
++		  mode where a new image can be flashed. With APPENDED_PAYLOAD,
++		  a payload that cannot be booted also resets the board instead
++		  of hanging. For development only; "reboot" with an explicit
++		  mode still works as usual.
++
+ 	config SAMSUNG_STARLTE
+ 		bool "Support for Samsung Galaxy S9"
+ 		default n
+diff --git a/board/samsung/board-gtactive3wifi.c b/board/samsung/board-gtactive3wifi.c
+index b966efe..d50204c 100644
+--- a/board/samsung/board-gtactive3wifi.c
++++ b/board/samsung/board-gtactive3wifi.c
+@@ -5,11 +5,186 @@
+ #include <board.h>
+ #include <util.h>
+ #include <drivers/framework.h>
++#include <lib/debug.h>
++#include <main/boot.h>
+ #include <lib/simplefb.h>
+ 
+ #define DECON_F_BASE		0x16030000
+ #define HW_SW_TRIG_CONTROL	0x70
+ 
++#define REG(a)			(*(volatile unsigned int *)(unsigned long)(a))
++
++#ifdef CONFIG_GTACTIVE3WIFI_RESET_TO_DOWNLOAD
++/* PMU reboot reason, as Samsung's bootloader reads it after a reset */
++#define PMU_INFORM2		0x14060808
++#define PMU_INFORM3		0x1406080c
++#define SEC_POWER_RESET		0x12345678
++#define SEC_REASON_DOWNLOAD	0x12345671
++
++/* Samsung exynos-reboot.c: writing 1 to PMU SWRESET resets the SoC */
++#define PMU_SWRESET		0x14060400
++
++static void gtactive3wifi_reset_to_download(void)
++{
++	REG(PMU_INFORM2) = SEC_POWER_RESET;
++	REG(PMU_INFORM3) = SEC_REASON_DOWNLOAD;
++	printk(KERN_INFO, "any reset now enters Download mode\n");
++}
++
++#ifdef CONFIG_APPENDED_PAYLOAD
++/* Do not hang when the payload is bad: leave the message up, then reset */
++void payload_boot_failed(void)
++{
++	printk(KERN_EMERG, "payload boot failed, resetting to Download mode\n");
++	/* roughly 10 s: uncached reads of a PMU register */
++	for (unsigned long i = 0; i < 50000000UL; i++)
++		(void)REG(PMU_INFORM3);
++	gtactive3wifi_reset_to_download();
++	REG(PMU_SWRESET) = 1;
++}
++#endif
++#endif
++
++#ifdef CONFIG_GTACTIVE3WIFI_BRINGUP_QUIRKS
++/* CMU gate registers: CG_VAL and MANUAL keep the clock running */
++#define GATE_CLKCMU_FSYS0_USB30DRD	0x1a242064	/* CMU_TOP */
++#define GOUT_USB30DRD_REF_CLK		0x1100206c	/* CMU_FSYS0 */
++#define GATE_CG_VAL			(1u << 21)
++#define GATE_MANUAL			(1u << 20)
++
++/*
++ * HSI2C_40 pins in the CMGP pin controller: SCL = gpm14-0, SDA = gpm15-0.
++ * Open drain: "0" drives low (CON = output), "1" releases the line (CON =
++ * input) and the board pull-up raises it. Never driven high.
++ */
++#define PINCTRL_CMGP		0x14220000
++#define GPM14			(PINCTRL_CMGP + 0x180)
++#define GPM15			(PINCTRL_CMGP + 0x1a0)
++#define CON(p)			REG((p) + 0x0)
++#define DAT(p)			REG((p) + 0x4)
++#define PUD(p)			REG((p) + 0x8)
++
++static unsigned long bb_sda, bb_scl;
++
++static void bb_delay(void)
++{
++	for (int i = 0; i < 80; i++)
++		(void)CON(GPM14);
++}
++
++static void bb_rel(unsigned long p) { CON(p) = CON(p) & ~0xfu; }
++static int bb_get(unsigned long p) { return DAT(p) & 1; }
++
++static void bb_low(unsigned long p)
++{
++	DAT(p) = DAT(p) & ~1u;
++	CON(p) = (CON(p) & ~0xfu) | 1u;
++}
++
++static void bb_scl_rel(void)
++{
++	bb_rel(bb_scl);
++	/* clock stretching, bounded */
++	for (int i = 0; i < 2000 && !bb_get(bb_scl); i++)
++		bb_delay();
++}
++
++static void bb_start(void)
++{
++	bb_rel(bb_sda); bb_scl_rel(); bb_delay();
++	bb_low(bb_sda); bb_delay();
++	bb_low(bb_scl); bb_delay();
++}
++
++static void bb_stop(void)
++{
++	bb_low(bb_sda); bb_delay();
++	bb_scl_rel(); bb_delay();
++	bb_rel(bb_sda); bb_delay();
++}
++
++static int bb_bit(int b)
++{
++	if (b)
++		bb_rel(bb_sda);
++	else
++		bb_low(bb_sda);
++	bb_delay();
++	bb_scl_rel();
++	bb_delay();
++	b = bb_get(bb_sda);
++	bb_low(bb_scl);
++	bb_delay();
++	return b;
++}
++
++/* returns 1 on ACK */
++static int bb_byte(int v)
++{
++	for (int i = 7; i >= 0; i--)
++		bb_bit((v >> i) & 1);
++	return !bb_bit(1);
++}
++
++static int bb_write(int addr, const unsigned char *b, int n)
++{
++	int ok;
++
++	bb_start();
++	ok = bb_byte(addr << 1);
++	for (int i = 0; ok && i < n; i++)
++		ok = bb_byte(b[i]);
++	bb_stop();
++	return ok;
++}
++
++/*
++ * The bootloader leaves the MAX77705 USB data switch open after a warm boot
++ * with the cable attached. Send the USB-C block (0x25) COMMAND_CONTROL1_WRITE
++ * with COMN1SW = COMP2SW = USB (0x09), as Samsung's MUIC driver does.
++ */
++static void gtactive3wifi_max77705_usb(void)
++{
++	static const unsigned char sw[3] = { 0x21, 0x06, 0x09 }, end[2] = { 0x41, 0x00 };
++	unsigned int con14 = CON(GPM14), con15 = CON(GPM15);
++	unsigned int pud14 = PUD(GPM14), pud15 = PUD(GPM15);
++	int map;
++
++	PUD(GPM14) = pud14 & ~0xfu;	/* board pull-ups only */
++	PUD(GPM15) = pud15 & ~0xfu;
++	bb_rel(GPM14);
++	bb_rel(GPM15);
++	bb_delay();
++	bb_delay();
++
++	/* SDA is gpm15 on rev 4; probe both orders on the PMIC block (0x66) */
++	for (map = 0; map < 2; map++) {
++		bb_sda = map ? GPM14 : GPM15;
++		bb_scl = map ? GPM15 : GPM14;
++		if (bb_write(0x66, 0, 0))
++			break;
++	}
++	if (map == 2)
++		printk(KERN_WARNING, "MAX77705: no ACK, USB data switch untouched\n");
++	else if (bb_write(0x25, sw, 3) && bb_write(0x25, end, 2))
++		printk(KERN_INFO, "MAX77705: USB data switch -> AP\n");
++	else
++		printk(KERN_WARNING, "MAX77705: USB-C block NACK\n");
++
++	/* hand the pins back to the HSI2C function */
++	CON(GPM14) = con14;
++	CON(GPM15) = con15;
++	PUD(GPM14) = pud14;
++	PUD(GPM15) = pud15;
++}
++
++static void gtactive3wifi_usb_clocks(void)
++{
++	REG(GATE_CLKCMU_FSYS0_USB30DRD) |= GATE_CG_VAL | GATE_MANUAL;
++	REG(GOUT_USB30DRD_REF_CLK) |= GATE_CG_VAL | GATE_MANUAL;
++}
++#endif
++
+ // Early initialization
+ int gtactive3wifi_init(void)
+ {
+@@ -18,6 +193,19 @@ int gtactive3wifi_init(void)
+ 	return 0;
+ }
+ 
++// Late initialization, after the framebuffer console is up
++static int gtactive3wifi_late_init(void)
++{
++#ifdef CONFIG_GTACTIVE3WIFI_RESET_TO_DOWNLOAD
++	gtactive3wifi_reset_to_download();
++#endif
++#ifdef CONFIG_GTACTIVE3WIFI_BRINGUP_QUIRKS
++	gtactive3wifi_usb_clocks();
++	gtactive3wifi_max77705_usb();
++#endif
++	return 0;
++}
++
+ /* Bootloader framebuffer (stock DTBO "exynos,fb_handover" at 0xca000000) */
+ static struct video_info gtactive3wifi_fb = {
+ 	.format = FB_FORMAT_ARGB8888,
+@@ -36,6 +224,7 @@ struct board_data board_ops = {
+ 	.name = "samsung-gtactive3wifi",
+ 	.ops = {
+ 		.early_init = gtactive3wifi_init,
++		.late_init = gtactive3wifi_late_init,
+ 	},
+ 	.devices = gtactive3wifi_devices,
+ 	.num_devices = ARRAY_SIZE(gtactive3wifi_devices),
+-- 
+2.56.0
+

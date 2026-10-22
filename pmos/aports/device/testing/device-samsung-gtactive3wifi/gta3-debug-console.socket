@@ -1,0 +1,26 @@
+[Unit]
+Description=SM-T570 bring-up debug console (TCP 23, USB debug interface only)
+# The same console as the gtactive3-mainline bring-up init (peek/poke/dump,
+# cat/put, insmod/rmmod, i2c, run, ulog, discard, reboot), so the host tools
+# scripts/tab, tab-get and tab-put keep working in the initrd and in the
+# booted Duranium system. Off with duranium.usb_debug=0, like the rest of
+# the USB debug layer.
+ConditionKernelCommandLine=!duranium.usb_debug=0
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+After=duranium-usb-debug.service
+
+# Started in the initrd: keep listening across the switch-root isolate
+# (the parent target is IgnoreOnIsolate too, so nothing would restart it)
+IgnoreOnIsolate=yes
+
+[Socket]
+ListenStream=23
+BindToDevice=usb0
+BindIPv6Only=ipv6-only
+Accept=yes
+MaxConnections=8
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:59:53 +1100
+Subject: [PATCH 08/25] contrib: gtactive3wifi: GNOME names in the install and
+ test steps
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/README.md | 15 ++++++++-------
+ scripts/mkosi-container                 |  6 ++++++
+ 2 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/README.md b/contrib/samsung-gtactive3wifi/README.md
+index b942c25..4851a4b 100644
+--- a/contrib/samsung-gtactive3wifi/README.md
++++ b/contrib/samsung-gtactive3wifi/README.md
+@@ -125,7 +125,7 @@ pmbootstrap's cross-native mode, no qemu) into `build/wt/duranium-localpkgs`;
+ sources are cached in `build/wt/duranium-distfiles`. `build-image.sh`
+ symlinks `duranium/pmaports` to the worktree and runs mkosi in its container
+ (`scripts/mkosi-container`) with that package directory. Output:
+-`mkosi.output/samsung-gtactive3wifi_phosh_edge/`.
++`mkosi.output/samsung-gtactive3wifi_gnome_edge/`.
+ 
+ The UKI embeds exactly one DTB (`exynos9810-gtactive3wifi.dtb`, the kernel
+ package ships only that one), so mkosi uses an unconditional `.dtb` section
+@@ -137,7 +137,7 @@ From the bring-up console (S-Boot -> uniLoader -> bring-up Linux):
+ 
+ ```sh
+ contrib/samsung-gtactive3wifi/install-to-userdata.sh \
+-    mkosi.output/samsung-gtactive3wifi_phosh_edge/samsung-gtactive3wifi_phosh_edge_<ver>.raw
++    mkosi.output/samsung-gtactive3wifi_gnome_edge/samsung-gtactive3wifi_gnome_edge_<ver>.raw
+ ```
+ 
+ It refuses anything that is not a 4K-sector GPT image, checks on the device
+@@ -175,7 +175,7 @@ telnet shell, not the bring-up command console, so `scripts/tab`,
+ | Suspend/resume hang | suspend is disabled (sleep.conf.d, logind.conf.d) | - |
+ 
+ Not a reset: a hang of the booted system while PID 1 keeps running (e.g.
+-phosh frozen). That case is reached over the USB debug layer instead.
++GNOME frozen). That case is reached over the USB debug layer instead.
+ 
+ ## Test plan
+ 
+@@ -187,14 +187,14 @@ Prerequisites, in this order (each is its own layer with its own live test):
+    chainload test "U-Boot `fallback` comes back to the bring-up console
+    without touching the device" must have passed: every step below relies
+    on it.
+-2. Host build done: `contrib/samsung-gtactive3wifi/build-image.sh` (phosh).
++2. Host build done: `contrib/samsung-gtactive3wifi/build-image.sh` (GNOME).
+ 
+ Steps (lead; device steps through `flock build/tab.lock`):
+ 
+ 1. HOST, kernel sanity. `grep -x 'CONFIG_INITRAMFS_SOURCE=""'
+    build/wt/pmaports-duranium/device/testing/linux-postmarketos-exynos9810/config-postmarketos-exynos9810.aarch64`;
+    `kernel/gen-kernel-config.sh` passes (fragment applied, kconfigcheck PASS).
+-2. HOST, image sanity. In `mkosi.output/samsung-gtactive3wifi_phosh_edge/`:
++2. HOST, image sanity. In `mkosi.output/samsung-gtactive3wifi_gnome_edge/`:
+    the `.efi` UKI's command line
+    (`objcopy -O binary --only-section=.cmdline <uki>.efi /dev/stdout`)
+    contains `usrhash=`, `maxcpus=4`, `clk_ignore_unused`,
+@@ -237,9 +237,10 @@ Steps (lead; device steps through `flock build/tab.lock`):
+    `useradd --create-home --user-group --shell /bin/sh --groups audio,input,netdev,plugdev,video,wheel,render user;
+    echo user:<pw> | chpasswd; echo user > /etc/default_user; systemctl daemon-reload;
+    pkill f0rmz; sleep 2; systemctl reset-failed; systemctl start display-manager.service`.
+-9. DEVICE, GUI: `pgrep -a phoc; pgrep -a phosh; journalctl -b -u display-manager --no-pager | tail -50;
++9. DEVICE, GUI: `pgrep -a gdm; pgrep -a gnome-shell; journalctl -b -u display-manager --no-pager | tail -50;
+    mount -t debugfs none /sys/kernel/debug; cat /sys/kernel/debug/dri/0/framebuffer`.
+-   PASS: phoc and phosh running, a 1200x1920 framebuffer allocated by phoc.
++   PASS: gdm and gnome-shell running, a 1200x1920 framebuffer allocated by
++   gnome-shell (mutter) on the panfrost render node or simpledrm.
+    Keys via gpio-keys: `cat /proc/bus/input/devices`. Touch only if the touch
+    track's driver is in this kernel.
+ 10. DEVICE, USB debug layer: from the host, (a) `nc ... 24 | head` shows the
+diff --git a/scripts/mkosi-container b/scripts/mkosi-container
+index 00f2a54..6087c98 100755
+--- a/scripts/mkosi-container
++++ b/scripts/mkosi-container
+@@ -32,6 +32,11 @@ elif [ -n "${DISPLAY:-}" ] && [ -d /tmp/.X11-unix ]; then
+     display="-v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=${DISPLAY} -e SDL_VIDEODRIVER=x11"
+ fi
+ 
++# Extra podman arguments, e.g. bind mounts for --package-directory= or a
++# symlinked local pmaports checkout outside of the repository:
++#   MKOSI_CONTAINER_ARGS="-v /path/to/pkgs:/path/to/pkgs"
++extra=${MKOSI_CONTAINER_ARGS:-}
++
+ # shellcheck disable=SC2086
+ podman run --rm \
+     --entrypoint "" \
+@@ -41,5 +46,6 @@ podman run --rm \
+     -w /src \
+     $devices \
+     $display \
++    $extra \
+     "$IMAGE" \
+     mkosi --workspace-dir=/workspace "$@"

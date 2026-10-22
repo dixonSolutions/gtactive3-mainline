@@ -1,0 +1,2 @@
+enable gtactive3wifi-usb-prep.service
+enable gta3-debug-console.socket

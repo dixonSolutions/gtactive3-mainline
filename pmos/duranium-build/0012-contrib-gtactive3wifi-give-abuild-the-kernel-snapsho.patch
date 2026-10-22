@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 19:13:16 +1100
+Subject: [PATCH 12/25] contrib: gtactive3wifi: give abuild the kernel snapshot
+ as a local source
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index 04cec64..4c17e9d 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -61,6 +61,11 @@ for p in "$@"; do
+ 	name=$(basename "$p")
+ 	echo "=== $name"
+ 	rm -rf /b && mkdir -p /b && cp -r "$src" "/b/$name"
++	# the kernel builds from a local snapshot of the live-tested branch
++	# (kernel/refresh-aport.sh puts it in the distfiles cache)
++	case "$name" in
++	linux-postmarketos-exynos9810) cp /distfiles/linux-gtactive3wifi-*.tar.gz "/b/$name/" ;;
++	esac
+ 	cd "/b/$name"
+ 	case "$name" in
+ 	firmware) ;;

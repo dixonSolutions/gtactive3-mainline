@@ -1,0 +1,12 @@
+[Unit]
+Description=Select the system extensions built for this image version
+Documentation=file:///usr/share/doc/device-samsung-gtactive3wifi/README
+DefaultDependencies=no
+After=local-fs.target
+RequiresMountsFor=/var/lib
+Before=systemd-sysext.service systemd-confext.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gtactive3wifi/extensions-link

@@ -1,0 +1,169 @@
+# DURANIUM USB DEBUG LAYER (gtactive3-mainline Duranium track).
+#
+# A separate, development-only package so release images can simply drop it.
+# It is installed into the base image for the device (dev images) and its
+# initramfs subpackage goes into the mkosi initrd via pmaports.py's
+# InitrdPackages handling.
+maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
+pkgname=duranium-usb-debug
+pkgver=1
+pkgrel=6
+pkgdesc="Duranium development USB debug layer: NCM gadget, root console, ssh, kernel log"
+url="https://github.com/dixonSolutions/gtactive3-mainline"
+arch="noarch"
+license="GPL-3.0-or-later"
+# The -initramfs subpackage carries the gadget setup and the console, which
+# the booted system needs too, hence the hard dependency on it.
+# busybox-extras: telnetd; openssh-server (sshd -i) + openssh-keygen;
+# iproute2 for "ip"; kmod for modprobe (libcomposite etc).
+depends="
+	$pkgname-initramfs=$pkgver-r$pkgrel
+	busybox-extras
+	iproute2
+	kmod
+	openssh-server
+	openssh-keygen
+"
+subpackages="$pkgname-initramfs:initramfs $pkgname-adb:adb"
+source="
+	usb-debug-gadget-setup
+	usb-debug-gadget-teardown
+	usb-debug-sshd-keygen
+	sshd_config
+	duranium-usb-debug.target
+	duranium-usb-debug.service
+	duranium-debug-shell.socket
+	duranium-debug-shell@.service
+	duranium-debug-sshd.socket
+	duranium-debug-sshd@.service
+	duranium-debug-sockets.service
+	duranium-debug-klog.socket
+	duranium-debug-klog@.service
+	80-duranium-usb-debug.preset
+	initramfs-duranium-usb-debug.preset
+	60_duranium_usb_debug.nft
+	10-duranium-usb-debug.link
+	90-duranium-usb-debug-sockets.rules
+	50-duranium-usb-debug-nm.conf
+	40-duranium-usb-debug-watchdog.conf
+	usb-debug-adb-attach
+	duranium-debug-adb.service
+	duranium-debug-adbd.service
+	80-duranium-usb-debug-adb.preset
+	README
+"
+options="!check"
+
+package() {
+	install -Dm755 "$srcdir"/usb-debug-gadget-setup \
+		"$pkgdir"/usr/libexec/duranium/usb-debug-gadget-setup
+	install -Dm755 "$srcdir"/usb-debug-gadget-teardown \
+		"$pkgdir"/usr/libexec/duranium/usb-debug-gadget-teardown
+	install -Dm755 "$srcdir"/usb-debug-sshd-keygen \
+		"$pkgdir"/usr/libexec/duranium/usb-debug-sshd-keygen
+
+	install -Dm644 "$srcdir"/sshd_config \
+		"$pkgdir"/etc/duranium-usb-debug/sshd_config
+
+	for u in duranium-usb-debug.target duranium-usb-debug.service \
+		 duranium-debug-shell.socket duranium-debug-shell@.service \
+		 duranium-debug-sshd.socket duranium-debug-sshd@.service \
+		 duranium-debug-klog.socket duranium-debug-klog@.service \
+		 duranium-debug-sockets.service; do
+		install -Dm644 "$srcdir/$u" -t "$pkgdir"/usr/lib/systemd/system/
+	done
+
+	install -Dm644 "$srcdir"/80-duranium-usb-debug.preset \
+		"$pkgdir"/usr/lib/systemd/system-preset/80-duranium-usb-debug.preset
+
+	# firewall rule (only matters when postmarketos-config-nftables is used)
+	install -Dm644 "$srcdir"/60_duranium_usb_debug.nft \
+		"$pkgdir"/usr/share/nftables.avail/60_duranium_usb_debug.nft
+	mkdir -p "$pkgdir"/etc/nftables.d
+	ln -s /usr/share/nftables.avail/60_duranium_usb_debug.nft \
+		"$pkgdir"/etc/nftables.d/60_duranium_usb_debug.nft
+
+	install -Dm644 "$srcdir"/10-duranium-usb-debug.link \
+		-t "$pkgdir"/usr/lib/systemd/network/
+	install -Dm644 "$srcdir"/90-duranium-usb-debug-sockets.rules \
+		-t "$pkgdir"/usr/lib/udev/rules.d/
+	install -Dm644 "$srcdir"/50-duranium-usb-debug-nm.conf \
+		-t "$pkgdir"/usr/lib/NetworkManager/conf.d/
+	install -Dm644 "$srcdir"/40-duranium-usb-debug-watchdog.conf \
+		"$pkgdir"/usr/lib/systemd/system.conf.d/40-duranium-usb-debug.conf
+
+	install -Dm644 "$srcdir"/README \
+		"$pkgdir"/usr/share/doc/$pkgname/README
+}
+
+# The parts that must already exist in the mkosi initrd: the NCM interface,
+# the telnet console and the kernel log stream, so pre-switch-root failures
+# are debuggable over USB.
+initramfs() {
+	pkgdesc="$pkgdesc (initramfs)"
+	depends="busybox-extras iproute2 kmod"
+
+	amove usr/libexec/duranium/usb-debug-gadget-setup
+	amove usr/libexec/duranium/usb-debug-gadget-teardown
+	amove usr/lib/systemd/system/duranium-usb-debug.target
+	amove usr/lib/systemd/system/duranium-usb-debug.service
+	amove usr/lib/systemd/system/duranium-debug-shell.socket
+	amove usr/lib/systemd/system/duranium-debug-shell@.service
+	amove usr/lib/systemd/system/duranium-debug-klog.socket
+	amove usr/lib/systemd/system/duranium-debug-klog@.service
+	# unit files only (sshd itself is not in the initrd; the socket has
+	# ConditionPathExists=!/etc/initrd-release), so that the target's Also=
+	# list resolves in both the initrd and the booted system
+	amove usr/lib/systemd/system/duranium-debug-sshd.socket
+	amove usr/lib/systemd/system/duranium-debug-sshd@.service
+	amove usr/lib/systemd/network/10-duranium-usb-debug.link
+	amove usr/lib/udev/rules.d/90-duranium-usb-debug-sockets.rules
+	amove usr/lib/systemd/system.conf.d/40-duranium-usb-debug.conf
+
+	install -Dm644 "$srcdir"/initramfs-duranium-usb-debug.preset \
+		"$subpkgdir"/usr/lib/systemd/initrd-preset/80-duranium-usb-debug.preset
+}
+
+# adb on the debug gadget: adbd (from the art_standalone port, ~30 MB with
+# its runtime) lives only in the booted system, never in the initrd. It
+# attaches an adb FunctionFS function next to NCM ("adb shell", "adb push").
+adb() {
+	pkgdesc="$pkgdesc (adb function)"
+	depends="$pkgname=$pkgver-r$pkgrel adbd"
+
+	install -Dm755 "$srcdir"/usb-debug-adb-attach \
+		"$subpkgdir"/usr/libexec/duranium/usb-debug-adb-attach
+	install -Dm644 "$srcdir"/duranium-debug-adb.service \
+		"$srcdir"/duranium-debug-adbd.service \
+		-t "$subpkgdir"/usr/lib/systemd/system/
+	install -Dm644 "$srcdir"/80-duranium-usb-debug-adb.preset \
+		"$subpkgdir"/usr/lib/systemd/system-preset/80-duranium-usb-debug-adb.preset
+}
+
+sha512sums="
+cbc2008a2318b11adaba215f28804526bd3b6e35cb86c4e1ccec9c727cae1f591aaa70b268ca39bc93a14312d825cc6f648ce475bf8e0b42ea802110301454c7  usb-debug-gadget-setup
+f77ce736e4fb641aaa2990ce1b66445ad97c37084425b8e926899482f029e6e14883dbe1b8ae53709e35c40097b40f1ef3458308163de760257b38834e8728f3  usb-debug-gadget-teardown
+a6fa62f8c3f9cca9c9ae91d3b84999aa5cdaa1b73c544a2a77df26ce0313a4b1f68bd34c0f8fa876611093894cedd1e9f637de58574e15b2c4c26b51e306daba  usb-debug-sshd-keygen
+7ac7b9a525931bb30f6ac3f5981edf2b5600d000a235dc3f2e9edc68ab453b674cc1f8fa5fcdbcb4105a615ff689cff9999d18838c27cdabd40d678f56d64b49  sshd_config
+23c13327f2f221ab9671e2ae46adf6a4bf25c4db4cc17e6842ff1ea1fe43f8af51c98376fd4c0d5e06ab398a265b0a5c7482e492edbc8f7cf8313205f9209f40  duranium-usb-debug.target
+f4d8b8dac9b6475b67acdbd1b50698c4fe46c920eff27e3c1e7f76763adddcab1aa17e7a0bb8dd967937f73e98bbd9ae72cfbd8729444e1a7447f7fa5f7a612a  duranium-usb-debug.service
+720ca66c3e11ee673e61d5e18e28559cbbfb29753e314addb89df4e40a83ff5d4247d088de7a269eb59d5414af9fe49a623dae6bd25f0d4df1e9940c2af35967  duranium-debug-shell.socket
+60ecdaf4a09376e00fed419b94da5bffd5990ca40c3e913fa26350f7793ea93c8b2f18692ceae43efea1228bb36b60826b902694f36ba64bc5fcdce9edbce1d6  duranium-debug-shell@.service
+000343b9dd6c3badea5fe2eaa42c61913c63f49a15eff84271db7f72d5fd50a385699727a025be0d9442c0ae3b490495e25874fb2ba85beff00cfdcf742f16b7  duranium-debug-sshd.socket
+2cf52171f03350988068c80935cc1cfd15794ff79a2aef16f1c74f023814cfe3b08a4f8ff01b1512c00afdb11c7d1d24c759a90373ffdd18faa23f767e8c4e53  duranium-debug-sshd@.service
+24009e3d4c9c5a3291db96eb034c059a9f59b52b6e92fe20011fdd3fb3c73be65e02589be54b0d36eb43b13dd2bb4923c5c37bef5743cf3d0756bce0d5f4624f  duranium-debug-sockets.service
+76ce5f1da8b0437e3595dbe4c943c496bd004c79072a78758d06270b9f9dacb60976e2dd87eb26152654f32e02f210618ee85add0b48aac16b2933901f594d51  duranium-debug-klog.socket
+363ec22695304403e006315c4cdc9e06117e8220256fecad108e6f2cbfb5af3a8bfc525e2a0b66ae206cd55b6a712ae2723097155376a04263a1108fa3eeda37  duranium-debug-klog@.service
+f77d01240e321d262a5cb25a493477ae896de40a38b5c49f04ca0a38abb5023b647a008851e9cb885a906cc59c9762987ae2b00f577ef27fc26677c3e24ce488  80-duranium-usb-debug.preset
+895006ae84b302e92916847de3bfaf67d0ba917026e525ff9af5ccbbf97caae13b9c29b8bb1d06abf5f5415b65d1921fe233fb41371d6c3a66e025efa94510bb  initramfs-duranium-usb-debug.preset
+4b7b02a801ee2e738e17ddc98be7c416cf3ea6356def7892a617edad3e21afa4b076a5a93538c2db65c916e8adda55d003f179e419dc1ebd22fcea6b8c9aca05  60_duranium_usb_debug.nft
+c79eef910a228b323140303c5877668ac65745064fa4b3f99bfa1bd092a06ba616c313061d625c4de0abcd367b331d81eaa0de2efd584cd93f296546aefaebe6  10-duranium-usb-debug.link
+77e7f107c7678ad3b8191a8ba111d990e951b6cda0405d4436c4ae0657b8d01094f48dff1fa89b6b5e13547b54860daa0b5d474903ae4da15b946a9843d0a73f  90-duranium-usb-debug-sockets.rules
+1c6e8841263246694e45947ec7c94ad746a9876233590f8353f01c08cbe2c048be0c853eb9d9d062b13fd03fd903db7da13eae65ec52fd9390e566fb98bcb339  50-duranium-usb-debug-nm.conf
+6c704ef958a66d343ee8bae7d0a83dadde14ec0559b2d0d69e7e65f2e303d581a7280b83222547a8d6e81b78b7891314080b520250f7dd512a41b8c1a931ae34  40-duranium-usb-debug-watchdog.conf
+c5840fc214cc09f512e0f0b28ec92f6f0663340b2779f22fcb63ec874ab2c1fee04ff8bafa4afc974ff443da4a0e705ab15915367fec9a71bf6a5a16e782df4c  usb-debug-adb-attach
+4a99711350c7a388929be5ffdf8705e81d5e02441f1d56dc63595efce0b5288b67a1e2f09c38bf8ccdde68574425414ba3bfcb8e038d9172bb4854aa4dff1a86  duranium-debug-adb.service
+c0bb0750454e646819832d4c835574b6827f336800ec20ef5ca8931e316aaa0372f0e91ff60c1cf9ac10febea5fce00f44aef478df60477da1720514243e8789  duranium-debug-adbd.service
+f85d1f481835f868c847c17072676120d3e7eab5aa1cb48a2fe88491c19060379aba6fc7e286174454a08d3b659c88764d8af278f2359b051c653c18eec0b080  80-duranium-usb-debug-adb.preset
+34079b3d02c2d11a14a08e5d5e9eb40d6c06b5858260966a3b1940cfd63dd255832b02ee81df1f8c66359ffe97d8fbb9a3b2b62b0e454d3b6b91d6a4646d5f3e  README
+"

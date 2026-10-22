@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 19:12:53 +1100
+Subject: [PATCH 11/25] contrib: gtactive3wifi: kernel aport from a branch
+ snapshot; podman entrypoint
+
+refresh-aport.sh archives src/linux gtactive3wifi into the distfiles
+cache, regenerates the config and rewrites the APKBUILD source and
+checksums. gen-kernel-config.sh also needs --entrypoint "" (the
+docker-postmarketos image ignores the command otherwise).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/gen-kernel-config.sh               |  2 +-
+ .../kernel/refresh-aport.sh                   | 57 +++++++++++++++++++
+ 2 files changed, 58 insertions(+), 1 deletion(-)
+ create mode 100755 contrib/samsung-gtactive3wifi/kernel/refresh-aport.sh
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index 0b45a2d..2b541b9 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -40,7 +40,7 @@ cp "$BASE" "$work/in/base.config"
+ cp "$HERE"/mergecfg.py "$HERE"/pmos-deps.config "$HERE"/pmos-fragment.config \
+ 	"$HERE"/gtactive3wifi.config "$work/in/"
+ 
+-flock "$LOCK" nice -n 19 podman run --rm \
++flock "$LOCK" nice -n 19 podman run --rm --entrypoint "" \
+ 	-v "$work:/w:Z" -w /w/src "$BUILDER" sh -euc '
+ 	python3 /w/in/mergecfg.py /w/in/base.config /w/out/.config \
+ 		/w/in/pmos-deps.config /w/in/pmos-fragment.config /w/in/gtactive3wifi.config
+diff --git a/contrib/samsung-gtactive3wifi/kernel/refresh-aport.sh b/contrib/samsung-gtactive3wifi/kernel/refresh-aport.sh
+new file mode 100755
+index 0000000..ca9f456
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/refresh-aport.sh
+@@ -0,0 +1,57 @@
++#!/bin/sh
++# Point linux-postmarketos-exynos9810 at the current live-tested kernel tree.
++#
++# The aport builds from a snapshot of src/linux $KREF (default gtactive3wifi,
++# the branch the lead merges after each on-device test) instead of upstream +
++# a patch series: the branch has merge commits whose conflict resolutions a
++# flat series cannot carry. The snapshot goes into the local distfiles cache
++# that build-apks.sh mounts as SRCDEST, so abuild never downloads it.
++#
++#   1. git archive $KREF -> $DISTFILES/linux-gtactive3wifi-<sha12>.tar.gz
++#   2. gen-kernel-config.sh (bring-up config + pmOS + device fragments)
++#   3. rewrite _commit, source= and sha512sums= in the APKBUILD
++#
++# Commit the APKBUILD and config afterwards. The tarball itself is only a
++# cache; anyone can recreate it from the public repository.
++set -eu
++
++HERE=$(cd "$(dirname "$0")" && pwd)
++ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
++KREF=${KREF:-gtactive3wifi}
++PMAPORTS=${PMAPORTS:-$ROOT/build/wt/pmaports-duranium}
++DISTFILES=${DISTFILES:-$ROOT/build/wt/duranium-distfiles}
++APORT=$PMAPORTS/device/testing/linux-postmarketos-exynos9810
++
++sha=$(git -C "$ROOT/src/linux" rev-parse "$KREF")
++short=$(echo "$sha" | cut -c1-12)
++tarball=linux-gtactive3wifi-$short.tar.gz
++mkdir -p "$DISTFILES"
++if [ ! -s "$DISTFILES/$tarball" ]; then
++	echo "== snapshot $KREF ($short) -> $tarball"
++	git -C "$ROOT/src/linux" archive --prefix="linux-$sha/" "$sha" |
++		gzip -n -6 > "$DISTFILES/$tarball.tmp"
++	mv "$DISTFILES/$tarball.tmp" "$DISTFILES/$tarball"
++fi
++
++echo "== kernel config"
++KREF=$sha sh "$HERE/gen-kernel-config.sh"
++
++echo "== APKBUILD"
++python3 -I - "$APORT/APKBUILD" "$sha" "$tarball" "$DISTFILES/$tarball" \
++	"$APORT/config-postmarketos-exynos9810.aarch64" <<'PY'
++import hashlib, re, sys
++path, sha, tarball, tarpath, cfgpath = sys.argv[1:6]
++s = open(path).read()
++s = re.sub(r'^_commit="[0-9a-f]+"', f'_commit="{sha}"', s, flags=re.M)
++src = (f'source="\n\t{tarball}\n\t$_config\n\t"\n')
++s = re.sub(r'^source="\n(?:.*\n)*?\t"\n', src, s, count=1, flags=re.M)
++def h(p):
++    return hashlib.sha512(open(p, 'rb').read()).hexdigest()
++sums = (f'sha512sums="\n{h(tarpath)}  {tarball}\n'
++        f'{h(cfgpath)}  config-postmarketos-exynos9810.aarch64\n"\n')
++s = re.sub(r'^sha512sums="\n(?:.*\n)*?"\n', sums, s, count=1, flags=re.M)
++open(path, 'w').write(s)
++PY
++rm -f "$APORT"/0*.patch
++grep -n '^_commit\|^source\|^sha512sums' "$APORT/APKBUILD"
++echo "done: $short"

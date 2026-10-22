@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:03:27 +1100
+Subject: [PATCH 05/25] contrib: gtactive3wifi: build from the current tree, no
+ pmbootstrap
+
+build-kernel.sh: export src/linux gtactive3wifi (now containing drv/wdt,
+hsi2c, display and power, i.e. what the bring-up console runs) with git
+archive instead of a stale hand-made snapshot, and start from a clean output
+directory whenever the commit changes (archive timestamps are commit times,
+so an incremental build could keep stale objects). Fail if olddefconfig
+dropped any fragment option or if a built-in initramfs is still configured,
+and record the source commit in the package.
+
+build-apks.sh: build devicepkg-dev, the device, usb-debug and kernel bridge
+apks in an arm64 Alpine edge container, as was done by hand for the first
+build; pmbootstrap is not initialized on this host.
+
+build-image.sh: use build-apks.sh, and refuse to symlink over a real
+duranium/pmaports directory (ln -sfn would create the link inside it and
+mkosi would silently use the upstream clone).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh   | 48 +++++++++++++++++++
+ contrib/samsung-gtactive3wifi/build-image.sh  | 34 +++++--------
+ contrib/samsung-gtactive3wifi/build-kernel.sh | 40 ++++++++++++++--
+ 3 files changed, 95 insertions(+), 27 deletions(-)
+ create mode 100755 contrib/samsung-gtactive3wifi/build-apks.sh
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+new file mode 100755
+index 0000000..f4b9ea5
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -0,0 +1,48 @@
++#!/bin/sh
++# Build the local Duranium bring-up apks (device + -initramfs, usb-debug +
++# -initramfs, the prebuilt kernel bridge) from the pmaports worktree in an
++# arm64 Alpine edge container (qemu-user binfmt on x86 hosts), without
++# needing an initialized pmbootstrap. Output: a flat directory of .apk files
++# for mkosi's --package-directory.
++#
++# devicepkg-dev (a pmaports package) is built first and installed as the
++# makedepend of the device package. Runtime depends are not installed
++# (abuild -d); mkosi resolves them from the Alpine/postmarketOS repos.
++set -eu
++
++ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
++PMAPORTS=$ROOT/build/wt/pmaports-duranium
++PKGS=${PKGS:-$ROOT/build/wt/duranium-localpkgs}
++LOCK=$ROOT/build/kbuild.lock
++IMAGE=${ALPINE_IMAGE:-docker.io/library/alpine:edge}
++
++[ -f "$PMAPORTS/device/testing/linux-samsung-gtactive3wifi-duranium/kernel-prebuilt.tar.gz" ] || {
++	echo "kernel tarball missing: run build-kernel.sh first" >&2; exit 1; }
++
++work=$(mktemp -d)
++trap 'rm -rf "$work"' EXIT
++cat > "$work/build.sh" <<'IN'
++#!/bin/sh
++set -eu
++apk add -q alpine-sdk linux-headers
++abuild-keygen -a -n -q >/dev/null 2>&1
++cp /root/.abuild/*.pub /etc/apk/keys/
++for p in main/devicepkg-dev main/duranium-usb-debug \
++	 device/testing/linux-samsung-gtactive3wifi-duranium \
++	 device/testing/device-samsung-gtactive3wifi; do
++	rm -rf /b && mkdir -p /b && cp -r "/src/$p" /b/pkg
++	( cd /b/pkg && abuild -F -d -P /repo )
++	case "$p" in
++	*/devicepkg-dev) apk add -q --allow-untrusted /repo/b/*/devicepkg-dev-*.apk ;;
++	esac
++done
++find /repo -name '*.apk' ! -name 'devicepkg-dev-*' -exec cp {} /out/ \;
++IN
++chmod +x "$work/build.sh"
++
++mkdir -p "$PKGS"
++rm -f "$PKGS"/*.apk
++flock "$LOCK" podman run --rm --arch arm64 \
++	-v "$PMAPORTS:/src:ro,Z" -v "$PKGS:/out:Z" -v "$work:/s:ro,Z" \
++	"$IMAGE" /s/build.sh
++ls -l "$PKGS"
+diff --git a/contrib/samsung-gtactive3wifi/build-image.sh b/contrib/samsung-gtactive3wifi/build-image.sh
+index a0e602d..71d9401 100644
+--- a/contrib/samsung-gtactive3wifi/build-image.sh
++++ b/contrib/samsung-gtactive3wifi/build-image.sh
+@@ -5,11 +5,11 @@
+ #
+ # Steps:
+ #  1. Build the bring-up kernel tarball (contrib/build-kernel.sh).
+-#  2. Build the local .apk files from the pmaports worktree with pmbootstrap
+-#     into a package directory.
+-#  3. Point duranium/pmaports at the worktree (so mkosi.configure's
+-#     pmaports.py --skip-fetch resolves the device from it), and run mkosi
+-#     with that package directory as an extra package source.
++#  2. Build the local .apk files from the pmaports worktree (build-apks.sh:
++#     arm64 Alpine container, no pmbootstrap needed) into a package directory.
++#  3. Point duranium/pmaports at the worktree with a symlink (pmaports.py then
++#     never fetches/switches/resets it), and run mkosi with that package
++#     directory as an extra package source.
+ #
+ # Everything heavy runs under the shared kernel build lock.
+ set -eu
+@@ -24,30 +24,18 @@ UI=${UI:-phosh}
+ MKOSI=${MKOSI:-$DUR/scripts/mkosi-container}
+ export MKOSI
+ 
+-LOCAL_PKGS="
+-	device/testing/linux-samsung-gtactive3wifi-duranium
+-	device/testing/device-samsung-gtactive3wifi
+-	main/duranium-usb-debug
+-"
+-
+ echo "== 1. kernel"
+ sh "$DUR/contrib/samsung-gtactive3wifi/build-kernel.sh"
+ 
+ echo "== 2. local apks -> $PKGS"
+-mkdir -p "$PKGS"
+-# Build each local package for aarch64 with pmbootstrap, using the worktree as
+-# the aports dir. abuild computes missing checksums for local sources.
+-for p in $LOCAL_PKGS; do
+-	name=$(basename "$p")
+-	flock "$LOCK" pmbootstrap -y --aports "$PMAPORTS" build --arch aarch64 --force "$name"
+-done
+-# Collect the freshly built apks (pmbootstrap stores them under its packages
+-# dir); copy aarch64 + noarch into one flat directory for mkosi.
+-PMB_PKGDIR=$(pmbootstrap config work)/packages/edge
+-cp -f "$PMB_PKGDIR"/aarch64/*.apk "$PKGS"/ 2>/dev/null || true
+-cp -f "$PMB_PKGDIR"/noarch/*.apk  "$PKGS"/ 2>/dev/null || true
++PKGS=$PKGS sh "$DUR/contrib/samsung-gtactive3wifi/build-apks.sh"
+ 
+ echo "== 3. mkosi image"
++if [ -e "$DUR/pmaports" ] && [ ! -L "$DUR/pmaports" ]; then
++	# an upstream pmaports clone: ln would put the link inside it
++	echo "$DUR/pmaports is a directory (upstream clone?); move it away first" >&2
++	exit 1
++fi
+ ln -sfn "$PMAPORTS" "$DUR/pmaports"
+ cd "$DUR"
+ [ -f mkosi.version ] || "$MKOSI" bump
+diff --git a/contrib/samsung-gtactive3wifi/build-kernel.sh b/contrib/samsung-gtactive3wifi/build-kernel.sh
+index 55b4e63..0d96c0f 100644
+--- a/contrib/samsung-gtactive3wifi/build-kernel.sh
++++ b/contrib/samsung-gtactive3wifi/build-kernel.sh
+@@ -6,14 +6,22 @@
+ # This is the bridge until the regular gtactive3wifi pmaports track ships a
+ # from-source kernel package. It uses the SAME source and config that the lead
+ # tests on the device:
+-#   source : gtactive3-mainline src/linux, branch gtactive3wifi + drv/wdt
+-#            (snapshotted at build/wt/duranium-linux by the Duranium track)
++#   source : gtactive3-mainline src/linux, ref $KREF (default: the integration
++#            branch gtactive3wifi, which already contains drv/wdt), exported
++#            with "git archive" into build/wt/duranium-linux
+ #   config : build/bringup/.config + the duranium.config fragment
+ #
++# When the exported commit changes, the snapshot and the output directory are
++# recreated: "git archive" stamps files with the commit time, so an
++# incremental build over an older output tree could silently keep stale
++# objects.
++#
+ # Run under the shared kernel build lock, like every other heavy build here.
+ set -eu
+ 
+ ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
++LINUX_GIT=$ROOT/src/linux
++KREF=${KREF:-gtactive3wifi}
+ SRC=$ROOT/build/wt/duranium-linux
+ OUT=$ROOT/build/wt/duranium-out
+ FRAG=$ROOT/build/wt/pmaports-duranium/device/testing/linux-samsung-gtactive3wifi-duranium/duranium.config
+@@ -22,12 +30,32 @@ LOCK=$ROOT/build/kbuild.lock
+ CROSS=${CROSS_COMPILE:-aarch64-linux-gnu-}
+ JOBS=${JOBS:-6}
+ 
+-[ -d "$SRC" ] || { echo "kernel source snapshot missing: $SRC" >&2; exit 1; }
++commit=$(git -C "$LINUX_GIT" rev-parse --verify "$KREF^{commit}")
++if [ "$(cat "$SRC/.duranium-commit" 2>/dev/null || true)" != "$commit" ]; then
++	echo "Exporting $KREF ($commit) -> $SRC (clean output dir)"
++	rm -rf "$SRC" "$OUT"
++	mkdir -p "$SRC"
++	git -C "$LINUX_GIT" archive "$commit" | tar -x -C "$SRC"
++	echo "$commit" > "$SRC/.duranium-commit"
++fi
+ 
+ mkdir -p "$OUT"
+ ( cd "$SRC" && ARCH=arm64 scripts/kconfig/merge_config.sh -m -O "$OUT" \
+ 	"$ROOT/build/bringup/.config" "$FRAG" )
+ flock "$LOCK" nice -n 19 make -C "$SRC" O="$OUT" ARCH=arm64 CROSS_COMPILE="$CROSS" olddefconfig
++
++# Fragment options that olddefconfig dropped (unmet dependencies) are bugs in
++# the fragment: fail instead of shipping a kernel without them.
++missing=$(grep -E '^CONFIG_[A-Z0-9_]+=' "$FRAG" | while IFS= read -r line; do
++	grep -qxF "$line" "$OUT/.config" || echo "$line"
++done)
++if [ -n "$missing" ]; then
++	printf 'fragment option not applied: %s\n' $missing >&2
++	exit 1
++fi
++grep -qx 'CONFIG_INITRAMFS_SOURCE=""' "$OUT/.config" || {
++	echo "built-in initramfs still configured; it would break the UKI initrd" >&2; exit 1; }
++
+ flock "$LOCK" nice -n 19 make -C "$SRC" O="$OUT" ARCH=arm64 CROSS_COMPILE="$CROSS" -j"$JOBS" \
+ 	Image modules exynos/exynos9810-gtactive3wifi.dtb
+ 
+@@ -42,14 +70,18 @@ flock "$LOCK" nice -n 19 make -C "$SRC" O="$OUT" ARCH=arm64 CROSS_COMPILE="$CROS
+ 	INSTALL_MOD_PATH="$STAGE/usr" INSTALL_MOD_STRIP=1 modules_install
+ rm -f "$STAGE/usr/lib/modules/$KREL/build" "$STAGE/usr/lib/modules/$KREL/source"
+ printf '%s\n' "$KREL" > "$STAGE/usr/share/kernel/kernel.release"
++printf '%s %s\n' "$KREF" "$commit" > "$STAGE/usr/share/kernel/source-commit"
+ 
+ TARBALL="$PKGDIR/kernel-prebuilt.tar.gz"
+-tar -C "$STAGE" -czf "$TARBALL" boot usr
++# Reproducible-ish tarball: fixed owner and sorted names
++tar --owner=0 --group=0 --numeric-owner --sort=name \
++	-C "$STAGE" -czf "$TARBALL" boot usr
+ sum=$(sha512sum "$TARBALL" | cut -d' ' -f1)
+ # Refresh the checksum line in the bridge APKBUILD
+ sed -i "s|^[0-9a-f]\{128\}  kernel-prebuilt.tar.gz\$|$sum  kernel-prebuilt.tar.gz|" \
+ 	"$PKGDIR/APKBUILD"
+ 
++echo "source         = $KREF $commit"
+ echo "kernel.release = $KREL"
+ echo "tarball        = $TARBALL"
+ echo "sha512         = $sum"

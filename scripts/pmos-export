@@ -1,0 +1,136 @@
+#!/bin/bash
+# Export what we maintain for postmarketOS Duranium into pmos/ of this
+# repository, for the image CI (.github/workflows/images.yml). Run it after a
+# kernel / driver / device package change passed its on-device test: what is
+# exported (and pushed) is what the next published images contain.
+#
+#   pmos/aports/<dir>/        our aports, from build/wt/pmaports-duranium
+#                             (every aport the branch adds to pmaports)
+#   pmos/aports/BUILD         the aports the image build needs, in order
+#   pmos/pmaports.BASE        upstream pmaports commit they were tested on
+#   pmos/duranium-build/      our duranium-build commits as a patch series
+#                             on top of BASE (contrib/samsung-gtactive3wifi,
+#                             small pmaports.py / mkosi changes)
+#
+# The kernel aport builds locally from a snapshot tarball of src/linux; the
+# exported one is the same tree as torvalds/linux at the merge base plus one
+# patch (gtactive3wifi.patch = git diff base.._commit), checked to reproduce
+# the snapshot tree exactly. The upstream tarball comes from GitHub.
+#
+#   scripts/pmos-export [PMAPORTS_REF] [DURANIUM_REF]
+#       defaults: HEAD of both worktrees
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+PMA=$P/build/wt/pmaports-duranium
+DUR=$P/build/wt/duranium
+LINUX=$P/src/linux
+DISTFILES=$P/build/wt/duranium-distfiles
+OUT=$P/pmos
+PREF=${1:-HEAD}
+DREF=${2:-HEAD}
+KAPORT=device/testing/linux-postmarketos-exynos9810
+# what the Duranium image needs (the regular boot.img chain aports are
+# exported too, but not built by the image CI)
+BUILD="main/duranium-usb-debug
+device/testing/device-samsung-gtactive3wifi
+$KAPORT
+device/testing/gnome-shell-extension-blur-my-shell
+device/testing/gnome-shell-extension-touchup"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+pc=$(git -C "$PMA" rev-parse --verify "$PREF^{commit}")
+dc=$(git -C "$DUR" rev-parse --verify "$DREF^{commit}")
+pbase=$(git -C "$PMA" merge-base "$pc" origin/main)
+dbase=$(git -C "$DUR" merge-base "$dc" origin/main)
+
+# 1. aports: every directory our branch adds or changes
+mapfile -t dirs < <(git -C "$PMA" diff --name-only "$pbase" "$pc" | awk -F/ '
+	$1 == "device" { print $1 "/" $2 "/" $3; next }
+	{ print $1 "/" $2 }' | sort -u)
+[ ${#dirs[@]} -gt 0 ] || die "no aports between $pbase and $pc"
+for d in "${dirs[@]}"; do
+	git -C "$PMA" cat-file -e "$pbase:$d" 2>/dev/null &&
+		die "$d exists upstream: we only add aports, never fork upstream ones"
+done
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/aports"
+for d in "${dirs[@]}"; do
+	git -C "$PMA" archive "$pc" "$d" | tar -x -C "$tmp/aports"
+done
+printf '%s\n' "$BUILD" > "$tmp/aports/BUILD"
+while read -r d; do [ -f "$tmp/aports/$d/APKBUILD" ] || die "BUILD lists $d, not exported"; done <<<"$BUILD"
+echo "$pbase" > "$tmp/pmaports.BASE"
+
+# 2. kernel: upstream tarball + one patch
+K=$tmp/aports/$KAPORT
+kc=$(sed -n 's/^_commit="\([0-9a-f]\{40\}\)"$/\1/p' "$K/APKBUILD")
+[ -n "$kc" ] || die "no _commit in the kernel APKBUILD"
+git -C "$LINUX" cat-file -e "$kc^{commit}" || die "kernel commit $kc not in src/linux"
+kbase=$(git -C "$LINUX" merge-base "$kc" origin/master)
+git -C "$LINUX" diff --no-renames --full-index "$kbase" "$kc" > "$K/gtactive3wifi.patch"
+grep -q '^GIT binary patch' "$K/gtactive3wifi.patch" && die "binary changes: patch(1) cannot apply them"
+# the patch must give exactly the tested tree
+idx=$(mktemp)
+GIT_INDEX_FILE=$idx git -C "$LINUX" read-tree "$kbase"
+GIT_INDEX_FILE=$idx git -C "$LINUX" apply --cached "$K/gtactive3wifi.patch"
+[ "$(GIT_INDEX_FILE=$idx git -C "$LINUX" write-tree; rm -f "$idx")" = "$(git -C "$LINUX" rev-parse "$kc^{tree}")" ] ||
+	die "base + patch is not the tree of $kc"
+tarball=linux-$kbase.tar.gz
+mkdir -p "$DISTFILES"
+if [ ! -s "$DISTFILES/$tarball" ]; then
+	echo "== download torvalds/linux $kbase"
+	curl -fL --retry 3 -o "$DISTFILES/$tarball.part" \
+		"https://github.com/torvalds/linux/archive/$kbase.tar.gz"
+	mv "$DISTFILES/$tarball.part" "$DISTFILES/$tarball"
+fi
+rm -f "$K"/linux-gtactive3wifi-*.tar.gz
+python3 -I - "$K/APKBUILD" "$kbase" "$kc" "$DISTFILES/$tarball" "$K/gtactive3wifi.patch" \
+	"$K/config-postmarketos-exynos9810.aarch64" <<'PY'
+import hashlib, re, sys
+path, base, commit, tar, patch, cfg = sys.argv[1:7]
+s = open(path).read()
+h = lambda p: hashlib.sha512(open(p, "rb").read()).hexdigest()
+s = re.sub(r'^_commit="[0-9a-f]+"\n',
+    f'_commit="{commit}"\n'
+    '# torvalds/linux commit that gtactive3wifi.patch applies to; base + patch\n'
+    '# is the tree of _commit in the gtactive3-mainline kernel (scripts/pmos-export)\n'
+    f'_base="{base}"\n', s, count=1, flags=re.M)
+s = re.sub(r'^source="\n(?:.*\n)*?\t"\n',
+    'source="\n'
+    '\tlinux-$_base.tar.gz::https://github.com/torvalds/linux/archive/$_base.tar.gz\n'
+    '\tgtactive3wifi.patch\n'
+    '\t$_config\n'
+    '\t"\n', s, count=1, flags=re.M)
+s = re.sub(r'^builddir="\$srcdir/linux-\$_commit"$', 'builddir="$srcdir/linux-$_base"', s, count=1, flags=re.M)
+s = re.sub(r'^sha512sums="\n(?:.*\n)*?"\n',
+    f'sha512sums="\n{h(tar)}  linux-{base}.tar.gz\n'
+    f'{h(patch)}  gtactive3wifi.patch\n'
+    f'{h(cfg)}  config-postmarketos-exynos9810.aarch64\n"\n', s, count=1, flags=re.M)
+for need in ('_base="', 'gtactive3wifi.patch', 'linux-$_base"'):
+    assert need in s, need
+open(path, "w").write(s)
+PY
+
+# 3. duranium-build: our commits as a series
+mkdir -p "$tmp/duranium-build"
+git -C "$DUR" format-patch -q --no-signature --zero-commit -o "$tmp/duranium-build" "$dbase..$dc"
+echo "$dbase" > "$tmp/duranium-build/BASE"
+
+# 4. nothing proprietary
+if grep -rIlE 'BEGIN (OPENSSH|PGP|RSA|EC) PRIVATE|PRIVATE KEY-----' "$tmp"; then
+	die "private key material in the export"
+fi
+big=$(find "$tmp" -type f -size +2M ! -name gtactive3wifi.patch)
+[ -z "$big" ] || die "unexpectedly large files: $big"
+find "$tmp/aports" -type f \( -name '*.bin' -o -name '*.img' -o -name '*.fw' -o -name '*.hcd' \) | grep . &&
+	die "firmware-like files in the export"
+
+# 5. replace pmos/{aports,duranium-build,pmaports.BASE}
+rm -rf "$OUT/aports" "$OUT/duranium-build" "$OUT/pmaports.BASE"
+mkdir -p "$OUT"
+cp -r "$tmp/aports" "$tmp/duranium-build" "$tmp/pmaports.BASE" "$OUT/"
+echo "exported pmaports $(git -C "$PMA" rev-parse --short "$pc") (${#dirs[@]} aports, base $(git -C "$PMA" rev-parse --short "$pbase")),"
+echo "  duranium-build $(git -C "$DUR" rev-parse --short "$dc") ($(ls "$OUT"/duranium-build/*.patch | wc -l) patches on $(git -C "$DUR" rev-parse --short "$dbase")),"
+echo "  kernel $(git -C "$LINUX" rev-parse --short "$kc") = torvalds $(git -C "$LINUX" rev-parse --short "$kbase") + $(($(stat -c %s "$K/gtactive3wifi.patch") >> 10)) KiB patch"
+git -C "$P" status --short pmos | head -20

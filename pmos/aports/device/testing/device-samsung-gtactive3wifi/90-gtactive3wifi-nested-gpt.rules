@@ -1,0 +1,10 @@
+# Duranium lives in a GPT nested inside the Android userdata partition.
+# A partition cannot be partition-scanned by the kernel, so expose it as a
+# partitioned loop device. systemd's udev blkid builtin sets
+# ID_PART_GPT_AUTO_ROOT_DISK_NEEDS_LOOP when LoaderDevicePartUUID (from
+# systemd-boot) points into it; this rule also covers boots without EFI
+# variables (efi=noruntime, direct uniLoader boot). Both rules pull in the same
+# systemd-loop@<device>.service instance, so they never create two loops.
+SUBSYSTEM=="block", ACTION=="add|change", ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_NAME}=="userdata", ENV{ID_PART_GPT_SECTOR_SIZE}=="?*", \
+  ENV{SYSTEMD_WANTS}+="systemd-loop@.service"

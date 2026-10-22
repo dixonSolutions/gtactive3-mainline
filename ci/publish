@@ -1,0 +1,77 @@
+#!/bin/bash
+# Publish one image build to its update channel (a GitHub release):
+#
+#   ci/publish TAG DIR VERSION [prerelease]
+#
+# DIR = mkosi.output/<IMAGE_ID> of a --profile=compressed build. Uploads the
+# version's update artifacts (UKI, usr + verity, extensions) and the full
+# disk image, then a new SHA256SUMS listing this version and the newest
+# older one (KEEP=2 in total, like postmarketOS), signed with the project's
+# key (SHA256SUMS.gpg, what sysupdate checks), and deletes what fell out.
+# New files go up before the manifest that names them, old ones are deleted
+# only after the manifest stopped naming them.
+#
+# Needs: GH_TOKEN, GITHUB_REPOSITORY, a GNUPGHOME holding the signing key,
+# NOTES (release notes body; must contain the "Fingerprint:" line).
+set -euo pipefail
+TAG=$1 DIR=$2 VERSION=$3 PRE=${4:-}
+KEEP=${KEEP:-2}
+REPO=${GITHUB_REPOSITORY:?}
+HERE=$(cd "$(dirname "$0")" && pwd)
+PUB=$HERE/../pmos/sysupdate-public-key.asc
+PREFIX=$TAG
+PREFIX=${PREFIX%-dev}
+W=$(mktemp -d)
+trap 'rm -rf "$W"' EXIT
+
+cd "$DIR"
+mapfile -t files < <(ls "${PREFIX}_${VERSION}".*.raw.zst "${PREFIX}_${VERSION}.raw.zst" \
+	"${PREFIX}_${VERSION}.efi" 2>/dev/null | grep -v '\.esp\.' | sort -u)
+printf '%s\n' "${files[@]}" | grep -q '\.efi$' || { echo "no UKI for $VERSION in $DIR" >&2; exit 1; }
+printf '%s\n' "${files[@]}" | grep -q '\.usr-arm64\.[0-9a-f]*\.raw\.zst$' || { echo "no usr image" >&2; exit 1; }
+printf '%s\n' "${files[@]}" | grep -q '\.usr-arm64-verity\.[0-9a-f]*\.raw\.zst$' || { echo "no verity image" >&2; exit 1; }
+for f in "${files[@]}"; do
+	s=$(stat -c %s "$f")
+	[ "$s" -lt $((2 * 1024 * 1024 * 1024 - 1)) ] || { echo "$f is too big for a release asset" >&2; exit 1; }
+done
+
+if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+	gh release create "$TAG" -R "$REPO" --target "${GITHUB_SHA:-main}" \
+		--title "$TAG" --notes "$NOTES" ${PRE:+--prerelease} --latest=false
+fi
+
+# the current manifest, if any, must carry our signature
+: > "$W/old"
+if gh release download "$TAG" -R "$REPO" -D "$W/dl" -p SHA256SUMS -p SHA256SUMS.gpg 2>/dev/null; then
+	gpg --batch --no-default-keyring --keyring "$W/ring.pgp" --import "$PUB" 2>/dev/null
+	gpg --batch --no-default-keyring --keyring "$W/ring.pgp" --verify "$W/dl/SHA256SUMS.gpg" "$W/dl/SHA256SUMS"
+	grep -v " ${PREFIX}_${VERSION}\." "$W/dl/SHA256SUMS" > "$W/old" || true
+fi
+mapfile -t olds < <(sed -n "s/.* ${PREFIX}_\([0-9]\{8\}\)\..*/\1/p" "$W/old" | sort -u)
+drop=()
+n=$(( ${#olds[@]} - (KEEP - 1) ))
+if [ "$n" -gt 0 ]; then
+	drop=("${olds[@]:0:$n}")
+	for v in "${drop[@]}"; do sed -i "/ ${PREFIX}_${v}\./d" "$W/old"; done
+fi
+
+sha256sum "${files[@]}" > "$W/SHA256SUMS"
+cat "$W/old" >> "$W/SHA256SUMS"
+gpg --batch --yes --detach-sign --armor -o "$W/SHA256SUMS.gpg" "$W/SHA256SUMS"
+
+echo "== upload ${#files[@]} files for $VERSION to $TAG"
+gh release upload "$TAG" -R "$REPO" --clobber "${files[@]}"
+gh release upload "$TAG" -R "$REPO" --clobber "$W/SHA256SUMS" "$W/SHA256SUMS.gpg"
+for v in "${drop[@]}"; do
+	for a in $(gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name' |
+		grep "^${PREFIX}_${v}\."); do
+		echo "== prune $a"
+		gh release delete-asset "$TAG" "$a" -R "$REPO" -y
+	done
+done
+
+# the tag follows the commit that produced the newest images
+git push -f origin "${GITHUB_SHA:-HEAD}:refs/tags/$TAG" 2>/dev/null ||
+	echo "::warning::could not move tag $TAG"
+gh release edit "$TAG" -R "$REPO" --notes "$NOTES" ${PRE:+--prerelease}
+echo "published $TAG $VERSION"

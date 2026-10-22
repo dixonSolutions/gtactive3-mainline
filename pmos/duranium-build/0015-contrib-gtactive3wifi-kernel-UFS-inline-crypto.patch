@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 22:15:28 +1100
+Subject: [PATCH 15/25] contrib: gtactive3wifi: kernel: UFS inline crypto
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index 3f8df8e..ec18dcb 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -159,6 +159,12 @@ CONFIG_BLK_DEV_NBD=y
+ CONFIG_SCSI_UFSHCD=m
+ CONFIG_SCSI_UFSHCD_PLATFORM=m
+ CONFIG_SCSI_UFS_EXYNOS=m
++# UFS inline crypto: makes the Exynos driver set the FMP PRDT format
++# (DESCTYPE 3, 128-byte entries) itself. U-Boot leaves the controller in
++# that format; without this Linux builds 16-byte entries and every
++# multi-entry transfer faults on the bus (IS.SBFES).
++CONFIG_BLK_INLINE_ENCRYPTION=y
++CONFIG_SCSI_UFS_CRYPTO=y
+ CONFIG_PHY_SAMSUNG_UFS=m
+ 
+ # --- display: simpledrm on the S-Boot framebuffer (0xca000000) so phoc gets

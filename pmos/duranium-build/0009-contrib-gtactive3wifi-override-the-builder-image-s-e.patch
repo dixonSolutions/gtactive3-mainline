@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 19:01:19 +1100
+Subject: [PATCH 09/25] contrib: gtactive3wifi: override the builder image's
+ entrypoint
+
+docker-postmarketos sets ENTRYPOINT ["/bin/sh", "-c", "sh"], which
+silently ignores the command given to podman run: no package was ever
+built.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index aafc280..d18f671 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -77,7 +77,7 @@ chmod +x "$work/build.sh"
+ fwmount=""
+ [ -d "$FWDIR" ] && fwmount="-v $FWDIR:/firmware:ro,Z"
+ # shellcheck disable=SC2086
+-flock "$LOCK" nice -n 19 podman run --rm -e JOBS="$JOBS" \
++flock "$LOCK" nice -n 19 podman run --rm --entrypoint /bin/sh -e JOBS="$JOBS" \
+ 	-v "$PMAPORTS:/pmaports:ro,Z" -v "$HERE:/contrib:ro,Z" $fwmount \
+ 	-v "$DISTFILES:/distfiles:Z" -v "$work/repo:/repo:Z" -v "$work:/s:Z" \
+ 	-v "$work/out:/out:Z" \

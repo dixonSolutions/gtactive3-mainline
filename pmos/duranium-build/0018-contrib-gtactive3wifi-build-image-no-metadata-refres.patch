@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 01:04:12 +1100
+Subject: [PATCH 18/25] contrib: gtactive3wifi: build-image: no metadata
+ refresh once cached, pinned DNS, retry
+
+Builds kept dying on 'DNS: transient error': every mkosi sub-image
+refreshed the repository indexes through podman's forwarder and the
+router, over a weak Wi-Fi link. Once mkosi.cache has the metadata, build
+with --cache-only=metadata (FRESH=1 to refresh on purpose); resolve with
+1.1.1.1/9.9.9.9; and retry up to three times when a failure looks like
+a transient network error.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-image.sh | 48 ++++++++++++++++----
+ 1 file changed, 38 insertions(+), 10 deletions(-)
+ mode change 100644 => 100755 contrib/samsung-gtactive3wifi/build-image.sh
+
+diff --git a/contrib/samsung-gtactive3wifi/build-image.sh b/contrib/samsung-gtactive3wifi/build-image.sh
+old mode 100644
+new mode 100755
+index 21a9d3e..ae012a4
+--- a/contrib/samsung-gtactive3wifi/build-image.sh
++++ b/contrib/samsung-gtactive3wifi/build-image.sh
+@@ -34,7 +34,9 @@ export MKOSI
+ # worktree at the same paths as the host
+ # SELinux (Fedora hosts): the bind mounts are not relabeled, so let the
+ # build container run unconfined instead of relabeling the whole tree
+-MKOSI_CONTAINER_ARGS="${MKOSI_CONTAINER_ARGS:-} --security-opt label=disable -v $PKGS:$PKGS:ro -v $PMAPORTS:$PMAPORTS:ro"
++# Pinned resolvers: the default podman forwarder/router DNS over a weak
++# Wi-Fi link failed often enough to kill builds ("DNS: transient error").
++MKOSI_CONTAINER_ARGS="${MKOSI_CONTAINER_ARGS:-} --security-opt label=disable --dns=1.1.1.1 --dns=9.9.9.9 -v $PKGS:$PKGS:ro -v $PMAPORTS:$PMAPORTS:ro"
+ export MKOSI_CONTAINER_ARGS
+ 
+ if [ -z "${SKIP_APKS:-}" ]; then
+@@ -54,15 +56,41 @@ ln -sfn "$PMAPORTS" "$DUR/pmaports"
+ cd "$DUR"
+ [ -s mkosi.version ] || "$MKOSI" bump
+ IMAGE_ID="samsung-gtactive3wifi_${UI}_${RELEASE}"
+-flock "$LOCK" nice -n 19 "$MKOSI" build \
+-	--force \
+-	--architecture=arm64 \
+-	--image-id="$IMAGE_ID" \
+-	--environment=PMOS_DEVICE=samsung-gtactive3wifi \
+-	--environment=PMOS_VARIANT="$UI" \
+-	--release="$RELEASE" \
+-	--package-directory="$PKGS" \
+-	"$@"
++# Once a build has cached the repository metadata, do not refresh it: every
++# sub-image (base, initrd, sysexts) ran "apk update" and any flaky lookup
++# killed the build. FRESH=1 refreshes on purpose (to pull upstream updates);
++# the local packages in $PKGS are always re-indexed.
++CACHE_ONLY=
++if [ -z "${FRESH:-}" ] && ls mkosi.cache/*.metadata.cache >/dev/null 2>&1; then
++	CACHE_ONLY=--cache-only=metadata
++fi
++log=$(mktemp)
++trap 'rm -f "$log"' EXIT
++for attempt in 1 2 3; do
++	{
++		rc=0
++		flock "$LOCK" nice -n 19 "$MKOSI" build \
++			--force \
++			--architecture=arm64 \
++			--image-id="$IMAGE_ID" \
++			--environment=PMOS_DEVICE=samsung-gtactive3wifi \
++			--environment=PMOS_VARIANT="$UI" \
++			--release="$RELEASE" \
++			--package-directory="$PKGS" \
++			$CACHE_ONLY \
++			"$@" 2>&1 || rc=$?
++		echo "MKOSI-EXIT $rc"
++	} | tee "$log"
++	rc=$(sed -n 's/^MKOSI-EXIT //p' "$log")
++	[ "$rc" = 0 ] && break
++	if [ "$attempt" -lt 3 ] &&
++	   grep -qE "transient|Temporary failure|Could not resolve|timed out|Network unreachable" "$log"; then
++		echo "== transient network failure (exit $rc), retrying ($attempt/3)" >&2
++		sleep 20
++		continue
++	fi
++	exit "$rc"
++done
+ 
+ echo "Image in: $DUR/mkosi.output/$IMAGE_ID/"
+ ls -l "$DUR/mkosi.output/$IMAGE_ID/"

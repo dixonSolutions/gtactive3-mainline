@@ -1,0 +1,5 @@
+# uniLoader sets the "download" reboot reason (PMU INFORM3) before chaining
+# into U-Boot, so that a crash on the way lands in Download mode where the
+# host can reflash. Once the system is up, make plain reboots normal again:
+# systemd passes /run/systemd/reboot-param to the kernel's reboot-mode.
+f /run/systemd/reboot-param 0644 - - - normal

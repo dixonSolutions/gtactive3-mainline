@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 23:13:14 +1100
+Subject: [PATCH 16/25] contrib: gtactive3wifi: kernel: BLK_DEV_WRITE_MOUNTED
+ for systemd-repart
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index ec18dcb..1ae3962 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -250,3 +250,8 @@ CONFIG_PANIC_TIMEOUT=3
+ # --- interactive desktop basics (the bring-up config is tinyconfig-like) ---
+ CONFIG_HIGH_RES_TIMERS=y
+ CONFIG_NO_HZ_IDLE=y
++
++# systemd-repart mounts the new root while it still holds the device open
++# for writing (to populate it); without this the mount fails with EBUSY
++# and the first Duranium boot cannot create its root partition.
++CONFIG_BLK_DEV_WRITE_MOUNTED=y

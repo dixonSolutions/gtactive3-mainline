@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:58:13 +1100
+Subject: [PATCH 17/25] contrib: gtactive3wifi: build the kernel through a
+ persistent ccache
+
+The kernel aport is rebuilt from a fresh snapshot each time (about an
+hour at nice 19). Mount build/ccache into the package builder and build
+linux-* with CC="ccache ...", path independent (every snapshot unpacks
+to a new linux-<sha> directory). The builder image is rebuilt when its
+Containerfile changes (label gta3.containerfile).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh   | 22 +++++++++++++++----
+ .../pkgbuilder.Containerfile                  |  3 ++-
+ 2 files changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index b30d209..b3a8e96 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -39,8 +39,12 @@ if [ $# -eq 0 ]; then
+ 	[ -d "$FWDIR" ] && set -- "$@" firmware
+ fi
+ 
+-podman image exists "$BUILDER" ||
+-	podman build -t "$BUILDER" -f "$HERE/pkgbuilder.Containerfile" "$HERE"
++# rebuild the builder whenever its Containerfile changes
++want=$(sha256sum "$HERE/pkgbuilder.Containerfile" | cut -c1-12)
++have=$(podman image inspect -f '{{index .Labels "gta3.containerfile"}}' "$BUILDER" 2>/dev/null || true)
++[ "$want" = "$have" ] ||
++	podman build -t "$BUILDER" --label gta3.containerfile="$want" \
++		-f "$HERE/pkgbuilder.Containerfile" "$HERE"
+ 
+ mkdir -p "$PKGS" "$DISTFILES"
+ work=$(mktemp -d)
+@@ -71,8 +75,14 @@ for p in "$@"; do
+ 	firmware) ;;
+ 	*) abuild -F verify ;;
+ 	esac
+-	# cross-native: compile with the aarch64 cross compiler on the host CPU
+-	CROSS_COMPILE=aarch64-alpine-linux-musl- CC=aarch64-alpine-linux-musl-gcc \
++	# cross-native: compile with the aarch64 cross compiler on the host CPU;
++	# the kernel through ccache (persistent /ccache, path independent, as
++	# every snapshot unpacks to a new linux-<sha> directory)
++	cc=aarch64-alpine-linux-musl-gcc
++	case "$name" in
++	linux-*) cc="ccache $cc" ;;
++	esac
++	CROSS_COMPILE=aarch64-alpine-linux-musl- CC="$cc" \
+ 		abuild -F -d -P /repo -D postmarketOS
+ done
+ find /repo -name '*.apk' -exec cp {} /out/ \;
+@@ -82,7 +92,11 @@ chmod +x "$work/build.sh"
+ fwmount=""
+ [ -d "$FWDIR" ] && fwmount="-v $FWDIR:/firmware:ro,Z"
+ # shellcheck disable=SC2086
++CCACHE=${CCACHE:-$ROOT/build/ccache}
++mkdir -p "$CCACHE"
+ flock "$LOCK" nice -n 19 podman run --rm --entrypoint /bin/sh -e JOBS="$JOBS" \
++	-v "$CCACHE:/ccache:Z" -e CCACHE_DIR=/ccache -e CCACHE_NOHASHDIR=1 \
++	-e CCACHE_BASEDIR=/b -e CCACHE_MAXSIZE=15G -e CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime \
+ 	-v "$PMAPORTS:/pmaports:ro,Z" -v "$HERE:/contrib:ro,Z" $fwmount \
+ 	-v "$DISTFILES:/distfiles:Z" -v "$work/repo:/repo:Z" -v "$work:/s:Z" \
+ 	-v "$work/out:/out:Z" \
+diff --git a/contrib/samsung-gtactive3wifi/pkgbuilder.Containerfile b/contrib/samsung-gtactive3wifi/pkgbuilder.Containerfile
+index 0ac5ec9..7ff4784 100644
+--- a/contrib/samsung-gtactive3wifi/pkgbuilder.Containerfile
++++ b/contrib/samsung-gtactive3wifi/pkgbuilder.Containerfile
+@@ -15,7 +15,8 @@ RUN apk add --no-cache \
+ 	bash bc bison elfutils-dev findutils flex gmp-dev linux-headers \
+ 	mpc1-dev mpfr-dev openssl-dev pahole perl python3 zstd \
+ 	postmarketos-installkernel \
+-	dtc
++	dtc \
++	ccache
+ 
+ # aarch64 musl + kernel headers in the cross compiler's sysroot, for the
+ # device package's small C helper (like pmbootstrap's cross-native2 sysroot).

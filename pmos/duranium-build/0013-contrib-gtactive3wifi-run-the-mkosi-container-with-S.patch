@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 19:39:39 +1100
+Subject: [PATCH 13/25] contrib: gtactive3wifi: run the mkosi container with
+ SELinux labeling disabled
+
+On Fedora the unlabeled bind mounts give PermissionError on /src.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-image.sh | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-image.sh b/contrib/samsung-gtactive3wifi/build-image.sh
+index d7620af..21a9d3e 100644
+--- a/contrib/samsung-gtactive3wifi/build-image.sh
++++ b/contrib/samsung-gtactive3wifi/build-image.sh
+@@ -32,7 +32,9 @@ MKOSI=${MKOSI:-$DUR/scripts/mkosi-container}
+ export MKOSI
+ # the container must see the package directory and the symlinked pmaports
+ # worktree at the same paths as the host
+-MKOSI_CONTAINER_ARGS="${MKOSI_CONTAINER_ARGS:-} -v $PKGS:$PKGS:ro -v $PMAPORTS:$PMAPORTS:ro"
++# SELinux (Fedora hosts): the bind mounts are not relabeled, so let the
++# build container run unconfined instead of relabeling the whole tree
++MKOSI_CONTAINER_ARGS="${MKOSI_CONTAINER_ARGS:-} --security-opt label=disable -v $PKGS:$PKGS:ro -v $PMAPORTS:$PMAPORTS:ro"
+ export MKOSI_CONTAINER_ARGS
+ 
+ if [ -z "${SKIP_APKS:-}" ]; then

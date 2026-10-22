@@ -1,0 +1,67 @@
+Duranium USB debug layer (duranium-usb-debug)
+=============================================
+
+What it is
+----------
+A development-only debug layer for postmarketOS Duranium, modelled on the
+SM-T570 mainline bring-up console (gtactive3-mainline initramfs/init.c). It
+brings up a USB NCM network interface and exposes, over that interface only:
+
+  * root shell on TCP 2323      -> busybox "telnetd -l /bin/sh" (root, no auth)
+  * register console on TCP 23 -> gta3-console from the device package, the
+    same console as the bring-up init (scripts/tab, tab-get, tab-put)
+  * adb (duranium-usb-debug-adb) -> adbd on FunctionFS: adb shell/push/pull
+  * ssh on TCP 22             -> a dedicated sshd (its own host key)
+  * kernel log on TCP 24      -> "dmesg -w", or /dev/kmsg without util-linux
+
+Fixed addressing (matches the bring-up console so the host tooling in
+gtactive3-mainline/scripts works unchanged):
+
+  * gadget VID:PID 0x1d6b:0x0104
+  * device MAC 02:57:0a:00:00:01  -> device link-local  fe80::57:aff:fe00:1
+  * host   MAC 02:57:0a:00:00:02  -> host link-local     fe80::57:aff:fe00:2
+
+Host usage (replace usb0 with the host's cdc_ncm interface):
+
+  nc  fe80::57:aff:fe00:1%usb0 23          # raw root shell (telnetd -l /bin/sh)
+  nc  fe80::57:aff:fe00:1%usb0 24 | less   # kernel log
+  ssh root@fe80::57:aff:fe00:1%usb0        # needs a root key or password first
+
+All three are socket-activated (systemd .socket units with Accept=yes),
+listening on the wildcard address but bound to the gadget interface with
+SO_BINDTODEVICE (BindToDevice=usb0). That works before the link has carrier
+and before IPv6 duplicate address detection finished, which binding the
+link-local address directly does not.
+
+It is present both in the mkosi initrd (interface, telnet console and kernel
+log; -initramfs subpackage) and in the booted system (adds sshd, which needs
+the real root). The gadget stays bound across switch-root.
+
+SECURITY
+--------
+This is an UNAUTHENTICATED root shell and an SSH daemon that permits root
+login, reachable by anyone who can attach to the USB port. It is for
+development images only. It listens on the USB gadget interface only and the
+firewall (60_duranium_usb_debug.nft) only opens 22/23/24 on usb*, but USB
+access is physical root access regardless. Do not ship it in a release image.
+
+How to disable it
+-----------------
+Booted system, whole layer off (the target's Also= list covers every unit):
+    systemctl disable --now duranium-usb-debug.target
+Permanently, so a preset cannot re-enable it:
+    systemctl mask duranium-usb-debug.target duranium-usb-debug.service \
+        duranium-debug-shell.socket duranium-debug-sshd.socket \
+        duranium-debug-klog.socket
+Just one piece, e.g. keep the interface but drop the shell:
+    systemctl disable --now duranium-debug-shell.socket
+The initrd's units come from presets baked into the UKI and cannot be
+disabled at runtime; the kernel command line switch covers the initrd and the
+booted system alike:
+    duranium.usb_debug=0
+
+Release images
+--------------
+This layer is a SEPARATE package. A release image is built without it (drop
+duranium-usb-debug from the device package's depends), so no masking is
+needed.

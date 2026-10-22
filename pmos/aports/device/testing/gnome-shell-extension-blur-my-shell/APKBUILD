@@ -1,0 +1,39 @@
+# Maintainer: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+# GNOME Shell extension from extensions.gnome.org (the release built for
+# GNOME Shell 46-51), installed system-wide for the Galaxy Tab Active3 image.
+pkgname=gnome-shell-extension-blur-my-shell
+pkgver=76
+pkgrel=2
+pkgdesc="GNOME Shell extension: blur the panel, overview and applications"
+url="https://github.com/aunetx/blur-my-shell"
+arch="noarch"
+license="GPL-3.0-or-later"
+makedepends="glib"
+options="!check"
+_uuid=blur-my-shell@aunetx
+source="$_uuid-$pkgver.zip::https://extensions.gnome.org/download-extension/$_uuid.shell-extension.zip?version_tag=76770"
+builddir="$srcdir/ext"
+
+unpack() {
+	mkdir -p "$builddir"
+	unzip -q "$srcdir/$_uuid-$pkgver.zip" -d "$builddir"
+}
+
+package() {
+	local d="$pkgdir/usr/share/gnome-shell/extensions/$_uuid"
+	mkdir -p "$d"
+	cp -r "$builddir"/. "$d"/
+	# the extension opens schemas/gschemas.compiled in its own directory;
+	# the extensions.gnome.org zip ships only the XML
+	glib-compile-schemas --strict "$d"/schemas
+	# the schema system-wide, compiled by the glib trigger, so the
+	# extension finds it without a per-extension gschemas.compiled
+	install -Dm644 "$builddir"/schemas/org.gnome.shell.extensions.blur-my-shell.gschema.xml \
+		-t "$pkgdir"/usr/share/glib-2.0/schemas/
+	find "$d" -type d -exec chmod 755 {} +
+	find "$d" -type f -exec chmod 644 {} +
+}
+
+sha512sums="
+2b998d362155e27dbfc709a7d3893813b9f6a988c6a00661079f527fb4145baa489b92bc458db1623e1c6b3351007dc879e43fcd4144278b197401892fdf19b3  $_uuid-$pkgver.zip
+"

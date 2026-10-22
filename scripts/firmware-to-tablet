@@ -1,0 +1,36 @@
+#!/bin/bash
+# Install the vendor firmware extracted from YOUR stock firmware
+# (tools/extract-stock-fw.sh -> firmware/extracted/linux-firmware) into
+# /var/lib/firmware on a booted Duranium, where the device package makes the
+# kernel look first (firmware_class.path). It lives on the root partition,
+# so every later A/B update keeps it. Published images carry no Samsung
+# firmware; without this, Wi-Fi, Bluetooth, audio DSPs, NFC, S Pen and the
+# other blobs are missing.
+#
+#   scripts/firmware-to-tablet            over the USB debug ssh (dev images)
+#   scripts/firmware-to-tablet --tar F    only write a tarball F to copy by hand:
+#       on the tablet:  sudo tar -xf F -C /var/lib/firmware --no-same-owner
+#   then reboot, or reload the drivers.
+#
+# Not disruptive (writes files only), but follow docs/COORDINATION.md for
+# the shared tablet.
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+SRC=${GTA3_FIRMWARE_DIR:-$P/firmware/extracted/linux-firmware/lib/firmware}
+KEY=$P/build/secrets/duranium-dev-ed25519
+LL=fe80::57:aff:fe00:1
+[ -d "$SRC" ] || { echo "no extracted firmware at $SRC (tools/extract-stock-fw.sh)" >&2; exit 1; }
+# the camera ISP libraries have no driver yet
+pack() { tar -C "$SRC" --exclude=samsung/gtactive3wifi/camera --owner=0 --group=0 -cf - .; }
+
+if [ "${1:-}" = --tar ]; then
+	pack > "${2:?tarball path}"
+	echo "wrote $2 ($(($(stat -c %s "$2") >> 10)) KiB)"
+	exit 0
+fi
+
+IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
+[ -n "$IFC" ] || { echo "tablet USB network not present" >&2; exit 1; }
+pack | ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "root@$LL%$IFC" \
+	'mkdir -p /var/lib/firmware && tar -xf - -C /var/lib/firmware --no-same-owner && find /var/lib/firmware -type f | wc -l'
+echo "firmware installed in /var/lib/firmware (takes effect at the next driver load or boot)"

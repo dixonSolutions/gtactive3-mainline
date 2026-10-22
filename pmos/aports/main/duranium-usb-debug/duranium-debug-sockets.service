@@ -1,0 +1,16 @@
+[Unit]
+Description=Duranium USB debug layer: (re)start the debug sockets in the booted system
+Documentation=file:///usr/share/doc/duranium-usb-debug/README
+ConditionKernelCommandLine=!duranium.usb_debug=0
+ConditionPathExists=!/etc/initrd-release
+# The telnet shell, the kernel log stream and the device's register console
+# start in the initrd; make sure they listen after switch-root as well.
+After=duranium-usb-debug.service
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/systemctl start --no-block duranium-debug-shell.socket duranium-debug-klog.socket duranium-debug-sshd.socket
+ExecStart=-/usr/bin/systemctl start --no-block gta3-debug-console.socket
+
+[Install]
+WantedBy=multi-user.target

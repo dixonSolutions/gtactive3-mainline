@@ -1,0 +1,246 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:03:27 +1100
+Subject: [PATCH 04/25] contrib: gtactive3wifi: make install-to-userdata.sh
+ safe and actually verify
+
+- The verify step could never pass: the bring-up console's "cat" streams the
+  whole block device (initramfs/init.c "cat " handler: read until EOF), so
+  tab-get read the image length and then waited for the "> " trailer while
+  buffering the rest of the 52 GiB partition in host RAM. Read exactly the
+  image length and close the connection instead (the serving child dies on
+  EPIPE/SIGPIPE, init forks one per connection).
+- The verify trap ran rm -f "${RAW##*/}": a file in the current directory
+  with the image's basename, i.e. the user's own image when installing an
+  uncompressed .raw from its directory. Drop the traps; decompress next to
+  the image instead of into /tmp (tmpfs, too small for ~6.4 GiB).
+- tab-put read the whole image into memory and its "ok N"/"error" reply
+  was never checked. Stream in 1 MiB chunks and require "ok <len>".
+- Check on the device that sda31 is PARTNAME=userdata and a partition
+  before writing (read on this unit: PARTN=31, PARTNAME=userdata), refuse
+  images without a 4K-sector GPT, and require drop_caches to succeed so the
+  read-back comes from UFS.
+- Take build/tab.lock for every console access.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../install-to-userdata.sh                    | 164 ++++++++++++++----
+ 1 file changed, 126 insertions(+), 38 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/install-to-userdata.sh b/contrib/samsung-gtactive3wifi/install-to-userdata.sh
+index 98181b2..8a55d7a 100644
+--- a/contrib/samsung-gtactive3wifi/install-to-userdata.sh
++++ b/contrib/samsung-gtactive3wifi/install-to-userdata.sh
+@@ -3,15 +3,22 @@
+ # the Galaxy Tab Active3, over the bring-up debug console, and verify it.
+ #
+ # The device must be sitting in the gtactive3-mainline bring-up console
+-# (S-Boot -> uniLoader -> mainline Linux + nolibc init), which exposes the
+-# "put PATH LEN" (host -> device raw stream) and "cat PATH" (device -> host
+-# raw stream) commands over USB. This script uses the repo's tab/tab-put/
+-# tab-get helpers, so the USB network must be up ("tab wait").
++# (S-Boot -> uniLoader -> mainline Linux + nolibc init, initramfs/init.c),
++# which serves TCP 23 on fe80::57:aff:fe00:1 over the USB NCM link with:
++#   "put PATH LEN" + LEN raw bytes  -> opens PATH O_WRONLY|O_CREAT|O_TRUNC and
++#                                       writes them, replies "ok <received>"
++#   "cat PATH"                       -> streams PATH until EOF, then "> "
++# "cat" of a block device streams the WHOLE device (52 GiB for sda31), so the
++# read-back below reads exactly the image length and then closes the
++# connection; the console child that served it dies on SIGPIPE, init keeps
++# serving new connections (one fork per connection).
+ #
+ # Duranium lives in a GPT nested at the very start of sda31; the image is the
+-# first ~6-7 GiB of that disk (ESP + usr + verity). First boot grows the
+-# partitions into the full 52 GiB via systemd-repart, so only the image size
+-# is written here, not the whole partition.
++# first ~6.4 GiB of that disk (ESP + usr + verity). First boot grows the
++# partitions into the full partition via systemd-repart, so only the image is
++# written, not the whole partition.
++#
++# Every console access takes build/tab.lock, like scripts/tab users must.
+ #
+ # Usage:
+ #   install-to-userdata.sh IMAGE            # IMAGE is .raw or .raw.zst / .zst
+@@ -20,22 +27,35 @@ set -euo pipefail
+ 
+ ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
+ TAB=$ROOT/scripts/tab
+-TAB_PUT=$ROOT/scripts/tab-put
+-TAB_GET=$ROOT/scripts/tab-get
+-DEV=/dev/sda31          # Android userdata, confirmed in HARDWARE.md
++LOCK=$ROOT/build/tab.lock
++LL=fe80::57:aff:fe00:1
++PART=sda31              # Android userdata (HARDWARE.md "Partitions")
++DEV=/dev/$PART
++WANT_PARTNAME=userdata  # GPT name read on the device: sda31 uevent PARTNAME
+ IMG=${1:?usage: install-to-userdata.sh IMAGE [--no-verify]}
+ VERIFY=1
+ [ "${2:-}" = "--no-verify" ] && VERIFY=0
+ 
+-command -v zstd >/dev/null || { echo "zstd required" >&2; exit 1; }
++tab() { flock "$LOCK" "$TAB" "$@"; }
++
++ncm_iface() {
++	for d in /sys/class/net/*; do
++		[ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] &&
++			{ basename "$d"; return 0; }
++	done
++	return 1
++}
+ 
+-# Decompress to a plain raw image if needed.
++# Decompress next to the image (not into /tmp, which is a RAM-backed tmpfs on
++# the host and too small for ~6.4 GiB).
+ case "$IMG" in
+ 	*.zst)
+-		RAW=$(mktemp --suffix=.raw)
+-		trap 'rm -f "$RAW"' EXIT
+-		echo "Decompressing $IMG -> $RAW"
+-		zstd -d -f -o "$RAW" "$IMG"
++		RAW=${IMG%.zst}
++		[ "$RAW" != "$IMG" ] || RAW=$IMG.raw
++		if [ ! -f "$RAW" ] || [ "$IMG" -nt "$RAW" ]; then
++			echo "Decompressing $IMG -> $RAW"
++			zstd -d -f -o "$RAW" "$IMG"
++		fi
+ 		;;
+ 	*)
+ 		RAW=$IMG
+@@ -43,35 +63,106 @@ case "$IMG" in
+ esac
+ 
+ LEN=$(stat -c %s "$RAW")
++[ $((LEN % 4096)) -eq 0 ] || { echo "ERROR: image size $LEN is not a multiple of 4096 (UFS sector)" >&2; exit 1; }
+ echo "Image: $RAW ($LEN bytes)"
++WANT=$(sha256sum "$RAW" | cut -d' ' -f1)
++echo "sha256 $WANT"
++
++# The nested GPT must use the UFS logical sector size (4096), else neither
++# U-Boot's blkmap nor the Linux loop device can parse it.
++python3 -I - "$RAW" <<'PY'
++import sys
++with open(sys.argv[1], "rb") as f:
++    hdr = f.read(8192)
++if hdr[4096:4104] != b"EFI PART":
++    sys.exit("ERROR: no GPT header at byte 4096: image is not a 4K-sector GPT disk")
++print("GPT: 4096-byte sectors")
++PY
+ 
+ echo "Waiting for the tablet's USB console..."
+-"$TAB" wait
++tab wait
+ 
+-# Sanity: confirm the target exists and show its size (in 512-byte sectors).
+-SECT=$("$TAB" "cat /sys/class/block/sda31/size" | tr -dc 0-9)
++# Sanity: the target must be the userdata partition and large enough.
++UEVENT=$(tab "cat /sys/class/block/$PART/uevent")
++echo "$UEVENT" | grep -qx "PARTNAME=$WANT_PARTNAME" || {
++	echo "ERROR: $DEV is not PARTNAME=$WANT_PARTNAME:" >&2; echo "$UEVENT" >&2; exit 1; }
++echo "$UEVENT" | grep -qx "DEVTYPE=partition" || { echo "ERROR: $DEV is not a partition" >&2; exit 1; }
++SECT=$(tab "cat /sys/class/block/$PART/size" | tr -dc 0-9)
+ PARTBYTES=$(( SECT * 512 ))
+-echo "Target $DEV: $PARTBYTES bytes ($SECT sectors)"
++echo "Target $DEV (PARTNAME=$WANT_PARTNAME): $PARTBYTES bytes"
+ if [ "$LEN" -gt "$PARTBYTES" ]; then
+ 	echo "ERROR: image ($LEN) is larger than $DEV ($PARTBYTES)" >&2
+ 	exit 1
+ fi
+ 
++IFC=$(ncm_iface) || { echo "tablet USB network not present" >&2; exit 1; }
++
+ echo "Streaming image into $DEV ..."
+-# tab-put opens the path for writing and streams exactly LEN bytes into it.
+-# For a block device the create/truncate flags are no-ops; the bytes land at
+-# offset 0, which is where the nested GPT begins.
+-"$TAB_PUT" "$RAW" "$DEV"
+-"$TAB" "write /proc/sys/vm/drop_caches 3" >/dev/null 2>&1 || true
++flock "$LOCK" python3 -I - "$LL%$IFC" "$RAW" "$DEV" "$LEN" <<'PY'
++import socket, sys, time
++addr, local, remote, n = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
++s = socket.create_connection((addr, 23), timeout=30)
++buf = b""
++while not buf.endswith(b"> "):
++    d = s.recv(4096)
++    if not d:
++        sys.exit("console closed before the prompt")
++    buf += d
++s.sendall(f"put {remote} {n}\n".encode())
++t0 = time.time()
++sent = 0
++with open(local, "rb") as f:
++    while sent < n:
++        chunk = f.read(min(1 << 20, n - sent))
++        if not chunk:
++            sys.exit(f"short read of {local} at {sent}")
++        s.sendall(chunk)
++        sent += len(chunk)
++s.settimeout(300)   # the last page-cache flush happens before the reply
++reply = b""
++while b"\n" not in reply:
++    d = s.recv(4096)
++    if not d:
++        break
++    reply += d
++line = reply.split(b"\n")[0].decode(errors="replace").strip()
++dt = time.time() - t0
++print(f"device: {line!r} ({sent / dt / 1e6:.1f} MB/s)")
++if line != f"ok {n}":
++    sys.exit(f"put failed: expected 'ok {n}'")
++PY
+ 
+ if [ "$VERIFY" = 1 ]; then
++	# Drop the page cache so the read-back comes from UFS, not RAM.
++	tab "write /proc/sys/vm/drop_caches 3" | grep -q '^ok' ||
++		{ echo "ERROR: drop_caches failed, read-back would not prove the write" >&2; exit 1; }
+ 	echo "Verifying (reading $LEN bytes back and comparing sha256)..."
+-	WANT=$(sha256sum "$RAW" | cut -d' ' -f1)
+-	BACK=$(mktemp --suffix=.raw)
+-	trap 'rm -f "${RAW##*/}" "$BACK" 2>/dev/null; rm -f "$BACK"' EXIT
+-	# tab-get reads exactly LEN bytes from the device node.
+-	"$TAB_GET" "$DEV" "$BACK" "$LEN"
+-	GOT=$(sha256sum "$BACK" | cut -d' ' -f1)
++	GOT=$(flock "$LOCK" python3 -I - "$LL%$IFC" "$DEV" "$LEN" <<'PY'
++import hashlib, socket, sys
++addr, remote, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
++s = socket.create_connection((addr, 23), timeout=30)
++s.settimeout(60)
++buf = b""
++while not buf.endswith(b"> "):
++    d = s.recv(65536)
++    if not d:
++        sys.exit("console closed before the prompt")
++    buf += d
++s.sendall(f"cat {remote}\n".encode())
++h = hashlib.sha256()
++got = 0
++while got < n:
++    d = s.recv(min(1 << 20, n - got))
++    if not d:
++        sys.exit(f"console closed after {got} of {n} bytes")
++    h.update(d)
++    got += len(d)
++# Do not drain the rest of the partition: close now (the serving child gets
++# EPIPE/SIGPIPE and exits).
++s.close()
++print(h.hexdigest())
++PY
++)
+ 	if [ "$WANT" != "$GOT" ]; then
+ 		echo "VERIFY FAILED: wrote $WANT, read back $GOT" >&2
+ 		exit 1
+@@ -82,11 +173,8 @@ fi
+ cat <<EOF
+ 
+ Done. The Duranium GPT is now written to $DEV.
+-Next:
+-  1. Reboot the tablet into U-Boot (the boot chain on BOOT), e.g.
+-       $TAB "reboot normal"
+-     U-Boot exposes sda31 as a whole disk via blkmap and runs "bootefi
+-     bootmgr" -> systemd-boot -> the Duranium UKI.
+-  2. First boot runs systemd-repart (creates the B-slot usr+verity and the
+-     LUKS root, growing into the full 52 GiB) and then f0rmz for user setup.
++Next (see contrib/samsung-gtactive3wifi/README.md, "Test plan"):
++  flash the chainload BOOT image (uniLoader -> U-Boot, bring-up Linux as the
++  watchdog fallback) from the chainload track. U-Boot maps sda31 as a whole
++  disk with blkmap and runs systemd-boot from the nested ESP.
+ EOF

@@ -1,0 +1,10 @@
+#!/usr/sbin/nft -f
+
+# Allow the Duranium USB debug layer only on the USB network interface:
+# telnet console (23), ssh (22), kernel log stream (24). Never on Wi-Fi or any
+# routable link.
+table inet filter {
+	chain input {
+		iifname "usb*" tcp dport { 22, 23, 24 } accept comment "duranium-usb-debug"
+	}
+}

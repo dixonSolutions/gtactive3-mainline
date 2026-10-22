@@ -1,0 +1,65 @@
+# Reference: <https://postmarketos.org/deviceinfo>
+# Please use double quotes only. You can source this file in shell scripts.
+#
+# Two boot chains use this device package:
+#  - regular pmOS: S-Boot -> BOOT = Android boot image (uniLoader + Image +
+#    DTB, pmOS initramfs), made by boot-deploy (device-samsung-gtactive3wifi-
+#    bootimg, installed together with boot-deploy);
+#  - Duranium: S-Boot -> uniLoader -> U-Boot -> systemd-boot -> UKI, with the
+#    Duranium GPT disk nested in the Android userdata partition (sda31).
+#    Duranium ignores the boot image settings below and embeds the DTB in
+#    the UKI.
+
+deviceinfo_format_version="0"
+deviceinfo_name="Samsung Galaxy Tab Active3 (Wi-Fi)"
+deviceinfo_manufacturer="Samsung"
+deviceinfo_codename="samsung-gtactive3wifi"
+deviceinfo_year="2020"
+deviceinfo_dtb="exynos/exynos9810-gtactive3wifi"
+deviceinfo_arch="aarch64"
+# uniLoader is shipped in /usr/share/u-boot/gtactive3wifi/
+deviceinfo_uboot_boardname="gtactive3wifi"
+
+# Device related
+deviceinfo_chassis="tablet"
+deviceinfo_drm="true"
+deviceinfo_keyboard="false"
+deviceinfo_external_storage="true"
+deviceinfo_screen_width="1200"
+deviceinfo_screen_height="1920"
+# UFS: 4096-byte logical sectors (Micron MT064GASAO2U21), so the (nested)
+# GPT must use 4K sectors too; U-Boot's blkmap adopts the UFS block size.
+deviceinfo_rootfs_image_sector_size="4096"
+
+# Bootloader related
+# Heimdall to BOOT from Download mode. Never set a vbmeta partition here:
+# S-Boot rev F refuses an unsigned vbmeta (flags=2) and stays in Odin mode.
+# There is no rootfs partition either: USERDATA holds Android's data (or,
+# with Duranium, the nested GPT, written by contrib/samsung-gtactive3wifi/
+# install-to-userdata.sh of the Duranium build tree).
+deviceinfo_flash_method="heimdall-bootimg"
+deviceinfo_flash_heimdall_partition_kernel="BOOT"
+deviceinfo_initfs_compression="gzip"
+
+# Android boot image v2, values from the stock T570XXSFEYI1 boot.img. The
+# "kernel" is uniLoader with the Image and DTB appended (vmlinuz-dtb), the
+# ramdisk is the initramfs, which S-Boot loads and uniLoader passes on. The
+# boot image DTB section is Samsung's DT table, which S-Boot merges with the
+# DTBO partition (see firmware-samsung-gtactive3wifi-bootdtb).
+deviceinfo_generate_bootimg="true"
+deviceinfo_header_version="2"
+deviceinfo_append_dtb="true"
+deviceinfo_bootimg_override_payload="uniLoader"
+deviceinfo_bootimg_override_payload_append_dtb="vmlinuz-dtb"
+deviceinfo_bootimg_custom_args="--dtb /usr/share/samsung-gtactive3wifi/sboot-dt.img --os_version 13.0.0 --os_patch_level 2025-10 --board SRPTF17A015"
+# SEANDROIDENFORCE goes before the AVB footer, so the postprocess script
+# appends it rather than boot-deploy
+deviceinfo_bootimg_append_seandroidenforce="false"
+deviceinfo_mkinitfs_postprocess="/usr/share/samsung-gtactive3wifi/finalize-bootimg.sh"
+deviceinfo_flash_offset_base="0x10000000"
+deviceinfo_flash_offset_kernel="0x00008000"
+deviceinfo_flash_offset_ramdisk="0x01000000"
+deviceinfo_flash_offset_second="0x00f00000"
+deviceinfo_flash_offset_tags="0x00000100"
+deviceinfo_flash_offset_dtb="0x00000000"
+deviceinfo_flash_pagesize="2048"

@@ -1,0 +1,386 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:52:04 +1100
+Subject: [PATCH 02/25] contrib: samsung-gtactive3wifi Duranium build and
+ install
+
+Build the bring-up kernel tarball (build-kernel.sh), build the local
+device/kernel/usb-debug apks and run mkosi against the local pmaports
+worktree (build-image.sh), and stream the image into the Android userdata
+partition sda31 over the bring-up console with verification
+(install-to-userdata.sh). README documents the nested-GPT-in-userdata
+layout, the phosh UI choice, sizing and the USB debug layer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/README.md       | 124 ++++++++++++++++++
+ contrib/samsung-gtactive3wifi/build-image.sh  |  66 ++++++++++
+ contrib/samsung-gtactive3wifi/build-kernel.sh |  55 ++++++++
+ .../install-to-userdata.sh                    |  92 +++++++++++++
+ 4 files changed, 337 insertions(+)
+ create mode 100644 contrib/samsung-gtactive3wifi/README.md
+ create mode 100644 contrib/samsung-gtactive3wifi/build-image.sh
+ create mode 100644 contrib/samsung-gtactive3wifi/build-kernel.sh
+ create mode 100644 contrib/samsung-gtactive3wifi/install-to-userdata.sh
+
+diff --git a/contrib/samsung-gtactive3wifi/README.md b/contrib/samsung-gtactive3wifi/README.md
+new file mode 100644
+index 0000000..b2df01b
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/README.md
+@@ -0,0 +1,124 @@
++# Duranium on the Samsung Galaxy Tab Active3 Wi-Fi (SM-T570)
++
++Bring-up support for building and installing a postmarketOS **Duranium** image
++on the Galaxy Tab Active3 (`samsung-gtactive3wifi`, Exynos 9810), produced by
++the gtactive3-mainline Duranium track. This is a development bring-up, kept
++clearly separate from the regular pmaports/kernel track so the two can be
++merged later.
++
++## Pieces
++
++Local pmaports packages (branch `duranium-gtactive3`, under
++`build/wt/pmaports-duranium`):
++
++| Package | Where | What |
++|---|---|---|
++| `device-samsung-gtactive3wifi` | `device/testing/` | deviceinfo, kernel cmdline, USB-prep one-shot (clock gates + MAX77705 data switch), nested-GPT udev rule, watchdog/suspend/UI tweaks; `-initramfs` subpackage carries the early-boot bits |
++| `linux-samsung-gtactive3wifi-duranium` | `device/testing/` | prebuilt bridge kernel (src/linux `gtactive3wifi` + `drv/wdt`, bring-up `.config` + `duranium.config`) |
++| `duranium-usb-debug` | `main/` | the USB debug layer (separate package so release images drop it) |
++
++Duranium repo changes (branch `gtactive3wifi` worktree at `build/wt/duranium`):
++
++- `scripts/pmaports.py`: route a device's `-initramfs` subpackage and
++  `duranium-usb-debug-initramfs` into the mkosi initrd.
++- `contrib/samsung-gtactive3wifi/`: `build-kernel.sh`, `build-image.sh`,
++  `install-to-userdata.sh` and this README.
++
++## UI: phosh
++
++`phosh` is the default UI ("complete GUI"). Rationale:
++
++- The display is a 1200x1920 portrait tablet panel; phosh's scalable mobile
++  shell fits it, and phosh already has a Duranium integration subpackage
++  (`postmarketos-ui-phosh-duranium`, pulls `phosh-os-updater`), so OS updates
++  are wired into the GUI out of the box.
++- GPU is Mali-G72 with no Panfrost yet, so rendering is software. phoc is set
++  to the pixman renderer (`WLR_RENDERER=pixman`, via the device package) which
++  is far lighter on four Cortex-A55 cores than llvmpipe, and phosh is lighter
++  than Plasma Mobile under software rendering.
++- `plasma-mobile` resolves too (`UI=plasma-mobile contrib/.../build-image.sh`)
++  if wanted; it is heavier without GPU acceleration.
++
++## Disk layout: a GPT nested inside userdata (sda31)
++
++Duranium wants a whole GPT disk (ESP 1G, usr + usr-verity, LUKS root created
++on first boot). On this device that disk lives **inside** the Android
++`userdata` partition `/dev/sda31` (52 GiB, user approved wiping it):
++
++```
++UFS LUN0 (sda) ── stock Android GPT ── ... ── sda31 "userdata" (52 GiB)
++                                               └── nested Duranium GPT
++                                                   ├── ESP (1G, systemd-boot + UKI)
++                                                   ├── usr  A (erofs, dm-verity)
++                                                   ├── usr-verity A
++                                                   ├── usr  B / verity B  (first boot)
++                                                   └── pmOS_root (LUKS/ext4, first boot)
++```
++
++- **U-Boot** exposes sda31 as a whole disk via `blkmap` (the shared
++  `exynos-mobile.env` already maps partition 31 and runs `bootefi bootmgr`;
++  the gtactive3wifi board env must use that bootcmd, not the fastboot-only
++  override — coordinate with the u-boot track). It then boots systemd-boot
++  from the nested ESP and sets `LoaderDevicePartUUID` to the nested ESP GUID.
++- **In Linux** the kernel parses the outer GPT and registers sda31, but it
++  cannot partition-scan a partition, so the nested GPT is exposed with a
++  partitioned loop device. Two complementary triggers do this in the initrd:
++  - systemd's own path: udev's blkid builtin sets
++    `ID_PART_GPT_AUTO_ROOT_DISK_NEEDS_LOOP` when `LoaderDevicePartUUID` points
++    into sda31; `postmarketos-duranium-initramfs` already ships
++    `98-mark-subpartitions-workaround.rules` to re-arm the loop trigger for
++    non-optical disks, and `systemd-loop@.service` attaches it with
++    `systemd-dissect --attach` (partition scan on).
++  - our `90-gtactive3wifi-nested-gpt.rules`: also triggers the loop when udev
++    detected a nested GPT on the `userdata` partition
++    (`ID_PART_GPT_SECTOR_SIZE` set), covering boots without EFI variables.
++  Both pull the same `systemd-loop@<dev>.service` instance, so only one loop
++  is created. systemd-gpt-auto / repart / sysupdate then find the
++  `duranium_*` partitions on the loop device.
++- **Sector size**: UFS is 4K-logical, so the nested GPT is built with 4K
++  sectors (`deviceinfo_rootfs_image_sector_size=4096`); U-Boot's blkmap
++  adopts the UFS block size, so the sector size matches end to end.
++
++### Size
++
++The shipped disk image is only ESP(1G) + usr(5G) + usr-verity(0.4G) ≈ 6.4 GiB,
++well under 52 GiB. First boot's `systemd-repart` creates the B slot and the
++LUKS root and grows root to fill sda31, so nothing in the image itself needs
++resizing for the 52 GiB target. The installer only writes the image bytes.
++
++## Build
++
++```sh
++# all heavy steps take the shared build/kbuild.lock themselves
++cd build/wt/duranium
++contrib/samsung-gtactive3wifi/build-image.sh            # phosh, edge
++UI=plasma-mobile contrib/samsung-gtactive3wifi/build-image.sh
++```
++
++`build-image.sh` builds the bridge kernel tarball, builds the three local
++.apks with pmbootstrap into `build/wt/duranium-localpkgs`, points
++`duranium/pmaports` at the worktree, and runs mkosi with that package
++directory. Output lands in `mkosi.output/samsung-gtactive3wifi_phosh_edge/`.
++
++## Install and first boot
++
++See `install-to-userdata.sh` and PLAN. Short version: boot the bring-up
++console, then
++
++```sh
++contrib/samsung-gtactive3wifi/install-to-userdata.sh \
++    mkosi.output/samsung-gtactive3wifi_phosh_edge/samsung-gtactive3wifi_phosh_edge_*.raw.zst
++```
++
++which streams the image into `/dev/sda31` over USB and verifies the SHA-256,
++then reboot into U-Boot.
++
++## USB debug layer
++
++`duranium-usb-debug` brings up the fixed-MAC NCM interface
++(`fe80::57:aff:fe00:1`), an unauthenticated root console on TCP 23, an sshd on
++22, and a kernel-log stream on 24 — all on the USB link-local address only,
++present in both the initrd and the booted system, enabled by default and
++disable-able (`systemctl disable --now duranium-usb-debug.target`, or ship
++without the package). Security notes in
++`build/wt/pmaports-duranium/main/duranium-usb-debug/README`.
+diff --git a/contrib/samsung-gtactive3wifi/build-image.sh b/contrib/samsung-gtactive3wifi/build-image.sh
+new file mode 100644
+index 0000000..a0e602d
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/build-image.sh
+@@ -0,0 +1,66 @@
++#!/bin/sh
++# Build a Duranium image for samsung-gtactive3wifi from the LOCAL pmaports
++# worktree (branch duranium-gtactive3), including the local device, kernel and
++# usb-debug packages, without touching the upstream pmaports clone.
++#
++# Steps:
++#  1. Build the bring-up kernel tarball (contrib/build-kernel.sh).
++#  2. Build the local .apk files from the pmaports worktree with pmbootstrap
++#     into a package directory.
++#  3. Point duranium/pmaports at the worktree (so mkosi.configure's
++#     pmaports.py --skip-fetch resolves the device from it), and run mkosi
++#     with that package directory as an extra package source.
++#
++# Everything heavy runs under the shared kernel build lock.
++set -eu
++
++ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
++DUR=$ROOT/build/wt/duranium
++PMAPORTS=$ROOT/build/wt/pmaports-duranium
++LOCK=$ROOT/build/kbuild.lock
++PKGS=$ROOT/build/wt/duranium-localpkgs
++UI=${UI:-phosh}
++
++MKOSI=${MKOSI:-$DUR/scripts/mkosi-container}
++export MKOSI
++
++LOCAL_PKGS="
++	device/testing/linux-samsung-gtactive3wifi-duranium
++	device/testing/device-samsung-gtactive3wifi
++	main/duranium-usb-debug
++"
++
++echo "== 1. kernel"
++sh "$DUR/contrib/samsung-gtactive3wifi/build-kernel.sh"
++
++echo "== 2. local apks -> $PKGS"
++mkdir -p "$PKGS"
++# Build each local package for aarch64 with pmbootstrap, using the worktree as
++# the aports dir. abuild computes missing checksums for local sources.
++for p in $LOCAL_PKGS; do
++	name=$(basename "$p")
++	flock "$LOCK" pmbootstrap -y --aports "$PMAPORTS" build --arch aarch64 --force "$name"
++done
++# Collect the freshly built apks (pmbootstrap stores them under its packages
++# dir); copy aarch64 + noarch into one flat directory for mkosi.
++PMB_PKGDIR=$(pmbootstrap config work)/packages/edge
++cp -f "$PMB_PKGDIR"/aarch64/*.apk "$PKGS"/ 2>/dev/null || true
++cp -f "$PMB_PKGDIR"/noarch/*.apk  "$PKGS"/ 2>/dev/null || true
++
++echo "== 3. mkosi image"
++ln -sfn "$PMAPORTS" "$DUR/pmaports"
++cd "$DUR"
++[ -f mkosi.version ] || "$MKOSI" bump
++IMAGE_ID="samsung-gtactive3wifi_${UI}_edge"
++flock "$LOCK" "$MKOSI" build \
++	--force \
++	--architecture=arm64 \
++	--image-id="$IMAGE_ID" \
++	--environment=PMOS_DEVICE=samsung-gtactive3wifi \
++	--environment=PMOS_VARIANT="$UI" \
++	--release=edge \
++	--package-directory="$PKGS" \
++	"$@"
++
++echo "Image in: $DUR/mkosi.output/$IMAGE_ID/"
++ls -l "$DUR/mkosi.output/$IMAGE_ID/" || true
+diff --git a/contrib/samsung-gtactive3wifi/build-kernel.sh b/contrib/samsung-gtactive3wifi/build-kernel.sh
+new file mode 100644
+index 0000000..55b4e63
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/build-kernel.sh
+@@ -0,0 +1,55 @@
++#!/bin/sh
++# Build the Duranium bring-up kernel for the Galaxy Tab Active3 and package it
++# into the tarball that the prebuilt bridge APKBUILD
++# (device/testing/linux-samsung-gtactive3wifi-duranium) consumes.
++#
++# This is the bridge until the regular gtactive3wifi pmaports track ships a
++# from-source kernel package. It uses the SAME source and config that the lead
++# tests on the device:
++#   source : gtactive3-mainline src/linux, branch gtactive3wifi + drv/wdt
++#            (snapshotted at build/wt/duranium-linux by the Duranium track)
++#   config : build/bringup/.config + the duranium.config fragment
++#
++# Run under the shared kernel build lock, like every other heavy build here.
++set -eu
++
++ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
++SRC=$ROOT/build/wt/duranium-linux
++OUT=$ROOT/build/wt/duranium-out
++FRAG=$ROOT/build/wt/pmaports-duranium/device/testing/linux-samsung-gtactive3wifi-duranium/duranium.config
++PKGDIR=$ROOT/build/wt/pmaports-duranium/device/testing/linux-samsung-gtactive3wifi-duranium
++LOCK=$ROOT/build/kbuild.lock
++CROSS=${CROSS_COMPILE:-aarch64-linux-gnu-}
++JOBS=${JOBS:-6}
++
++[ -d "$SRC" ] || { echo "kernel source snapshot missing: $SRC" >&2; exit 1; }
++
++mkdir -p "$OUT"
++( cd "$SRC" && ARCH=arm64 scripts/kconfig/merge_config.sh -m -O "$OUT" \
++	"$ROOT/build/bringup/.config" "$FRAG" )
++flock "$LOCK" nice -n 19 make -C "$SRC" O="$OUT" ARCH=arm64 CROSS_COMPILE="$CROSS" olddefconfig
++flock "$LOCK" nice -n 19 make -C "$SRC" O="$OUT" ARCH=arm64 CROSS_COMPILE="$CROSS" -j"$JOBS" \
++	Image modules exynos/exynos9810-gtactive3wifi.dtb
++
++KREL=$(cat "$OUT/include/config/kernel.release")
++STAGE=$(mktemp -d)
++trap 'rm -rf "$STAGE"' EXIT
++
++install -Dm644 "$OUT/arch/arm64/boot/Image" "$STAGE/boot/vmlinuz"
++install -Dm644 "$OUT/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dtb" \
++	"$STAGE/boot/dtbs/exynos/exynos9810-gtactive3wifi.dtb"
++flock "$LOCK" nice -n 19 make -C "$SRC" O="$OUT" ARCH=arm64 CROSS_COMPILE="$CROSS" \
++	INSTALL_MOD_PATH="$STAGE/usr" INSTALL_MOD_STRIP=1 modules_install
++rm -f "$STAGE/usr/lib/modules/$KREL/build" "$STAGE/usr/lib/modules/$KREL/source"
++printf '%s\n' "$KREL" > "$STAGE/usr/share/kernel/kernel.release"
++
++TARBALL="$PKGDIR/kernel-prebuilt.tar.gz"
++tar -C "$STAGE" -czf "$TARBALL" boot usr
++sum=$(sha512sum "$TARBALL" | cut -d' ' -f1)
++# Refresh the checksum line in the bridge APKBUILD
++sed -i "s|^[0-9a-f]\{128\}  kernel-prebuilt.tar.gz\$|$sum  kernel-prebuilt.tar.gz|" \
++	"$PKGDIR/APKBUILD"
++
++echo "kernel.release = $KREL"
++echo "tarball        = $TARBALL"
++echo "sha512         = $sum"
+diff --git a/contrib/samsung-gtactive3wifi/install-to-userdata.sh b/contrib/samsung-gtactive3wifi/install-to-userdata.sh
+new file mode 100644
+index 0000000..98181b2
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/install-to-userdata.sh
+@@ -0,0 +1,92 @@
++#!/bin/bash
++# Write a Duranium disk image into the Android userdata partition (sda31) of
++# the Galaxy Tab Active3, over the bring-up debug console, and verify it.
++#
++# The device must be sitting in the gtactive3-mainline bring-up console
++# (S-Boot -> uniLoader -> mainline Linux + nolibc init), which exposes the
++# "put PATH LEN" (host -> device raw stream) and "cat PATH" (device -> host
++# raw stream) commands over USB. This script uses the repo's tab/tab-put/
++# tab-get helpers, so the USB network must be up ("tab wait").
++#
++# Duranium lives in a GPT nested at the very start of sda31; the image is the
++# first ~6-7 GiB of that disk (ESP + usr + verity). First boot grows the
++# partitions into the full 52 GiB via systemd-repart, so only the image size
++# is written here, not the whole partition.
++#
++# Usage:
++#   install-to-userdata.sh IMAGE            # IMAGE is .raw or .raw.zst / .zst
++#   install-to-userdata.sh IMAGE --no-verify
++set -euo pipefail
++
++ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
++TAB=$ROOT/scripts/tab
++TAB_PUT=$ROOT/scripts/tab-put
++TAB_GET=$ROOT/scripts/tab-get
++DEV=/dev/sda31          # Android userdata, confirmed in HARDWARE.md
++IMG=${1:?usage: install-to-userdata.sh IMAGE [--no-verify]}
++VERIFY=1
++[ "${2:-}" = "--no-verify" ] && VERIFY=0
++
++command -v zstd >/dev/null || { echo "zstd required" >&2; exit 1; }
++
++# Decompress to a plain raw image if needed.
++case "$IMG" in
++	*.zst)
++		RAW=$(mktemp --suffix=.raw)
++		trap 'rm -f "$RAW"' EXIT
++		echo "Decompressing $IMG -> $RAW"
++		zstd -d -f -o "$RAW" "$IMG"
++		;;
++	*)
++		RAW=$IMG
++		;;
++esac
++
++LEN=$(stat -c %s "$RAW")
++echo "Image: $RAW ($LEN bytes)"
++
++echo "Waiting for the tablet's USB console..."
++"$TAB" wait
++
++# Sanity: confirm the target exists and show its size (in 512-byte sectors).
++SECT=$("$TAB" "cat /sys/class/block/sda31/size" | tr -dc 0-9)
++PARTBYTES=$(( SECT * 512 ))
++echo "Target $DEV: $PARTBYTES bytes ($SECT sectors)"
++if [ "$LEN" -gt "$PARTBYTES" ]; then
++	echo "ERROR: image ($LEN) is larger than $DEV ($PARTBYTES)" >&2
++	exit 1
++fi
++
++echo "Streaming image into $DEV ..."
++# tab-put opens the path for writing and streams exactly LEN bytes into it.
++# For a block device the create/truncate flags are no-ops; the bytes land at
++# offset 0, which is where the nested GPT begins.
++"$TAB_PUT" "$RAW" "$DEV"
++"$TAB" "write /proc/sys/vm/drop_caches 3" >/dev/null 2>&1 || true
++
++if [ "$VERIFY" = 1 ]; then
++	echo "Verifying (reading $LEN bytes back and comparing sha256)..."
++	WANT=$(sha256sum "$RAW" | cut -d' ' -f1)
++	BACK=$(mktemp --suffix=.raw)
++	trap 'rm -f "${RAW##*/}" "$BACK" 2>/dev/null; rm -f "$BACK"' EXIT
++	# tab-get reads exactly LEN bytes from the device node.
++	"$TAB_GET" "$DEV" "$BACK" "$LEN"
++	GOT=$(sha256sum "$BACK" | cut -d' ' -f1)
++	if [ "$WANT" != "$GOT" ]; then
++		echo "VERIFY FAILED: wrote $WANT, read back $GOT" >&2
++		exit 1
++	fi
++	echo "Verify OK ($WANT)"
++fi
++
++cat <<EOF
++
++Done. The Duranium GPT is now written to $DEV.
++Next:
++  1. Reboot the tablet into U-Boot (the boot chain on BOOT), e.g.
++       $TAB "reboot normal"
++     U-Boot exposes sda31 as a whole disk via blkmap and runs "bootefi
++     bootmgr" -> systemd-boot -> the Duranium UKI.
++  2. First boot runs systemd-repart (creates the B-slot usr+verity and the
++     LUKS root, growing into the full 52 GiB) and then f0rmz for user setup.
++EOF

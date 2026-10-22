@@ -1,0 +1,630 @@
+From 828ecb974e9aa5ac5a479fd5c76ab37c27323263 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:03:51 +1100
+Subject: [PATCH 2/3] main: Add support for a Linux payload appended to
+ uniLoader
+
+With CONFIG_APPENDED_PAYLOAD, uniLoader no longer embeds Linux at build
+time. It boots an arm64 Image followed by its DTB that were appended to
+the binary afterwards ("cat uniLoader Image board.dtb"), and takes the
+initrd from the device tree the previous bootloader passed in x0
+(linux,initrd-start/end), moving it to RAMDISK_ENTRY. Words of the
+previous bootloader's bootargs that match CONFIG_PAYLOAD_BOOTARGS_ALLOW
+are appended to the command line.
+
+This lets distributions pack a generic uniLoader binary with whatever
+kernel and initramfs they generate on the device, e.g. with
+postmarketOS's boot-deploy (bootimg_override_payload plus an appended
+"vmlinuz-dtb"), the ramdisk being the Android boot image's.
+
+The Image size is read from the PE/COFF header of EFI stub kernels; for
+other kernels the DTB is searched for after the Image header. Copies are
+ordered so that neither source is overwritten, and are refused if a
+destination would hit uniLoader itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Kconfig                   |  42 +++++
+ arch/aarch64/linker.lds.S |  23 +++
+ arch/aarch64/reloc.S      |   1 +
+ arch/aarch64/start.S      |  17 ++
+ include/main/boot-fdt.h   |   3 +
+ include/main/boot.h       |   5 +
+ main/Makefile             |   1 +
+ main/boot-fdt.c           |   5 +
+ main/boot-payload.c       | 332 ++++++++++++++++++++++++++++++++++++++
+ main/main.c               |   4 +
+ 10 files changed, 433 insertions(+)
+ create mode 100644 main/boot-payload.c
+
+diff --git a/Kconfig b/Kconfig
+index be6c890..60c28ca 100644
+--- a/Kconfig
++++ b/Kconfig
+@@ -66,6 +66,48 @@ menu "Building options"
+ 		help
+ 		  Select this if the bootloader copies the ramdisk itself
+ 
++	config APPENDED_PAYLOAD
++		bool "Boot a Linux Image and device tree appended to uniLoader"
++		depends on !EMBED_LINUX && LIBFDT
++		default n
++		help
++		  Instead of embedding Linux at build time, boot an arm64 Linux
++		  Image followed by its device tree blob, both appended to the
++		  uniLoader binary after the build:
++
++		    cat uniLoader Image board.dtb > payload
++
++		  The initrd is the one the previous bootloader loaded (for an
++		  Android boot image: its ramdisk), as described by
++		  linux,initrd-start/end in the device tree passed in x0. It is
++		  moved to RAMDISK_ENTRY. This way one uniLoader binary works with
++		  any kernel and initramfs, e.g. one generated on the device by a
++		  distribution. Only supported on aarch64.
++
++	config PAYLOAD_BOOTARGS_ALLOW
++		string "Command line words imported from the previous bootloader"
++		depends on APPENDED_PAYLOAD
++		default ""
++		help
++		  Space separated list. A word of the previous bootloader's
++		  /chosen/bootargs is appended to the command line of the
++		  appended device tree if it equals an entry, or if the entry
++		  ends with '=', '.' or '_' and the word starts with it
++		  (e.g. "console=" or "pmos."). Empty imports nothing.
++
++	config PAYLOAD_PREV_FDT_MIN
++		hex "Lowest valid address of the previous bootloader's FDT"
++		depends on APPENDED_PAYLOAD
++		default 0x80000000
++		help
++		  x0 is only dereferenced if it lies in [MIN, MAX), so a garbage
++		  value cannot fault before anything is printed.
++
++	config PAYLOAD_PREV_FDT_MAX
++		hex "End of the valid address range of the previous bootloader's FDT"
++		depends on APPENDED_PAYLOAD
++		default 0x100000000
++
+ endmenu
+ 
+ source "drivers/Kconfig"
+diff --git a/arch/aarch64/linker.lds.S b/arch/aarch64/linker.lds.S
+index de350f1..8dade11 100644
+--- a/arch/aarch64/linker.lds.S
++++ b/arch/aarch64/linker.lds.S
+@@ -15,15 +15,18 @@ OUTPUT_FORMAT("elf64-littleaarch64")
+ OUTPUT_ARCH(aarch64)
+ TARGET(binary)
+ 
++#ifdef CONFIG_EMBED_LINUX
+ INPUT(KERNEL_PATH)
+ INPUT(DTB_PATH)
+ #ifndef CONFIG_RAMDISK_NO_COPY
+ INPUT(RAMDISK_PATH)
+ #endif
++#endif
+ 
+ SECTIONS
+ {
+ 	. = TEXT_BASE;
++	_uniloader_start = .;
+ 
+ 	.text : {
+ #ifdef CONFIG_POSITION_INDEPENDENT
+@@ -33,6 +36,7 @@ SECTIONS
+ 		*(.text.*)
+ 	}
+ 
++#ifdef CONFIG_EMBED_LINUX
+ 	.kernel ALIGN(4096) : {
+ 		kernel = .;
+ 		KERNEL_PATH
+@@ -48,6 +52,7 @@ SECTIONS
+ 		ramdisk = .;
+ 		RAMDISK_PATH
+ 	}
++#endif
+ #endif
+ 
+ 	.rodata ALIGN(8) : {
+@@ -66,6 +71,18 @@ SECTIONS
+ 		*(.data.*)
+ 	}
+ 
++#ifdef CONFIG_APPENDED_PAYLOAD
++	/*
++	 * Last section with contents: pad the binary to 16 bytes so the
++	 * payload appended to it starts at _bin_end, suitably aligned.
++	 */
++	.bin_end : {
++		BYTE(0)
++		. = ALIGN(16);
++	}
++	_bin_end = .;
++#endif
++
+ 	.bss ALIGN(8) : {
+ 		__bss_start = .;
+ 		*(.bss)
+@@ -83,12 +100,18 @@ SECTIONS
+ #endif
+ 	}
+ 
++#ifdef CONFIG_EMBED_LINUX
+ 	kernel_size = SIZEOF(.kernel);
+ #ifdef CONFIG_RAMDISK_NO_COPY
+ 	ramdisk_size = RAMDISK_SIZE;
+ #else
+ 	ramdisk_size = SIZEOF(.ramdisk);
+ #endif
++#else
++	/* nothing embedded; keeps the generic boot path linkable */
++	kernel_size = 0;
++	ramdisk_size = 0;
++#endif
+ #ifdef CONFIG_POSITION_INDEPENDENT
+ 	_reloc_size = _reloc_end - _reloc_start;
+ #endif
+diff --git a/arch/aarch64/reloc.S b/arch/aarch64/reloc.S
+index b6fb485..6a4d71b 100644
+--- a/arch/aarch64/reloc.S
++++ b/arch/aarch64/reloc.S
+@@ -27,6 +27,7 @@ ENTRY_ALIAS(_rel_stack_size)
+ 
+ ENTRY_ALIAS( _reloc_entry)
+ 	adr	x4, _start
++	mov	x8, x4		/* load address of _start, see start.S */
+ 	ldr	x5, _rel_stack_base
+ 	cmp	x4, x5
+ 	beq	_entry
+diff --git a/arch/aarch64/start.S b/arch/aarch64/start.S
+index de454f9..604b499 100644
+--- a/arch/aarch64/start.S
++++ b/arch/aarch64/start.S
+@@ -23,6 +23,16 @@ _stack_size:
+ .align 4
+ #endif
+ ENTRY(_start)
++#ifdef CONFIG_APPENDED_PAYLOAD
++	/* x0: FDT from the previous bootloader */
++	mov	x19, x0
++	/* where the previous bootloader put _start (reloc.S passes it in x8) */
++#ifdef CONFIG_POSITION_INDEPENDENT
++	mov	x20, x8
++#else
++	adr	x20, _start
++#endif
++#endif
+ 	/* Set up the base address for the stack */
+ 	adrp    x0, _stack_end      /* Load page of the _stack_end symbol */
+ 	add     x0, x0, #:lo12:_stack_end  /* Add the offset within the page */
+@@ -43,6 +53,12 @@ ENTRY(_start)
+ 2:
+ 
+ 	/* Fall through */
++#ifdef CONFIG_APPENDED_PAYLOAD
++	adrp	x0, payload_prev_fdt
++	str	x19, [x0, #:lo12:payload_prev_fdt]
++	adrp	x0, payload_load_start
++	str	x20, [x0, #:lo12:payload_load_start]
++#else
+ 	adrp    x0, dtb             /* Load page of dtb */
+ 	add     x0, x0, #:lo12:dtb  /* Add offset within the page */
+ 	adrp    x1, kernel          /* Load page of kernel */
+@@ -50,6 +66,7 @@ ENTRY(_start)
+ #ifndef CONFIG_RAMDISK_NO_COPY
+ 	adrp    x2, ramdisk          /* Load page of kernel */
+ 	add     x2, x2, #:lo12:ramdisk /* Add offset within the page */
++#endif
+ #endif
+ 
+ 	bl main
+diff --git a/include/main/boot-fdt.h b/include/main/boot-fdt.h
+index 62c8297..ba1626a 100644
+--- a/include/main/boot-fdt.h
++++ b/include/main/boot-fdt.h
+@@ -8,4 +8,7 @@
+ 
+ void patch_dtb(void** dt);
+ 
++/* The CONFIG_FDT_BUF_SIZE buffer the patched DTB is built in */
++void *fdt_patch_buffer(void);
++
+ #endif // BOOT_FDT_H_
+diff --git a/include/main/boot.h b/include/main/boot.h
+index d988e39..dca4023 100644
+--- a/include/main/boot.h
++++ b/include/main/boot.h
+@@ -23,4 +23,9 @@ void arch_load_kernel(void* kernel, void* dt, void* ramdisk);
+ 
+ void boot_kernel(void* dt, void* kernel, void* ramdisk);
+ 
++// From main/boot-payload.c (CONFIG_APPENDED_PAYLOAD), returns on failure
++void boot_payload(void);
++// Weak, boards may override it: called before boot_payload() returns
++void payload_boot_failed(void);
++
+ #endif // BOOT_H_
+diff --git a/main/Makefile b/main/Makefile
+index cfc56cf..efb4517 100644
+--- a/main/Makefile
++++ b/main/Makefile
+@@ -1,2 +1,3 @@
+ obj-y := boot.o main.o
+ obj-$(CONFIG_LIBFDT) += boot-fdt.o
++obj-$(CONFIG_APPENDED_PAYLOAD) += boot-payload.o
+diff --git a/main/boot-fdt.c b/main/boot-fdt.c
+index 00d1874..6bd8a07 100644
+--- a/main/boot-fdt.c
++++ b/main/boot-fdt.c
+@@ -12,6 +12,11 @@
+ static char fdt_buf[CONFIG_FDT_BUF_SIZE] __attribute__((aligned(8)));
+ #endif
+ 
++void *fdt_patch_buffer(void)
++{
++	return fdt_buf;
++}
++
+ void patch_dtb(void** dt)
+ {
+ 	int ret;
+diff --git a/main/boot-payload.c b/main/boot-payload.c
+new file mode 100644
+index 0000000..345ad2a
+--- /dev/null
++++ b/main/boot-payload.c
+@@ -0,0 +1,332 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Boot a Linux Image + DTB appended to the uniLoader binary, with the initrd
++ * (and selected command line words) taken from the previous bootloader.
++ *
++ * Layout of what the previous bootloader loaded, starting at _start:
++ *
++ *   [ uniLoader ... _bin_end ][ arm64 Image ][ DTB ]
++ *
++ * The Image size is not stored anywhere in a plain "cat", so it is taken
++ * from the PE/COFF header of an EFI stub kernel, or else the DTB is searched
++ * for after the Image header.
++ */
++
++#ifndef __aarch64__
++#error "CONFIG_APPENDED_PAYLOAD is only supported on aarch64"
++#endif
++
++#include <lib/debug.h>
++#include <lib/libfdt/libfdt.h>
++#include <lib/nanoprintf.h>
++#include <main/boot.h>
++#include <main/boot-fdt.h>
++#include <string.h>
++
++#define ARM64_IMAGE_MAGIC	0x644d5241	/* "ARM\x64" */
++#define CMDLINE_MAX		2048		/* arm64 COMMAND_LINE_SIZE */
++#define DTB_MAX_SIZE		(4UL << 20)
++
++/* Set by start.S before main() */
++unsigned long payload_prev_fdt;
++unsigned long payload_load_start;
++
++extern char _uniloader_start[], _start[], _bin_end[], _stack_end[];
++
++static char cmdline[CMDLINE_MAX];
++/* What the previous bootloader handed over, for /chosen/uniloader,payload */
++static unsigned long prev_initrd_start, prev_initrd_end;
++
++/*
++ * Called when the payload cannot be booted. main() hangs afterwards, so a
++ * board can override this to reset into a recovery path instead.
++ */
++void __attribute__((weak)) payload_boot_failed(void)
++{
++}
++
++static unsigned long ld_le(const unsigned char *p, int n)
++{
++	unsigned long v = 0;
++
++	while (n--)
++		v = (v << 8) | p[n];
++	return v;
++}
++
++static unsigned long round16(unsigned long v)
++{
++	return (v + 15) & ~15UL;
++}
++
++static int overlaps(unsigned long a, unsigned long alen,
++		    unsigned long b, unsigned long blen)
++{
++	return a < b + blen && b < a + alen;
++}
++
++static int fdt_plausible(const void *fdt)
++{
++	return fdt_magic(fdt) == FDT_MAGIC && !fdt_check_header(fdt) &&
++	       fdt_totalsize(fdt) <= DTB_MAX_SIZE;
++}
++
++/* File size of an EFI stub Image: end of the last PE section, or 0 */
++static unsigned long pe_file_size(const unsigned char *img, unsigned long max)
++{
++	unsigned long pe, sec, nsec, size = 0, end, i;
++
++	if (img[0] != 'M' || img[1] != 'Z')
++		return 0;
++	pe = ld_le(img + 0x3c, 4);
++	if (pe + 24 > max || memcmp(img + pe, "PE\0\0", 4))
++		return 0;
++	nsec = ld_le(img + pe + 6, 2);
++	sec = pe + 24 + ld_le(img + pe + 20, 2);
++	for (i = 0; i < nsec && sec + 40 <= max; i++, sec += 40) {
++		end = ld_le(img + sec + 20, 4) + ld_le(img + sec + 16, 4);
++		if (end > size)
++			size = end;
++	}
++	return size <= max ? size : 0;
++}
++
++/* Find the DTB appended to the Image; returns the Image file size or 0 */
++static unsigned long find_appended_dtb(const unsigned char *img,
++				       unsigned long image_size)
++{
++	unsigned long off = pe_file_size(img, image_size);
++
++	if (off && !(off & 7) && fdt_plausible(img + off))
++		return off;
++
++	printk(KERN_WARNING, "payload: no PE size, searching for the DTB\n");
++	for (off = 64; off < image_size; off += 8) {
++		const void *fdt = img + off;
++
++		if (fdt_plausible(fdt) &&
++		    fdt_getprop(fdt, 0, "compatible", NULL))
++			return off;
++	}
++	return 0;
++}
++
++static int word_allowed(const char *w, int wlen)
++{
++	const char *a = CONFIG_PAYLOAD_BOOTARGS_ALLOW;
++	int alen;
++
++	while (*a) {
++		while (*a == ' ')
++			a++;
++		for (alen = 0; a[alen] && a[alen] != ' '; alen++)
++			;
++		if (alen) {
++			char last = a[alen - 1];
++			int prefix = last == '=' || last == '.' || last == '_';
++
++			if ((alen == wlen || (prefix && alen < wlen)) &&
++			    !strncmp(w, a, alen))
++				return 1;
++		}
++		a += alen;
++	}
++	return 0;
++}
++
++static void cmdline_append(const char *w, int wlen)
++{
++	int len = strlen(cmdline);
++
++	if (len + 1 + wlen + 1 > CMDLINE_MAX) {
++		printk(KERN_WARNING, "payload: command line full\n");
++		return;
++	}
++	if (len)
++		cmdline[len++] = ' ';
++	memcpy(cmdline + len, w, wlen);
++	cmdline[len + wlen] = 0;
++}
++
++/* Copy the allowed words of the previous bootloader's bootargs */
++static void import_bootargs(const char *args, int args_len)
++{
++	int i = 0, start;
++
++	while (i < args_len && args[i]) {
++		while (i < args_len && args[i] == ' ')
++			i++;
++		start = i;
++		while (i < args_len && args[i] && args[i] != ' ')
++			i++;
++		if (i > start && word_allowed(args + start, i - start))
++			cmdline_append(args + start, i - start);
++	}
++}
++
++static unsigned long fdt_get_addr(const void *fdt, int node, const char *name)
++{
++	const unsigned char *p;
++	int len;
++
++	p = fdt_getprop(fdt, node, name, &len);
++	if (!p)
++		return 0;
++	if (len == 8)
++		return ((unsigned long)fdt32_ld((const fdt32_t *)p) << 32) |
++		       fdt32_ld((const fdt32_t *)(p + 4));
++	if (len == 4)
++		return fdt32_ld((const fdt32_t *)p);
++	return 0;
++}
++
++/* Read initrd and bootargs from the FDT the previous bootloader passed */
++static void read_prev_fdt(unsigned long *initrd, unsigned long *initrd_size)
++{
++	const void *fdt = (const void *)payload_prev_fdt;
++	const char *args;
++	unsigned long start, end;
++	int node, len;
++
++	*initrd = *initrd_size = 0;
++	if (payload_prev_fdt < CONFIG_PAYLOAD_PREV_FDT_MIN ||
++	    payload_prev_fdt >= CONFIG_PAYLOAD_PREV_FDT_MAX ||
++	    (payload_prev_fdt & 7) || !fdt_plausible(fdt)) {
++		printk(KERN_WARNING, "payload: no FDT from the bootloader (x0=0x%lx)\n",
++		       payload_prev_fdt);
++		return;
++	}
++	node = fdt_path_offset(fdt, "/chosen");
++	if (node < 0) {
++		printk(KERN_WARNING, "payload: bootloader FDT has no /chosen\n");
++		return;
++	}
++
++	start = fdt_get_addr(fdt, node, "linux,initrd-start");
++	end = fdt_get_addr(fdt, node, "linux,initrd-end");
++	prev_initrd_start = start;
++	prev_initrd_end = end;
++	if (start && end > start) {
++		*initrd = start;
++		*initrd_size = end - start;
++	}
++	printk(KERN_INFO, "payload: bootloader FDT at 0x%lx, initrd 0x%lx-0x%lx\n",
++	       payload_prev_fdt, start, end);
++
++	args = fdt_getprop(fdt, node, "bootargs", &len);
++	if (args && len > 0)
++		import_bootargs(args, len);
++}
++
++static int set_chosen(void *fdt, unsigned long initrd_size)
++{
++	char info[128];
++	int node, ret;
++
++	node = fdt_path_offset(fdt, "/chosen");
++	if (node < 0)
++		node = fdt_add_subnode(fdt, 0, "chosen");
++	if (node < 0)
++		return node;
++
++	if (initrd_size) {
++		ret = fdt_setprop_u64(fdt, node, "linux,initrd-start",
++				      CONFIG_RAMDISK_ENTRY);
++		if (!ret)
++			ret = fdt_setprop_u64(fdt, node, "linux,initrd-end",
++					      CONFIG_RAMDISK_ENTRY + initrd_size);
++		if (ret)
++			return ret;
++	}
++	/* readable from Linux: /proc/device-tree/chosen/uniloader,payload */
++	npf_snprintf(info, sizeof(info), "prev-fdt=0x%lx initrd=0x%lx-0x%lx",
++		     payload_prev_fdt, prev_initrd_start, prev_initrd_end);
++	ret = fdt_setprop_string(fdt, node, "uniloader,payload", info);
++	if (ret)
++		return ret;
++	if (cmdline[0])
++		return fdt_setprop_string(fdt, node, "bootargs", cmdline);
++	return 0;
++}
++
++static void boot_payload_once(void)
++{
++	const unsigned char *img;
++	unsigned long image_size, text_offset, file_size;
++	unsigned long k_dst, k_len, r_src, r_len;
++	unsigned long self = (unsigned long)_uniloader_start;
++	unsigned long self_len = (unsigned long)_stack_end - self;
++	const void *dtb;
++	void *fdt = fdt_patch_buffer();
++	const char *base;
++	int ret, kernel_first;
++
++	img = (const unsigned char *)(payload_load_start +
++				      ((unsigned long)_bin_end - (unsigned long)_start));
++	if (ld_le(img + 56, 4) != ARM64_IMAGE_MAGIC) {
++		printk(KERN_ERR, "payload: no arm64 Image at %p\n", img);
++		return;
++	}
++	text_offset = ld_le(img + 8, 8);
++	image_size = ld_le(img + 16, 8);
++	file_size = find_appended_dtb(img, image_size);
++	if (!file_size) {
++		printk(KERN_ERR, "payload: no DTB after the Image\n");
++		return;
++	}
++	dtb = img + file_size;
++	printk(KERN_INFO, "payload: Image at %p (%lu bytes), DTB at %p\n",
++	       img, file_size, dtb);
++
++	/* Start from the appended DTB's command line, then import */
++	ret = fdt_path_offset(dtb, "/chosen");
++	base = ret < 0 ? NULL : fdt_getprop(dtb, ret, "bootargs", NULL);
++	if (base)
++		cmdline_append(base, strnlen(base, CMDLINE_MAX - 1));
++	read_prev_fdt(&r_src, &r_len);
++	printk(KERN_INFO, "payload: bootargs \"%s\"\n", cmdline);
++
++	ret = fdt_open_into(dtb, fdt, CONFIG_FDT_BUF_SIZE);
++	if (!ret)
++		ret = set_chosen(fdt, r_len);
++	if (ret) {
++		printk(KERN_ERR, "payload: patching the DTB failed: %s\n",
++		       fdt_strerror(ret));
++		return;
++	}
++
++	/* Destinations must not hit uniLoader itself or each other */
++	k_dst = CONFIG_PAYLOAD_ENTRY + text_offset;
++	k_len = round16(file_size);
++	if (overlaps(k_dst, image_size, self, self_len) ||
++	    (r_len && (overlaps(CONFIG_RAMDISK_ENTRY, r_len, self, self_len) ||
++		       overlaps(CONFIG_RAMDISK_ENTRY, r_len, k_dst, image_size)))) {
++		printk(KERN_ERR, "payload: kernel/initrd do not fit next to uniLoader\n");
++		return;
++	}
++
++	/* Copy in the order that does not overwrite the other source */
++	kernel_first = !r_len || !overlaps(k_dst, k_len, r_src, r_len);
++	if (!kernel_first &&
++	    overlaps(CONFIG_RAMDISK_ENTRY, r_len, (unsigned long)img, k_len)) {
++		printk(KERN_ERR, "payload: kernel and initrd sources collide\n");
++		return;
++	}
++	if (kernel_first)
++		memmove((void *)k_dst, img, k_len);
++	if (r_len && r_src != CONFIG_RAMDISK_ENTRY)
++		memmove((void *)CONFIG_RAMDISK_ENTRY, (void *)r_src, round16(r_len));
++	if (!kernel_first)
++		memmove((void *)k_dst, img, k_len);
++	if (!r_len)
++		printk(KERN_WARNING, "payload: booting without an initrd\n");
++
++	printk(KERN_INFO, "Booting kernel...\n");
++	load_kernel_and_jump(fdt, 0, 0, 0, (void *)k_dst);
++}
++
++void boot_payload(void)
++{
++	boot_payload_once();
++	payload_boot_failed();
++}
+diff --git a/main/main.c b/main/main.c
+index 579def3..3fe40c5 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -36,7 +36,11 @@ void main(void* dt, void* kernel, void* ramdisk)
+ 
+ 	INITCALL(board_ops.ops.late_init);
+ 
++#ifdef CONFIG_APPENDED_PAYLOAD
++	boot_payload();
++#else
+ 	boot_kernel(dt, kernel, ramdisk);
++#endif
+ 
+ 	// todo: reset the board?
+ 	printk(KERN_EMERG, "Something wrong happened, we shouldn't be here. Hanging....\n");
+-- 
+2.56.0
+

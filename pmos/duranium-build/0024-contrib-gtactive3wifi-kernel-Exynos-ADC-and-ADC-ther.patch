@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 13:05:49 +1100
+Subject: [PATCH 24/25] contrib: gtactive3wifi: kernel: Exynos ADC and ADC
+ thermal zones
+
+They were only in the bring-up config, and gen-kernel-config starts from
+the last built bring-up .config, which predates them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index 12cc3f2..d60d0e8 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -301,3 +301,8 @@ CONFIG_CPU_FREQ_THERMAL=y
+ # Landlock is in CONFIG_LSM already but was not built (flatpak, podman,
+ # systemd sandboxing use it)
+ CONFIG_SECURITY_LANDLOCK=y
++
++# AP ADC and the battery / charger / USB NTC thermal zones (battery
++# temperature-limited charging; src/linux drv/battemp-stage1)
++CONFIG_EXYNOS_ADC=m
++CONFIG_GENERIC_ADC_THERMAL=m

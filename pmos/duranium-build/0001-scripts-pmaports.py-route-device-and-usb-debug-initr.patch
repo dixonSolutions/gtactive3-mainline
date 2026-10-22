@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:52:04 +1100
+Subject: [PATCH 01/25] scripts/pmaports.py: route device and usb-debug
+ initramfs into the initrd
+
+A device package may ship early-boot support (USB prep, nested-GPT udev
+rules, watchdog config) that must be in the mkosi initrd, not only the
+base image. Duranium has no general way to mark a package initramfs-only,
+so infer it the same way as the unl0kr-fbforcerefresh case: if the device
+package has a "-initramfs" subpackage, add it to InitrdPackages, and if
+the device depends on duranium-usb-debug, add duranium-usb-debug-initramfs
+too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ scripts/pmaports.py | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/scripts/pmaports.py b/scripts/pmaports.py
+index d08fb06..b639703 100755
+--- a/scripts/pmaports.py
++++ b/scripts/pmaports.py
+@@ -174,6 +174,18 @@ def pick_kernel_subpackage(apkbuild_path: str, device: str) -> Optional[str]:
+     return None
+ 
+ 
++def subpackage_names(apkbuild_path: str) -> set[str]:
++    # Return the bare subpackage names (the part before ':') declared by an
++    # APKBUILD, so callers can tell whether e.g. a "-initramfs" subpackage
++    # exists without parsing the function names.
++    result = subprocess.run(
++        ["sh", "-c", f". '{apkbuild_path}' && echo $subpackages"],
++        capture_output=True,
++        check=True,
++    )
++    return {entry.split(":")[0] for entry in result.stdout.decode("utf-8").split()}
++
++
+ def find_deviceinfo(pmaports_dir: Path, device: str) -> Path:
+     for subdir in ("main", "community", "testing"):
+         candidate = pmaports_dir / "device" / subdir / f"device-{device}" / "deviceinfo"
+@@ -222,7 +234,25 @@ def resolve(device: str, ui: str, release: str, skip_fetch: bool = False) -> dic
+         packages.append("postmarketos-buffybox-f0rmz-fbforcerefresh")
+         initrd_packages.append("postmarketos-buffybox-unl0kr-fbforcerefresh")
+ 
++    # A device package may ship a "-initramfs" subpackage with early-boot
++    # support (USB prep, nested-GPT udev rules, watchdog config). pmaports has
++    # no general way to mark a package as initramfs-only, so infer it from the
++    # subpackage naming, mirroring the unl0kr-fbforcerefresh case above.
++    device_subpkgs = subpackage_names(str(device_apkbuild))
++    if f"{device_pkg}-initramfs" in device_subpkgs:
++        initrd_packages.append(f"{device_pkg}-initramfs")
++
++    # The Duranium USB debug layer (duranium-usb-debug) must also be in the
++    # initrd so pre-switch-root failures are debuggable over USB. It ships a
++    # "-initramfs" subpackage with just the interface + console. It is a hard
++    # dependency of the device package (so apk pulls the base part in on its
++    # own), hence the check against the device's depends, not the explicit
++    # recommends list.
++    if "duranium-usb-debug" in device_depends:
++        initrd_packages.append("duranium-usb-debug-initramfs")
++
+     packages = list(dict.fromkeys(packages))
++    initrd_packages = list(dict.fromkeys(initrd_packages))
+ 
+     # create mkosi-compatible json config fragment
+     out: dict = {"Architecture": mkosi_arch}

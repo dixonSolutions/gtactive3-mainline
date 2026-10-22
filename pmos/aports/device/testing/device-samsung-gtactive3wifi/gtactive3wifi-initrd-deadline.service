@@ -1,0 +1,23 @@
+[Unit]
+Description=Galaxy Tab Active3 bring-up: reboot to Download mode if the initrd stalls
+Documentation=file:///usr/share/doc/device-samsung-gtactive3wifi/README
+# systemd (PID 1) keeps petting the hardware watchdog (RuntimeWatchdogSec) and
+# Duranium waits for the root device without a timeout
+# (dev-gpt-auto-root-no-timeout.conf), so a missing or unreadable root disk
+# would otherwise hang the initrd forever without a reset. After the deadline,
+# reboot with the "download" reason (reboot-mode: PMU INFORM3 0x12345671) so
+# the lead's automation gets the device back. Stopped at switch-root.
+# Turn off with gtactive3wifi.initrd_deadline=0 (e.g. to debug over USB).
+DefaultDependencies=no
+ConditionPathExists=/etc/initrd-release
+ConditionKernelCommandLine=!gtactive3wifi.initrd_deadline=0
+Conflicts=initrd-switch-root.target shutdown.target
+Before=initrd-switch-root.target shutdown.target
+
+[Service]
+Type=simple
+# The clock stops while a password prompt is open (the encrypted root waits
+# for the user's passphrase): only 600 s of initrd time without anyone being
+# asked counts. The first deadline counted the prompt too and rebooted a
+# tablet that was simply waiting for its passphrase.
+ExecStart=/bin/sh -c 'n=0; while [ $$n -lt 600 ]; do sleep 5; set -- /run/systemd/ask-password/ask.*; [ -e "$$1" ] || n=$$((n + 5)); done; echo "gtactive3wifi: initrd did not reach switch-root within 600 s (not counting password prompts), rebooting to Download mode" > /dev/kmsg; exec systemctl --force --force reboot download'

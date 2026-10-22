@@ -1,0 +1,9 @@
+# Enabled by default in development images. A release image drops the whole
+# duranium-usb-debug package, or disables/masks the target:
+#   systemctl disable --now duranium-usb-debug.target
+enable duranium-usb-debug.target
+enable duranium-usb-debug.service
+enable duranium-debug-shell.socket
+enable duranium-debug-sshd.socket
+enable duranium-debug-klog.socket
+enable duranium-debug-sockets.service

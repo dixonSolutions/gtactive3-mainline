@@ -1,0 +1,44 @@
+maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
+pkgname=firmware-samsung-gtactive3wifi-bootdtb
+pkgver=1
+pkgrel=0
+pkgdesc="Samsung Galaxy Tab Active3: stock DT table for the boot image (from your own firmware)"
+url="https://github.com/dixonSolutions/gtactive3-mainline"
+arch="aarch64"
+license="proprietary"
+makedepends="python3"
+options="!check !strip !archcheck !tracedeps"
+source="extract-boot-dtb.py"
+
+# S-Boot applies the DTBO partition to the DT table in the boot image header,
+# so the boot image has to carry Samsung's own SoC DT table (uniLoader then
+# boots Linux with the mainline DTB). It cannot be redistributed: put your
+# stock boot.img or recovery.img (from the AP tar of your firmware, e.g.
+# T570XXSFEYI1, lz4 -d) next to this APKBUILD as "stock-boot.img", or the
+# already extracted DT table as "sboot-dt.img". Both are in .gitignore.
+
+build() {
+	if [ -f "$startdir"/sboot-dt.img ]; then
+		cp "$startdir"/sboot-dt.img "$builddir"/sboot-dt.img
+	elif [ -f "$startdir"/stock-boot.img ]; then
+		python3 "$srcdir"/extract-boot-dtb.py "$startdir"/stock-boot.img \
+			"$builddir"/sboot-dt.img
+	else
+		error "Put your stock boot.img at $startdir/stock-boot.img (see APKBUILD)"
+		return 1
+	fi
+	# Android DT table (mkdtimg) magic 0xd7b7ab1e
+	if [ "$(od -An -tx1 -N4 "$builddir"/sboot-dt.img | tr -d ' ')" != "d7b7ab1e" ]; then
+		error "sboot-dt.img is not an Android DT table"
+		return 1
+	fi
+}
+
+package() {
+	install -Dm644 "$builddir"/sboot-dt.img \
+		"$pkgdir"/usr/share/samsung-gtactive3wifi/sboot-dt.img
+}
+
+sha512sums="
+3b24fc33241816a8adf558f22d3a79a134deee2544d809cb6594f4a55f8456bd89313bc34afce0a4ac0685251d9dd346223991b5bddbed9c1dd02f4cc198bb7e  extract-boot-dtb.py
+"

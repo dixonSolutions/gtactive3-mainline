@@ -1,0 +1,49 @@
+maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
+pkgname=uniloader-samsung-gtactive3wifi
+pkgver=0_git20261019
+pkgrel=0
+_commit="a459fb4c777ad9e1f3a433b14266423916f24e60"
+pkgdesc="uniLoader for the Samsung Galaxy Tab Active3, booting an appended Linux payload"
+url="https://github.com/ivoszbg/uniLoader"
+arch="aarch64"
+license="GPL-2.0-only"
+options="!check !strip !tracedeps"
+source="
+	uniLoader-$_commit.tar.gz::https://github.com/ivoszbg/uniLoader/archive/$_commit.tar.gz
+	0001-board-Add-support-for-Samsung-Galaxy-Tab-Active3-Wi-.patch
+	0002-main-Add-support-for-a-Linux-payload-appended-to-uni.patch
+	0003-board-samsung-gtactive3wifi-Add-bring-up-quirks-for-.patch
+	uniloader.config
+	"
+builddir="$srcdir/uniLoader-$_commit"
+
+prepare() {
+	default_prepare
+	cat configs/gtactive3wifi_defconfig "$srcdir"/uniloader.config \
+		> configs/gtactive3wifi_pmos_defconfig
+}
+
+build() {
+	# CROSS_COMPILE is empty for native builds, as uniLoader expects
+	make HOSTCC=gcc ARCH=aarch64 CROSS_COMPILE="$CROSS_COMPILE" \
+		gtactive3wifi_pmos_defconfig
+	make HOSTCC=gcc ARCH=aarch64 CROSS_COMPILE="$CROSS_COMPILE"
+}
+
+package() {
+	# mkinitfs copies /usr/share/u-boot/$deviceinfo_uboot_boardname/* into
+	# the boot-deploy work dir, where bootimg_override_payload picks it up
+	install -Dm644 uniLoader \
+		"$pkgdir"/usr/share/u-boot/gtactive3wifi/uniLoader
+	# regenerate boot.img when uniLoader changes
+	mkdir -p "$pkgdir"/usr/share/mkinitfs-triggers
+	touch "$pkgdir"/usr/share/mkinitfs-triggers/$pkgname
+}
+
+sha512sums="
+5efe447d0d407ccca38c36a4cc4d1ce05d9f5f60224542f0b3c8983c0a944ced8bf858869c788f1248c4fd23998a744edbb1a8b8e9ce8ca146db9e7541ff78d4  uniLoader-a459fb4c777ad9e1f3a433b14266423916f24e60.tar.gz
+94966eea0da4e69046b58e999a108469482030d50ef7f960f076fa65006f3d50f39a849b603c33c4cf90dfdbfd6079f7ec5858e26ed4b125836f105f1893af8c  0001-board-Add-support-for-Samsung-Galaxy-Tab-Active3-Wi-.patch
+2a43e69dc2a8e2b53580cdc8273bcebcb9cddf38fb36954d6695903a38dfe6f76685f6a6256e50a6f4b7545c4aa5c8c3791844abb16b01f2088da896eb468852  0002-main-Add-support-for-a-Linux-payload-appended-to-uni.patch
+48570ffd89f4ce66a2d4e142a707b0d1fd350003a399a854585fec4c3f1b2a8192611b68e3b299642aab90331cdfb62c9263b3d2ca6936724f82f8f0e1f57e21  0003-board-samsung-gtactive3wifi-Add-bring-up-quirks-for-.patch
+c5958269b831ce48252cd19e37a08f6ee463f58e6d31ea2ded88be51972d9511b706f5fe623cf96dc245212499371dc1ba27133e48b280dd49d0d13281866f17  uniloader.config
+"

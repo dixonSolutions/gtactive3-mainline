@@ -1,0 +1,7 @@
+{
+  "uuid": "fast-animations@gtactive3wifi",
+  "name": "Fast animations",
+  "description": "Shortens all shell animations (St slow-down factor 0.6) for a snappier feel on the Galaxy Tab Active3.",
+  "shell-version": ["49", "50", "51"],
+  "version": 1
+}

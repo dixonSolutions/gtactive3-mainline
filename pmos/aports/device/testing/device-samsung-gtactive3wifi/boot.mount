@@ -1,0 +1,13 @@
+[Unit]
+Description=EFI System Partition of the nested Duranium disk
+Documentation=file:///usr/share/doc/device-samsung-gtactive3wifi/README
+# systemd-gpt-auto finds no ESP here (it sits in the GPT nested in the
+# Android userdata partition, attached as a loop device), so without this
+# systemd-bless-boot cannot mark a good boot and every boot-counted UKI
+# ends up "bad" after its tries.
+
+[Mount]
+What=/dev/disk/by-partlabel/esp
+Where=/boot
+Type=vfat
+Options=umask=0077,noexec,nosuid,nodev

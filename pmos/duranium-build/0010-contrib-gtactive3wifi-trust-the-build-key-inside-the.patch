@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 19:07:27 +1100
+Subject: [PATCH 10/25] contrib: gtactive3wifi: trust the build key inside the
+ package builder
+
+Without -i the freshly generated abuild key is not in /etc/apk/keys and
+the repository index step fails with UNTRUSTED signature.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index d18f671..04cec64 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -50,7 +50,7 @@ mkdir -p "$work/repo" "$work/out"
+ cat > "$work/build.sh" <<'IN'
+ #!/bin/sh
+ set -eu
+-abuild-keygen -a -n -q >/dev/null 2>&1
++abuild-keygen -a -i -n -q >/dev/null 2>&1
+ export CARCH=aarch64 SRCDEST=/distfiles JOBS
+ export MAKEFLAGS="-j$JOBS"
+ for p in "$@"; do

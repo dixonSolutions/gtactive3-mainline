@@ -1,0 +1,3 @@
+# New users (GNOME Settings, gnome-initial-setup: accountsservice runs useradd
+# without -s) get bash: busybox ash breaks bracketed paste in GNOME Console.
+SHELL=/bin/bash

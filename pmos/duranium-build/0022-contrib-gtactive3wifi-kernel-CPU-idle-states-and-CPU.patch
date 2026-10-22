@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 11:51:47 +1100
+Subject: [PATCH 22/25] contrib: gtactive3wifi: kernel: CPU idle states and CPU
+ thermal
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../samsung-gtactive3wifi/kernel/gtactive3wifi.config  | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index cc508fe..972e6ab 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -287,3 +287,13 @@ CONFIG_BT_RFCOMM_TTY=y
+ CONFIG_BT_BNEP=m
+ CONFIG_BT_BNEP_MC_FILTER=y
+ CONFIG_BT_BNEP_PROTO_FILTER=y
++
++# CPU idle states (PSCI core power-down) and CPU cooling: measured on the
++# device in the bring-up kernel (cpuidle residency, cooling device bound to
++# the 86 C LITTLE trip); the biggest battery lever while there is no suspend
++CONFIG_CPU_IDLE=y
++CONFIG_CPU_IDLE_GOV_MENU=y
++CONFIG_CPU_IDLE_GOV_TEO=y
++CONFIG_ARM_PSCI_CPUIDLE=y
++CONFIG_CPU_THERMAL=y
++CONFIG_CPU_FREQ_THERMAL=y

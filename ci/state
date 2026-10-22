@@ -1,0 +1,49 @@
+#!/bin/bash
+# Decide whether to build: print key=value lines for $GITHUB_OUTPUT.
+#
+#   upstream   postmarketOS's newest published Duranium version (their
+#              weekly image build, https://duranium.nura.eco/images/)
+#   ours       tree hash of what we maintain (pmos/ and ci/ and the
+#              workflow), i.e. a kernel / driver / device change
+#   fingerprint  both together; it is stored in every release's notes
+#   build      yes when no channel has been published with this
+#              fingerprint yet (or FORCE=1)
+#   version    the next image version: YYMMDDNN, above everything any
+#              channel ever published
+set -euo pipefail
+cd "$(dirname "$0")/.."
+REPO=${GITHUB_REPOSITORY:-dixonSolutions/gtactive3-mainline}
+
+upstream=$(curl -fsSL --retry 3 https://duranium.nura.eco/images/mkosi.version | tr -dc 0-9)
+[ ${#upstream} = 8 ] || { echo "cannot read postmarketOS's mkosi.version" >&2; exit 1; }
+ours=$(git rev-parse HEAD:pmos)-$(git rev-parse HEAD:ci)-$(git rev-parse HEAD:.github/workflows)
+fingerprint="pmos-$upstream/ours-$(echo "$ours" | sha256sum | cut -c1-16)"
+
+last=
+max=0
+while read -r ui ch tag; do
+	body=$(gh release view "$tag" -R "$REPO" --json body -q .body 2>/dev/null || true)
+	f=$(printf '%s\n' "$body" | sed -n 's/^Fingerprint: `\(.*\)`$/\1/p' | head -1)
+	[ "$ch" = release ] && [ "$ui" = phosh ] && last=$f
+	for v in $(gh release view "$tag" -R "$REPO" --json assets -q '.assets[].name' 2>/dev/null |
+		sed -n 's/.*_\([0-9]\{8\}\)\.efi$/\1/p'); do
+		[ "$v" -gt "$max" ] && max=$v
+	done
+done < <(sh ci/channels)
+
+build=no
+[ "$fingerprint" != "$last" ] && build=yes
+[ "${FORCE:-}" = 1 ] && build=yes
+
+today=$(date -u +%y%m%d)
+if [ "${max:0:6}" = "$today" ]; then
+	version=$today$(printf %02d $((10#${max:6:2} + 1)))
+else
+	version=${today}01
+fi
+
+echo "upstream=$upstream"
+echo "fingerprint=$fingerprint"
+echo "last=$last"
+echo "build=$build"
+echo "version=$version"

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 20:30:34 +1100
+Subject: [PATCH 14/25] contrib: gtactive3wifi: the device package has no
+ -bootimg subpackage any more
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index 4c17e9d..b30d209 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -4,7 +4,7 @@
+ # pmbootstrap:
+ #
+ #   duranium-usb-debug(-initramfs)                    main/
+-#   device-samsung-gtactive3wifi(-initramfs,-bootimg) device/testing/
++#   device-samsung-gtactive3wifi(-initramfs)         device/testing/
+ #   linux-postmarketos-exynos9810                     device/testing/
+ #   firmware-samsung-gtactive3wifi (local only)       contrib/.../firmware/
+ #

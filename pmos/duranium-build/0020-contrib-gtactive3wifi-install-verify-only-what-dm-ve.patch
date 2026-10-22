@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 02:03:15 +1100
+Subject: [PATCH 20/25] contrib: gtactive3wifi: install: verify only what
+ dm-verity does not cover
+
+Read back and compare the GPT and the ESP (bootloader, UKI) by default;
+the verity-protected /usr fails loudly on any bad block at boot.
+--full-verify keeps the old whole-image read-back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../install-to-userdata.sh                    | 33 +++++++++++++++++--
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+ mode change 100644 => 100755 contrib/samsung-gtactive3wifi/install-to-userdata.sh
+
+diff --git a/contrib/samsung-gtactive3wifi/install-to-userdata.sh b/contrib/samsung-gtactive3wifi/install-to-userdata.sh
+old mode 100644
+new mode 100755
+index 8a55d7a..4524506
+--- a/contrib/samsung-gtactive3wifi/install-to-userdata.sh
++++ b/contrib/samsung-gtactive3wifi/install-to-userdata.sh
+@@ -23,6 +23,11 @@
+ # Usage:
+ #   install-to-userdata.sh IMAGE            # IMAGE is .raw or .raw.zst / .zst
+ #   install-to-userdata.sh IMAGE --no-verify
++#   install-to-userdata.sh IMAGE --full-verify
++# By default only the part dm-verity does not cover is read back and
++# compared: the GPT and the ESP (bootloader, UKI). The verity-protected /usr
++# is checked by the kernel on every read anyway (a bad block fails the
++# boot loudly); --full-verify reads back the whole image as before.
+ set -euo pipefail
+ 
+ ROOT=${GTA3_ROOT:-/home/borysthebear/Projects/gtactive3-mainline}
+@@ -32,9 +37,10 @@ LL=fe80::57:aff:fe00:1
+ PART=sda31              # Android userdata (HARDWARE.md "Partitions")
+ DEV=/dev/$PART
+ WANT_PARTNAME=userdata  # GPT name read on the device: sda31 uevent PARTNAME
+-IMG=${1:?usage: install-to-userdata.sh IMAGE [--no-verify]}
++IMG=${1:?usage: install-to-userdata.sh IMAGE [--no-verify|--full-verify]}
+ VERIFY=1
+ [ "${2:-}" = "--no-verify" ] && VERIFY=0
++[ "${2:-}" = "--full-verify" ] && VERIFY=2
+ 
+ tab() { flock "$LOCK" "$TAB" "$@"; }
+ 
+@@ -132,12 +138,33 @@ if line != f"ok {n}":
+     sys.exit(f"put failed: expected 'ok {n}'")
+ PY
+ 
++VLEN=$LEN
+ if [ "$VERIFY" = 1 ]; then
++	# end of the ESP (EFI System Partition type) from the 4 KiB-sector GPT
++	VLEN=$(python3 -I - "$RAW" <<'PY'
++import struct, sys, uuid
++f = open(sys.argv[1], "rb")
++f.seek(4096)
++hdr = f.read(92)
++lba, n, size = struct.unpack_from("<QII", hdr, 72)
++f.seek(lba * 4096)
++esp = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b").bytes_le
++end = 0
++for _ in range(n):
++    e = f.read(size)
++    if e[:16] == esp:
++        end = (struct.unpack_from("<Q", e, 40)[0] + 1) * 4096
++print(end or 1 << 30)
++PY
++)
++	WANT=$(head -c "$VLEN" "$RAW" | sha256sum | cut -d' ' -f1)
++fi
++if [ "$VERIFY" != 0 ]; then
+ 	# Drop the page cache so the read-back comes from UFS, not RAM.
+ 	tab "write /proc/sys/vm/drop_caches 3" | grep -q '^ok' ||
+ 		{ echo "ERROR: drop_caches failed, read-back would not prove the write" >&2; exit 1; }
+-	echo "Verifying (reading $LEN bytes back and comparing sha256)..."
+-	GOT=$(flock "$LOCK" python3 -I - "$LL%$IFC" "$DEV" "$LEN" <<'PY'
++	echo "Verifying (reading $VLEN of $LEN bytes back and comparing sha256)..."
++	GOT=$(flock "$LOCK" python3 -I - "$LL%$IFC" "$DEV" "$VLEN" <<'PY'
+ import hashlib, socket, sys
+ addr, remote, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+ s = socket.create_connection((addr, 23), timeout=30)

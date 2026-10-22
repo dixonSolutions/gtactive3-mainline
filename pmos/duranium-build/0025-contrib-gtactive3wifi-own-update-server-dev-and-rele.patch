@@ -1,0 +1,270 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 14:20:57 +1100
+Subject: [PATCH 25/25] contrib: gtactive3wifi: own update server, dev and
+ release channels
+
+- mkosi.finalize runs contrib/$PMOS_DEVICE/mkosi.finalize when present
+- gtactive3wifi hook: sysupdate transfers fetch from the project's GitHub
+  releases (one release per channel, samsung-gtactive3wifi_<ui>_edge[-dev]),
+  the sysupdate keyring holds only the project's signing key
+- pmaports.py: DURANIUM_EXTRA_PACKAGES (passed to the subimages), and the
+  debug layer's initrd part follows it
+- build-image.sh: CHANNEL=dev (default: USB debug layer, "-dev" channel)
+  or release; build-apks.sh builds the two GNOME Shell extensions too
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh   |  5 +-
+ contrib/samsung-gtactive3wifi/build-image.sh  | 22 +++++--
+ contrib/samsung-gtactive3wifi/mkosi.finalize  | 61 +++++++++++++++++++
+ .../sysupdate-public-key.asc                  | 10 +++
+ mkosi.conf                                    |  2 +-
+ mkosi.finalize                                |  5 ++
+ scripts/pmaports.py                           | 14 +++--
+ scripts/tests/test_pmaports.py                | 17 ++++++
+ 8 files changed, 125 insertions(+), 11 deletions(-)
+ create mode 100755 contrib/samsung-gtactive3wifi/mkosi.finalize
+ create mode 100644 contrib/samsung-gtactive3wifi/sysupdate-public-key.asc
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index 27cbf84..1a94c00 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -6,6 +6,7 @@
+ #   duranium-usb-debug(-initramfs)                    main/
+ #   device-samsung-gtactive3wifi(-initramfs)         device/testing/
+ #   linux-postmarketos-exynos9810                     device/testing/
++#   gnome-shell-extension-blur-my-shell, -touchup     device/testing/
+ #   firmware-samsung-gtactive3wifi (local only)       contrib/.../firmware/
+ #
+ # They are built in an x86_64 postmarketOS container (pkgbuilder.
+@@ -35,7 +36,9 @@ JOBS=${JOBS:-12}
+ if [ $# -eq 0 ]; then
+ 	set -- main/duranium-usb-debug \
+ 		device/testing/device-samsung-gtactive3wifi \
+-		device/testing/linux-postmarketos-exynos9810
++		device/testing/linux-postmarketos-exynos9810 \
++		device/testing/gnome-shell-extension-blur-my-shell \
++		device/testing/gnome-shell-extension-touchup
+ 	[ -d "$FWDIR" ] && set -- "$@" firmware
+ fi
+ 
+diff --git a/contrib/samsung-gtactive3wifi/build-image.sh b/contrib/samsung-gtactive3wifi/build-image.sh
+index ae012a4..f50facf 100755
+--- a/contrib/samsung-gtactive3wifi/build-image.sh
++++ b/contrib/samsung-gtactive3wifi/build-image.sh
+@@ -15,8 +15,14 @@
+ # Output: mkosi.output/samsung-gtactive3wifi_<UI>_edge/ (disk image .raw,
+ # UKI .efi, split partitions). Every heavy step takes build/kbuild.lock.
+ #
+-# Environment: UI (default gnome; GNOME only for this device), PKGS, PMAPORTS, MKOSI, SKIP_APKS. Extra
+-# arguments go to mkosi (e.g. --profile=compressed).
++# Environment: UI (gnome, phosh, ...: any postmarketOS UI), PKGS, PMAPORTS,
++# MKOSI, SKIP_APKS, CHANNEL. Extra arguments go to mkosi (e.g.
++# --profile=compressed).
++#
++# CHANNEL=dev (default here): development image with the USB debug layer
++# (duranium-usb-debug + adb, in the base image and the initrd), updating from
++# the "-dev" release channel. CHANNEL=release: the public image without it.
++# Both update from the project's GitHub releases (mkosi.finalize here).
+ set -eu
+ 
+ HERE=$(cd "$(dirname "$0")" && pwd)
+@@ -27,6 +33,12 @@ PKGS=${PKGS:-$ROOT/build/wt/duranium-localpkgs}
+ LOCK=$ROOT/build/kbuild.lock
+ UI=${UI:-gnome}
+ RELEASE=edge
++CHANNEL=${CHANNEL:-dev}
++case "$CHANNEL" in
++dev) GTA3_CHANNEL=dev; EXTRA="duranium-usb-debug duranium-usb-debug-adb" ;;
++release) GTA3_CHANNEL=; EXTRA= ;;
++*) echo "CHANNEL must be dev or release" >&2; exit 1 ;;
++esac
+ 
+ MKOSI=${MKOSI:-$DUR/scripts/mkosi-container}
+ export MKOSI
+@@ -43,8 +55,8 @@ if [ -z "${SKIP_APKS:-}" ]; then
+ 	echo "== 1. local packages -> $PKGS"
+ 	PKGS=$PKGS PMAPORTS=$PMAPORTS sh "$HERE/build-apks.sh"
+ fi
+-ls "$PKGS"/linux-postmarketos-exynos9810-*.apk "$PKGS"/device-samsung-gtactive3wifi-*.apk \
+-	"$PKGS"/duranium-usb-debug-*.apk >/dev/null
++ls "$PKGS"/linux-postmarketos-exynos9810-*.apk "$PKGS"/device-samsung-gtactive3wifi-*.apk >/dev/null
++[ -z "$EXTRA" ] || ls "$PKGS"/duranium-usb-debug-*.apk >/dev/null
+ 
+ echo "== 2. mkosi image"
+ if [ -e "$DUR/pmaports" ] && [ ! -L "$DUR/pmaports" ]; then
+@@ -75,6 +87,8 @@ for attempt in 1 2 3; do
+ 			--image-id="$IMAGE_ID" \
+ 			--environment=PMOS_DEVICE=samsung-gtactive3wifi \
+ 			--environment=PMOS_VARIANT="$UI" \
++			--environment=GTA3_CHANNEL="$GTA3_CHANNEL" \
++			--environment=DURANIUM_EXTRA_PACKAGES="$EXTRA" \
+ 			--release="$RELEASE" \
+ 			--package-directory="$PKGS" \
+ 			$CACHE_ONLY \
+diff --git a/contrib/samsung-gtactive3wifi/mkosi.finalize b/contrib/samsung-gtactive3wifi/mkosi.finalize
+new file mode 100755
+index 0000000..c3c5414
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/mkosi.finalize
+@@ -0,0 +1,61 @@
++#!/bin/sh
++# Device hook, run at the end of the top-level mkosi.finalize (before /etc
++# moves into the base confext and before the usr partition and its verity
++# hash are made).
++#
++# Update server: gtactive3-mainline publishes its own images (our kernel and
++# drivers on top of the postmarketOS packages) as GitHub releases, one
++# release per update channel:
++#
++#   https://github.com/dixonSolutions/gtactive3-mainline/releases/download/
++#       samsung-gtactive3wifi_<ui>_<release><suffix>/SHA256SUMS(.gpg)
++#
++# so sysupdate here must never fetch postmarketOS's generic images (they
++# carry no kernel for this device), and must only trust manifests signed
++# with the project's key:
++#
++#  - every sysupdate.d transfer that points at the postmarketOS image server
++#    points at the release of this image's channel instead
++#  - the sysupdate keyring holds only sysupdate-public-key.asc
++#
++# GTA3_CHANNEL: "" (release images) or "dev" (development images with the
++# USB debug layer, channel tag suffix "-dev"). GTA3_UPDATE_BASE overrides
++# the server (a fork, a local test server).
++set -eu
++
++HERE=$(cd "$(dirname "$0")" && pwd)
++BASE=${GTA3_UPDATE_BASE:-https://github.com/dixonSolutions/gtactive3-mainline/releases/download/}
++case "${GTA3_CHANNEL:-}" in
++	"") suffix= ;;
++	dev) suffix=-dev ;;
++	*) echo "GTA3_CHANNEL must be empty or dev, not '$GTA3_CHANNEL'" >&2; exit 1 ;;
++esac
++
++n=0
++for t in "$BUILDROOT"/usr/lib/sysupdate.d/*.transfer; do
++	[ -f "$t" ] || continue
++	grep -qE '^Path=https://duranium\.(postmarketos\.org|nura\.eco)/images/' "$t" || continue
++	sed -i -E "s|^Path=https://duranium\.(postmarketos\.org\|nura\.eco)/images/(staging/)?([^/]+)/|Path=${BASE}\3${suffix}/|" "$t"
++	grep -q "^Path=${BASE}" "$t" || { echo "could not rewrite Path= in $t" >&2; exit 1; }
++	n=$((n + 1))
++done
++[ "$n" -gt 0 ] || { echo "no sysupdate transfer pointed at the postmarketOS server" >&2; exit 1; }
++echo "sysupdate: $n transfers -> ${BASE}%M_%W_%w${suffix}/"
++
++# the channel switcher only knows the postmarketOS server
++if [ -f "$BUILDROOT"/usr/bin/duranium-set-channel ]; then
++	sed -i "s|^BASE_URL=.*|BASE_URL=\"$BASE\"|" "$BUILDROOT"/usr/bin/duranium-set-channel
++fi
++
++ring="$BUILDROOT"/usr/lib/systemd/import-pubring.pgp
++rm -f "$ring" "$ring~"
++gpg --no-default-keyring --keyring "$ring" --import "$HERE"/sysupdate-public-key.asc
++rm -f "$ring~"
++gpg --no-default-keyring --keyring "$ring" --list-keys --with-colons | grep -c '^pub' |
++	grep -qx 1 || { echo "the sysupdate keyring must hold exactly one key" >&2; exit 1; }
++
++# which channel this image follows, for duranium-update and humans
++mkdir -p "$BUILDROOT"/usr/lib/gtactive3wifi
++printf 'UPDATE_BASE=%s\nUPDATE_CHANNEL=%s_%s_%s%s\n' "$BASE" \
++	"$PMOS_DEVICE" "$PMOS_VARIANT" "${RELEASE:-edge}" "$suffix" \
++	> "$BUILDROOT"/usr/lib/gtactive3wifi/update-channel
+diff --git a/contrib/samsung-gtactive3wifi/sysupdate-public-key.asc b/contrib/samsung-gtactive3wifi/sysupdate-public-key.asc
+new file mode 100644
+index 0000000..1dbbbb4
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/sysupdate-public-key.asc
+@@ -0,0 +1,10 @@
++-----BEGIN PGP PUBLIC KEY BLOCK-----
++
++mDMEatl+xxYJKwYBBAHaRw8BAQdASzqzxy/5PDMb1MJPZVqoF7d1EspS6oocIMBF
++5Gu945u0VGd0YWN0aXZlMy1tYWlubGluZSBpbWFnZSBzaWduaW5nIDwyMDM5NjM0
++NzErZGl4b25Tb2x1dGlvbnNAdXNlcnMubm9yZXBseS5naXRodWIuY29tPoiTBBMW
++CgA7FiEE0P6FCvAaR4MbbvgIWDFhznh/9bUFAmrZfscCGwMFCwkIBwICIgIGFQoJ
++CAsCBBYCAwECHgcCF4AACgkQWDFhznh/9bXuPAD/Q59ozrKjXsDp89xEjUttRF84
++LWwEICiRupc1dKKSLhwBAJNPwdCkgAsxhOQkd4xvMxiW/Nv18csbKWXjJVBVDl4B
++=2KQE
++-----END PGP PUBLIC KEY BLOCK-----
+diff --git a/mkosi.conf b/mkosi.conf
+index fec2e22..e3385db 100644
+--- a/mkosi.conf
++++ b/mkosi.conf
+@@ -6,7 +6,7 @@ Distribution=nura
+ [Config]
+ # Pass these PMOS_* variables so they are available in sub-images (e.g. initrd)
+ # Pass the CI var so scripts can detect if they are running in gitlab CI
+-PassEnvironment=PMOS_DEVICE PMOS_VARIANT CI
++PassEnvironment=PMOS_DEVICE PMOS_VARIANT CI DURANIUM_EXTRA_PACKAGES
+ Dependencies=
+ 	base
+ 	dev-tools-confext
+diff --git a/mkosi.finalize b/mkosi.finalize
+index 2c46a0f..e42dab0 100755
+--- a/mkosi.finalize
++++ b/mkosi.finalize
+@@ -31,6 +31,11 @@ gpg --no-default-keyring \
+    --keyring "$BUILDROOT"/usr/lib/systemd/import-pubring.pgp \
+    --import pmos-sysupdate-public-key.asc
+ 
++# Device hook (e.g. a downstream device that publishes its own images)
++if [ -x "$SRCDIR/contrib/$PMOS_DEVICE/mkosi.finalize" ]; then
++    "$SRCDIR/contrib/$PMOS_DEVICE/mkosi.finalize"
++fi
++
+ # Generate sysusers.d and tmpfiles.d config for Alpine system users
+ mkdir -p "$BUILDROOT/usr/lib/sysusers.d" "$BUILDROOT/usr/lib/tmpfiles.d"
+ 
+diff --git a/scripts/pmaports.py b/scripts/pmaports.py
+index 08d55b7..0a20f2b 100755
+--- a/scripts/pmaports.py
++++ b/scripts/pmaports.py
+@@ -251,13 +251,17 @@ def resolve(device: str, ui: str, release: str, skip_fetch: bool = False) -> dic
+     if f"{device_pkg}-initramfs" in device_subpkgs:
+         initrd_packages.append(f"{device_pkg}-initramfs")
+ 
++    # Extra packages for this build only (space separated), e.g. a
++    # development layer that release images of the same device leave out.
++    extra = os.environ.get("DURANIUM_EXTRA_PACKAGES", "").split()
++    packages += extra
++
+     # The Duranium USB debug layer (duranium-usb-debug) must also be in the
+     # initrd so pre-switch-root failures are debuggable over USB. It ships a
+-    # "-initramfs" subpackage with just the interface + console. It is a hard
+-    # dependency of the device package (so apk pulls the base part in on its
+-    # own), hence the check against the device's depends, not the explicit
+-    # recommends list.
+-    if "duranium-usb-debug" in device_depends:
++    # "-initramfs" subpackage with just the interface + console. It comes
++    # either as a hard dependency of the device package (so apk pulls the
++    # base part in on its own) or as an extra package of a development build.
++    if "duranium-usb-debug" in device_depends or "duranium-usb-debug" in extra:
+         initrd_packages.append("duranium-usb-debug-initramfs")
+ 
+     packages = list(dict.fromkeys(packages))
+diff --git a/scripts/tests/test_pmaports.py b/scripts/tests/test_pmaports.py
+index 57e67a3..3f2cea6 100644
+--- a/scripts/tests/test_pmaports.py
++++ b/scripts/tests/test_pmaports.py
+@@ -314,3 +314,20 @@ def test_prepare_pmaports_symlink_is_left_alone(tmp_path, monkeypatch):
+ 
+     monkeypatch.setattr(pm.subprocess, "run", no_git)
+     assert pm.prepare_pmaports("edge") == repo / "pmaports"
++
++
++@unittest.mock.patch("pmaports.prepare_pmaports")
++def test_resolve_extra_packages_usb_debug(mock_prepare, tmp_path, monkeypatch):
++    # a development build adds the debug layer that the device leaves out
++    pmaports_dir = make_fake_pmaports(
++        tmp_path, device="testphone", ui="testui",
++        device_subpackages="device-testphone-initramfs:initramfs",
++    )
++    mock_prepare.return_value = pmaports_dir
++    monkeypatch.setenv("DURANIUM_EXTRA_PACKAGES", "duranium-usb-debug duranium-usb-debug-adb")
++
++    result = pm.resolve("testphone", "testui", "edge")
++    assert "duranium-usb-debug" in result["Packages"]
++    assert "duranium-usb-debug-adb" in result["Packages"]
++    assert result["InitrdPackages"] == [
++        "device-testphone-initramfs", "duranium-usb-debug-initramfs"]

@@ -1,0 +1,30 @@
+[Unit]
+Description=Galaxy Tab Active3 USB clocks and MAX77705 data switch
+Documentation=file:///usr/share/doc/device-samsung-gtactive3wifi/README
+DefaultDependencies=no
+# Must run before anything touches the dwc3 / PHY registers. Same order as
+# the bring-up init (gtactive3-mainline initramfs/init.c): gates, hardware
+# I2C (exynos-usi + i2c-exynos5), MAX77705 data switch, then PHY/dwc3.
+Before=systemd-udev-trigger.service duranium-usb-gadget.service usb-signaller.service
+Before=duranium-usb-debug.service initramfs-usb-gadget.service
+After=systemd-modules-load.service
+ConditionKernelCommandLine=!gtactive3wifi.usb_prep=0
+# Done once per boot: /run survives the switch from the initrd to the host,
+# and switching the MAX77705 again could glitch an enumerated link
+ConditionPathExists=!/run/gtactive3wifi/usb-prep.done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gtactive3wifi/usb-prep --gates-only
+ExecStart=-modprobe -a exynos_usi i2c_exynos5
+# "-": a NACK from the MAX77705 must not keep the USB controller from being
+# loaded (the bring-up init also continues), the cable may already be routed.
+ExecStart=-/usr/libexec/gtactive3wifi/usb-prep --switch-only
+ExecStart=modprobe -a phy_exynos5_usbdrd dwc3 dwc3_exynos
+ExecStartPost=/bin/sh -c 'mkdir -p /run/gtactive3wifi && touch /run/gtactive3wifi/usb-prep.done'
+StandardOutput=journal+console
+TimeoutStartSec=60
+
+[Install]
+WantedBy=sysinit.target

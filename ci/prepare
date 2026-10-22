@@ -1,0 +1,53 @@
+#!/bin/bash
+# Set up the build trees in $WORK (default ./work) from upstream plus what
+# we maintain:
+#
+#   $WORK/duranium-build   upstream duranium-build main + pmos/duranium-build/*.patch
+#                          (falls back to the BASE they were made on if
+#                          upstream moved in a way that conflicts)
+#   $WORK/pmaports         upstream pmaports main + pmos/aports/ (only new
+#                          aports: upstream ones are never replaced)
+#
+# Everything else (the whole userspace, the UIs) comes from the
+# postmarketOS binary repositories at image build time.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+P=$PWD
+WORK=${WORK:-$P/work}
+mkdir -p "$WORK"
+note() { echo "::notice::$*"; }
+warn() { echo "::warning::$*"; }
+
+git_id() { git -C "$1" -c user.name="gtactive3-mainline CI" -c user.email=ci@invalid "${@:2}"; }
+
+D=$WORK/duranium-build
+rm -rf "$D"
+git clone -q https://gitlab.postmarketos.org/postmarketOS/duranium-build.git "$D"
+if git_id "$D" am -q --3way "$P"/pmos/duranium-build/*.patch; then
+	note "duranium-build: our $(ls "$P"/pmos/duranium-build/*.patch | wc -l) patches on upstream $(git -C "$D" rev-parse --short origin/main)"
+else
+	git_id "$D" am --abort || true
+	base=$(cat "$P/pmos/duranium-build/BASE")
+	warn "duranium-build: our patches do not apply on upstream $(git -C "$D" rev-parse --short origin/main); building on $base. Rebase build/wt/duranium and run scripts/pmos-export."
+	git -C "$D" checkout -q "$base"
+	git_id "$D" am -q "$P"/pmos/duranium-build/*.patch
+fi
+
+A=$WORK/pmaports
+rm -rf "$A"
+git clone -q --depth 1 https://gitlab.postmarketos.org/postmarketOS/pmaports.git "$A"
+(cd "$P/pmos/aports" && find . -name APKBUILD -printf '%h\n') | sort | while read -r d; do
+	d=${d#./}
+	[ ! -e "$A/$d" ] || { echo "upstream pmaports now has $d: drop ours or rename it" >&2; exit 1; }
+	mkdir -p "$A/$(dirname "$d")"
+	cp -r "$P/pmos/aports/$d" "$A/$d"
+done
+note "pmaports: upstream $(git -C "$A" rev-parse --short HEAD) + $(find "$P/pmos/aports" -name APKBUILD | wc -l) aports of ours"
+# the image build reads which UI/device packages to install from here; it
+# must not try to fetch or reset it (scripts/pmaports.py leaves a symlink alone)
+ln -sfn "$A" "$D/pmaports"
+
+{
+	echo "duranium_build=$(git -C "$D" rev-parse HEAD)"
+	echo "pmaports=$(git -C "$A" rev-parse HEAD)"
+} >> "${GITHUB_OUTPUT:-/dev/null}"

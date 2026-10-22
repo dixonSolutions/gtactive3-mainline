@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 18:05:18 +1100
+Subject: [PATCH 06/25] WIP: uncommitted work left when the workflow agent was
+ stopped
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/README.md | 163 ++++++++++++++++++++----
+ 1 file changed, 137 insertions(+), 26 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/README.md b/contrib/samsung-gtactive3wifi/README.md
+index b2df01b..ec26385 100644
+--- a/contrib/samsung-gtactive3wifi/README.md
++++ b/contrib/samsung-gtactive3wifi/README.md
+@@ -14,15 +14,16 @@ Local pmaports packages (branch `duranium-gtactive3`, under
+ | Package | Where | What |
+ |---|---|---|
+ | `device-samsung-gtactive3wifi` | `device/testing/` | deviceinfo, kernel cmdline, USB-prep one-shot (clock gates + MAX77705 data switch), nested-GPT udev rule, watchdog/suspend/UI tweaks; `-initramfs` subpackage carries the early-boot bits |
+-| `linux-samsung-gtactive3wifi-duranium` | `device/testing/` | prebuilt bridge kernel (src/linux `gtactive3wifi` + `drv/wdt`, bring-up `.config` + `duranium.config`) |
++| `linux-samsung-gtactive3wifi-duranium` | `device/testing/` | prebuilt bridge kernel (src/linux `gtactive3wifi`, which contains `drv/wdt`, bring-up `.config` + `duranium.config`; no built-in initramfs) |
+ | `duranium-usb-debug` | `main/` | the USB debug layer (separate package so release images drop it) |
+ 
+ Duranium repo changes (branch `gtactive3wifi` worktree at `build/wt/duranium`):
+ 
+ - `scripts/pmaports.py`: route a device's `-initramfs` subpackage and
+-  `duranium-usb-debug-initramfs` into the mkosi initrd.
+-- `contrib/samsung-gtactive3wifi/`: `build-kernel.sh`, `build-image.sh`,
+-  `install-to-userdata.sh` and this README.
++  `duranium-usb-debug-initramfs` into the mkosi initrd; leave a symlinked
++  (local) pmaports checkout alone instead of switching/resetting it.
++- `contrib/samsung-gtactive3wifi/`: `build-kernel.sh`, `build-apks.sh`,
++  `build-image.sh`, `install-to-userdata.sh` and this README.
+ 
+ ## UI: phosh
+ 
+@@ -55,11 +56,12 @@ UFS LUN0 (sda) ── stock Android GPT ── ... ── sda31 "userdata" (52 G
+                                                    └── pmOS_root (LUKS/ext4, first boot)
+ ```
+ 
+-- **U-Boot** exposes sda31 as a whole disk via `blkmap` (the shared
+-  `exynos-mobile.env` already maps partition 31 and runs `bootefi bootmgr`;
+-  the gtactive3wifi board env must use that bootcmd, not the fastboot-only
+-  override — coordinate with the u-boot track). It then boots systemd-boot
+-  from the nested ESP and sets `LoaderDevicePartUUID` to the nested ESP GUID.
++- **U-Boot** (chainload track, `build/wt/u-boot` branch `drv/chainload`,
++  `board/samsung/exynos-mobile/gtactive3wifi.env`) maps sda31 as a whole disk
++  with `blkmap` (`ud_part=31`), tries `bootefi bootmgr`, then loads
++  `EFI/BOOT/BOOTAA64.EFI` (systemd-boot) from the nested ESP. Any failure runs
++  `fallback`: a watchdog reset that uniLoader answers with the bring-up Linux.
++  systemd-boot sets `LoaderDevicePartUUID` to the nested ESP GUID.
+ - **In Linux** the kernel parses the outer GPT and registers sda31, but it
+   cannot partition-scan a partition, so the nested GPT is exposed with a
+   partitioned loop device. Two complementary triggers do this in the initrd:
+@@ -71,7 +73,11 @@ UFS LUN0 (sda) ── stock Android GPT ── ... ── sda31 "userdata" (52 G
+     `systemd-dissect --attach` (partition scan on).
+   - our `90-gtactive3wifi-nested-gpt.rules`: also triggers the loop when udev
+     detected a nested GPT on the `userdata` partition
+-    (`ID_PART_GPT_SECTOR_SIZE` set), covering boots without EFI variables.
++    (`ID_PART_GPT_SECTOR_SIZE` set, systemd >= 262 udev-builtin-blkid.c
++    `gpt_boot_disk_needs_loop()`), for boots where U-Boot exposes no EFI
++    variables to Linux. Caveat: gpt-auto root/usr discovery itself still
++    keys on `LoaderDevicePartUUID`; without it the initrd waits for root and
++    the initrd deadline (600 s) reboots to Download mode.
+   Both pull the same `systemd-loop@<dev>.service` instance, so only one loop
+   is created. systemd-gpt-auto / repart / sysupdate then find the
+   `duranium_*` partitions on the loop device.
+@@ -95,30 +101,135 @@ contrib/samsung-gtactive3wifi/build-image.sh            # phosh, edge
+ UI=plasma-mobile contrib/samsung-gtactive3wifi/build-image.sh
+ ```
+ 
+-`build-image.sh` builds the bridge kernel tarball, builds the three local
+-.apks with pmbootstrap into `build/wt/duranium-localpkgs`, points
+-`duranium/pmaports` at the worktree, and runs mkosi with that package
+-directory. Output lands in `mkosi.output/samsung-gtactive3wifi_phosh_edge/`.
++`build-image.sh` builds the bridge kernel tarball (`build-kernel.sh`, from a
++fresh `git archive` of src/linux `gtactive3wifi`), builds the local .apks in
++an arm64 Alpine container (`build-apks.sh`, no pmbootstrap needed) into
++`build/wt/duranium-localpkgs`, symlinks `duranium/pmaports` to the worktree,
++and runs mkosi with that package directory. Output lands in
++`mkosi.output/samsung-gtactive3wifi_phosh_edge/`.
+ 
+-## Install and first boot
++## Install
+ 
+-See `install-to-userdata.sh` and PLAN. Short version: boot the bring-up
+-console, then
++From the bring-up console (S-Boot -> uniLoader -> bring-up Linux):
+ 
+ ```sh
+ contrib/samsung-gtactive3wifi/install-to-userdata.sh \
+-    mkosi.output/samsung-gtactive3wifi_phosh_edge/samsung-gtactive3wifi_phosh_edge_*.raw.zst
++    mkosi.output/samsung-gtactive3wifi_phosh_edge/samsung-gtactive3wifi_phosh_edge_<ver>.raw
+ ```
+ 
+-which streams the image into `/dev/sda31` over USB and verifies the SHA-256,
+-then reboot into U-Boot.
++It refuses anything that is not a 4K-sector GPT image, checks on the device
++that sda31 is `PARTNAME=userdata`, streams the image with the console's
++`put`, drops the page cache and reads exactly the image length back to
++compare SHA-256. Every console access takes `build/tab.lock`. It never
++writes anything but `/dev/sda31`.
+ 
+ ## USB debug layer
+ 
+ `duranium-usb-debug` brings up the fixed-MAC NCM interface
+-(`fe80::57:aff:fe00:1`), an unauthenticated root console on TCP 23, an sshd on
+-22, and a kernel-log stream on 24 — all on the USB link-local address only,
+-present in both the initrd and the booted system, enabled by default and
+-disable-able (`systemctl disable --now duranium-usb-debug.target`, or ship
+-without the package). Security notes in
+-`build/wt/pmaports-duranium/main/duranium-usb-debug/README`.
++(`fe80::57:aff:fe00:1`, VID:PID 1d6b:0104, same as the bring-up console), and
++socket-activated services bound to the gadget interface only: a root shell on
++TCP 23 (busybox `telnetd -i -l /bin/sh`), sshd on 22 (inetd mode, own host
++key, booted system only) and the kernel log on 24. The gadget, the shell and
++the kernel log are also in the initrd. On by default; off with
++`systemctl disable --now duranium-usb-debug.target` (booted system) or
++`duranium.usb_debug=0` on the kernel command line (initrd too). Security
++notes: `build/wt/pmaports-duranium/main/duranium-usb-debug/README`.
++
++The address is the bring-up console's, but the protocol is not: TCP 23 is a
++telnet shell, not the bring-up command console, so `scripts/tab`,
++`tab-put` and `tab-get` do not work against Duranium. Use `nc`/`ncat`
++(telnet option bytes may show up as noise) or ssh.
++
++## Safety net (no silent hangs)
++
++| Failure | What resets the device | Where it lands |
++|---|---|---|
++| U-Boot cannot boot the ESP | `fallback` env: watchdog reset | uniLoader -> bring-up Linux (USB console) |
++| Kernel hangs before userspace | U-Boot leaves the cluster 0 watchdog running (~80 s, `wdt_handover=keep`); the kernel pets it only until systemd opens it, at most `watchdog.open_timeout=120` s | Download mode (U-Boot set INFORM3 = 0x12345671 at entry) |
++| Kernel panic / oops | `CONFIG_PANIC_TIMEOUT=3`, `oops=panic` | Download mode (INFORM3 still download) |
++| initrd waits forever (no root disk, no loop device) | `gtactive3wifi-initrd-deadline.service`: 600 s, then `systemctl reboot download` | Download mode |
++| PID 1 hangs | `RuntimeWatchdogSec=30s` | Download mode |
++| Suspend/resume hang | suspend is disabled (sleep.conf.d, logind.conf.d) | - |
++
++Not a reset: a hang of the booted system while PID 1 keeps running (e.g.
++phosh frozen). That case is reached over the USB debug layer instead.
++
++## Test plan
++
++Prerequisites, in this order (each is its own layer with its own live test):
++
++1. Layer 0 passed: Linux watchdog (`drv/wdt`) and the chainload BOOT image
++   (uniLoader -> U-Boot with the bring-up Linux as watchdog fallback,
++   uniLoader `drv/chainload` + U-Boot `drv/chainload`). In particular the
++   chainload test "U-Boot `fallback` comes back to the bring-up console
++   without touching the device" must have passed: every step below relies
++   on it.
++2. Host build done: `contrib/samsung-gtactive3wifi/build-image.sh` (phosh).
++
++Steps (lead; device steps through `flock build/tab.lock`):
++
++1. HOST, kernel sanity. `grep -x 'CONFIG_INITRAMFS_SOURCE=""' build/wt/duranium-out/.config`
++   and `cat build/wt/duranium-linux/.duranium-commit` equals
++   `git -C src/linux rev-parse gtactive3wifi`. PASS: both match.
++2. HOST, image sanity. In `mkosi.output/samsung-gtactive3wifi_phosh_edge/`:
++   the `.efi` UKI's command line
++   (`objcopy -O binary --only-section=.cmdline <uki>.efi /dev/stdout`)
++   contains `usrhash=`, `maxcpus=4`, `clk_ignore_unused`,
++   `watchdog.open_timeout=120`; the `.raw` disk image has `EFI PART` at byte
++   4096 (`dd if=<img>.raw bs=4096 skip=1 count=1 | head -c 8`). PASS: all
++   present. FAIL: stop, nothing touched the device.
++3. DEVICE (bring-up console, read-only): `scripts/tab "cat /proc/version"`,
++   `scripts/tab "cat /sys/class/block/sda31/uevent"` (expect
++   `PARTNAME=userdata`, `PARTN=31`), `scripts/tab "cat /sys/class/block/sda31/size"`
++   (108322816 on this unit = 55.4 GB). PASS: as expected.
++4. DEVICE, install: `contrib/samsung-gtactive3wifi/install-to-userdata.sh <img>.raw`.
++   Writes only sda31 (userdata, wipe approved in PLAN.md); BOOT and every
++   other partition are untouched, so the device still boots the bring-up
++   console afterwards. PASS: `Verify OK`. FAIL: rerun; nothing to recover.
++5. DEVICE, first Duranium boot: flash the chainload BOOT image (lead's normal
++   flow), let it boot. Expected: U-Boot screen messages "userdata as a disk",
++   systemd-boot, then the kernel. On the host: `ip -6 neigh`/`ping -6
++   fe80::57:aff:fe00:1%<ncm-if>` answers within ~60 s of the kernel start
++   (initrd gadget). Recovery is automatic (table above): U-Boot failure ->
++   bring-up console; kernel/initrd failure -> Download mode within
++   max(120 s, 600 s) -> auto-reflash.
++6. DEVICE, initrd checks over USB (while the initrd waits, i.e. before
++   switch-root; if it already switched root, run the same commands in the
++   booted system, where they show the same loop device):
++   `nc fe80::57:aff:fe00:1%<ncm-if> 24 > duranium-klog.txt` (kernel log,
++   keep it running), and in `nc ... 23`:
++   `cat /proc/cmdline; cat /proc/partitions; ls /dev/loop*;
++   udevadm info /dev/sda31 | grep -E 'ID_PART_GPT|NEEDS_LOOP';
++   systemctl status 'systemd-loop@*' --no-pager; systemctl list-jobs --no-pager`.
++   PASS: a loop device with partitions (loop0p1..p3), `ID_PART_GPT_SECTOR_SIZE=4096`
++   on sda31, and the jobs move on past `dev-gpt\x2dauto\x2droot` / usr
++   verity. This is the highest-risk step (nested GPT + LoaderDevicePartUUID).
++7. DEVICE, first-boot provisioning: systemd-repart creates the B slot and
++   the LUKS root (empty key) in the initrd and grows it into sda31. In the
++   booted system (`nc ... 23`): `lsblk; cat /proc/cmdline;
++   systemctl status systemd-repart --no-pager; findmnt /; findmnt /usr`.
++   PASS: `/` on a dm-crypt device, `/usr` on dm-verity (erofs).
++8. DEVICE, first-boot user: f0rmz needs touch input, which is not there yet.
++   If touch does not work, over `nc ... 23`:
++   `useradd --create-home --user-group --shell /bin/sh --groups audio,input,netdev,plugdev,video,wheel,render user;
++   echo user:<pw> | chpasswd; echo user > /etc/default_user; systemctl daemon-reload;
++   pkill f0rmz; sleep 2; systemctl reset-failed; systemctl start display-manager.service`.
++9. DEVICE, GUI: `pgrep -a phoc; pgrep -a phosh; journalctl -b -u display-manager --no-pager | tail -50;
++   mount -t debugfs none /sys/kernel/debug; cat /sys/kernel/debug/dri/0/framebuffer`.
++   PASS: phoc and phosh running, a 1200x1920 framebuffer allocated by phoc.
++   Keys via gpio-keys: `cat /proc/bus/input/devices`. Touch only if the touch
++   track's driver is in this kernel.
++10. DEVICE, USB debug layer: from the host, (a) `nc ... 24 | head` shows the
++    kernel log; (b) `nc ... 23` gives a root shell; (c) after adding a key
++    (`mkdir -p /root/.ssh; echo '<pubkey>' >> /root/.ssh/authorized_keys`
++    over port 23), `ssh root@fe80::57:aff:fe00:1%<ncm-if> true`. Disable test,
++    with an automatic way back (never reboot with the layer disabled: the
++    booted system would keep the gadget but answer on no port):
++    `systemd-run --on-active=120 systemctl enable --now duranium-usb-debug.target`,
++    then `systemctl disable --now duranium-usb-debug.target`. Expected: the
++    NCM link disappears from the host; `ls /etc/systemd/system/*.wants/ | grep duranium`
++    can be checked after it comes back. After ~120 s the link and ports
++    22/23/24 return. PASS: gone while disabled, back after the timer.
++11. DEVICE, recovery check (last): `echo c > /proc/sysrq-trigger` over port 23.
++    Expected: panic, reset after 3 s into Download mode (INFORM3 set by
++    U-Boot), auto-reflash. PASS: device back without touching it.

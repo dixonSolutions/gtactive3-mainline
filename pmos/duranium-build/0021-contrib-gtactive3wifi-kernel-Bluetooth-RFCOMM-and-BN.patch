@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 08:21:35 +1100
+Subject: [PATCH 21/25] contrib: gtactive3wifi: kernel: Bluetooth RFCOMM and
+ BNEP
+
+bluetoothd could not start any RFCOMM profile (headsets, hands-free,
+file transfer): socket(STREAM, RFCOMM) returned EPROTONOSUPPORT.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/gtactive3wifi.config               | 25 +++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index 1b12b3f..cc508fe 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -262,3 +262,28 @@ CONFIG_CMA=y
+ CONFIG_DMA_CMA=y
+ CONFIG_CMA_SIZE_MBYTES=128
+ CONFIG_DRM_EXYNOS9810_DPU=y
++
++# CPU DVFS through ACPM (cpufreq-dt on the ACPM DVFS clocks)
++CONFIG_CPU_FREQ=y
++CONFIG_CPU_FREQ_STAT=y
++CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
++CONFIG_CPU_FREQ_GOV_PERFORMANCE=y
++CONFIG_CPU_FREQ_GOV_POWERSAVE=y
++CONFIG_CPU_FREQ_GOV_USERSPACE=y
++CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
++CONFIG_CPUFREQ_DT=m
++CONFIG_CPUFREQ_DT_PLATDEV=y
++
++# GPU DVFS (panfrost devfreq on the ACPM G3D clock)
++CONFIG_PM_DEVFREQ=y
++CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND=y
++CONFIG_DEVFREQ_GOV_PERFORMANCE=y
++
++# Bluetooth profiles beyond HID: RFCOMM (headsets/hands-free, file transfer,
++# phones; bluetoothd failed with "socket(STREAM, RFCOMM): Protocol not
++# supported") and BNEP (Bluetooth networking)
++CONFIG_BT_RFCOMM=m
++CONFIG_BT_RFCOMM_TTY=y
++CONFIG_BT_BNEP=m
++CONFIG_BT_BNEP_MC_FILTER=y
++CONFIG_BT_BNEP_PROTO_FILTER=y

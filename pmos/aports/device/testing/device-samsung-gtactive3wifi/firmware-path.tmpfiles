@@ -1,0 +1,11 @@
+# Vendor firmware lives on the root partition, not in /usr: Samsung's
+# firmware cannot be redistributed, so the published images carry none, and
+# what the owner installs from their own stock firmware (gtactive3-mainline
+# scripts/firmware-to-tablet) survives every A/B /usr update.
+#
+# Sorts before postmarketos-duranium's 00-duranium-firmware-path.conf, so
+# this line wins (the kernel takes one extra search path; /usr/lib/firmware
+# is still searched after it). kernel-cmdline.conf sets the same path for
+# drivers that probe before this runs.
+d /var/lib/firmware 0755 root root -
+w /sys/module/firmware_class/parameters/path - - - - /var/lib/firmware

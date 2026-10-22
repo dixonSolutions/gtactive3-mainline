@@ -1,0 +1,4 @@
+# The adb function re-enumerates the debug gadget (unbind, add FunctionFS,
+# rebind) and adbd does not come up yet on the SM-T570: off by default
+# until it works. "systemctl enable --now duranium-debug-adb" to try it.
+disable duranium-debug-adb.service

@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 02:02:37 +1100
+Subject: [PATCH 19/25] contrib: gtactive3wifi: build-apks: 12 jobs by default
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh               | 2 +-
+ contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config | 7 +++++++
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index b3a8e96..27cbf84 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -30,7 +30,7 @@ DISTFILES=${DISTFILES:-$ROOT/build/wt/duranium-distfiles}
+ FWDIR=${GTA3_FIRMWARE_DIR:-$ROOT/firmware/extracted/linux-firmware/lib/firmware}
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+-JOBS=${JOBS:-6}
++JOBS=${JOBS:-12}
+ 
+ if [ $# -eq 0 ]; then
+ 	set -- main/duranium-usb-debug \
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index 1ae3962..1b12b3f 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -255,3 +255,10 @@ CONFIG_NO_HZ_IDLE=y
+ # for writing (to populate it); without this the mount fails with EBUSY
+ # and the first Duranium boot cannot create its root partition.
+ CONFIG_BLK_DEV_WRITE_MOUNTED=y
++
++# Display: Exynos9810 DPU takeover KMS driver (GPU scanout through Mesa
++# kmsro), with a CMA pool for contiguous scanout buffers below 4 GiB
++CONFIG_CMA=y
++CONFIG_DMA_CMA=y
++CONFIG_CMA_SIZE_MBYTES=128
++CONFIG_DRM_EXYNOS9810_DPU=y

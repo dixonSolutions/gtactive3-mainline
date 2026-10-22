@@ -1,0 +1,13 @@
+[Unit]
+Description=SM-T570 bring-up debug console (per connection)
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+# Unauthenticated root access to registers and block devices, reachable only
+# over the USB debug interface: development images only.
+ExecStart=-/usr/libexec/gtactive3wifi/gta3-console
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
