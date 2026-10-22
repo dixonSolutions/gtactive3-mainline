@@ -13,3 +13,5 @@
 # runtime logs
 /logs/
 __pycache__/
+# Claude Code runtime state
+/.claude/*.lock

@@ -1,0 +1,96 @@
+#!/bin/bash
+# Get the user's attention when a test needs their hands (a button press, a
+# finger on the screen, plugging a cable). Desktop notification + a sound at
+# full volume (the previous volume and mute state are restored afterwards)
+# + the request read out loud, and a line in logs/user-requests.log.
+#
+#   scripts/notify-user [options] TITLE [WHAT-TO-DO]
+#     --info          softer: normal urgency, one chime, no speech
+#     --wait SECS     keep the notification up with a "Done" button and wait
+#                     for it; the sound repeats every 90 s while waiting.
+#                     Prints "done" or "timeout" and exits 0 / 2.
+#     --quiet         notification only, no sound (for follow-ups)
+#     --dry-run       print what would happen
+#
+# Agents also call the PushNotification tool so the request reaches the
+# user's phone; this script covers the laptop.
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+
+urgent=1 wait=0 sound=1 dry=0
+while [ $# -gt 0 ]; do
+	case $1 in
+		--info) urgent=0; shift ;;
+		--wait) wait=$2; shift 2 ;;
+		--quiet) sound=0; shift ;;
+		--dry-run) dry=1; shift ;;
+		--) shift; break ;;
+		-*) echo "notify-user: unknown option $1" >&2; exit 1 ;;
+		*) break ;;
+	esac
+done
+[ $# -ge 1 ] || { echo "usage: notify-user [--info] [--wait SECS] [--quiet] TITLE [WHAT-TO-DO]" >&2; exit 1; }
+title=$1 body=${2:-}
+
+# Agents may run without the desktop session's environment
+uid=$(id -u)
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}
+export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
+
+run() { if [ $dry = 1 ]; then echo "+ $*"; else "$@"; fi; }
+
+mkdir -p "$P/logs"
+printf '%s %s: %s\n' "$(date '+%F %T')" "$title" "$body" >> "$P/logs/user-requests.log"
+
+SINK=@DEFAULT_AUDIO_SINK@
+SOUNDS=/usr/share/sounds/freedesktop/stereo
+if [ $urgent = 1 ]; then chime=$SOUNDS/alarm-clock-elapsed.oga; else chime=$SOUNDS/complete.oga; fi
+
+# Play the chime (and say the request) at 100 %, then put the volume back
+alert() {
+	[ $sound = 1 ] || return 0
+	local vol muted=0
+	vol=$(wpctl get-volume "$SINK" 2>/dev/null) || vol=
+	case $vol in *MUTED*) muted=1 ;; esac
+	vol=$(echo "$vol" | awk '{print $2}')
+	run wpctl set-mute "$SINK" 0 || true
+	run wpctl set-volume "$SINK" 1.0 || true
+	run pw-play "$chime" 2>/dev/null || run paplay "$chime" 2>/dev/null || true
+	if [ $urgent = 1 ] && command -v spd-say >/dev/null; then
+		run spd-say --wait -r -10 "Tablet test needs you. $title. $body" 2>/dev/null || true
+	fi
+	if [ -n "$vol" ]; then run wpctl set-volume "$SINK" "$vol" || true; fi
+	if [ $muted = 1 ]; then run wpctl set-mute "$SINK" 1 || true; fi
+}
+
+args=(-a "SM-T570 test agent" -i input-tablet)
+if [ $urgent = 1 ]; then args+=(-u critical); else args+=(-u normal); fi
+
+if [ "$wait" = 0 ]; then
+	run notify-send "${args[@]}" "$title" "$body"
+	alert
+	exit 0
+fi
+
+# Waiting: the notification's "Done" button answers; the chime repeats
+fifo=$(mktemp -u)
+mkfifo "$fifo"
+trap 'rm -f "$fifo"; kill "${npid:-}" 2>/dev/null || true' EXIT
+run notify-send "${args[@]}" -A done=Done "$title" "$body" > "$fifo" &
+npid=$!
+exec 3< "$fifo"
+alert
+deadline=$((SECONDS + wait))
+next=$((SECONDS + 90))
+while [ $SECONDS -lt $deadline ]; do
+	if read -r -t 5 answer <&3; then
+		[ "$answer" = done ] && { echo done; exit 0; }
+	fi
+	if ! kill -0 "$npid" 2>/dev/null; then
+		# Closed without the button (or no notification daemon): treat as seen
+		echo done; exit 0
+	fi
+	if [ $SECONDS -ge $next ]; then alert; next=$((SECONDS + 90)); fi
+done
+echo timeout
+exit 2
