@@ -53,7 +53,21 @@ listening (speaker, camera image on screen, LEDs, vibration).
   result yourself (evdev events, sysfs, console) instead of relying on
   "done".
 
-## 2. Know the tablet's state
+## 2. Unattended reboots: passphrase and login
+
+The user stores test secrets in ClaudeKeys (list them with the claudekeys
+tool; e.g. DISK_ENCRYPT_AND_USER_PASSWD for the disk). Pass one only as
+`GTA3_PASSWORD=<its ClaudeKeys placeholder>` on a command line of its own
+(the ClaudeKeys guard refuses commands that also echo/cat/tee):
+- `scripts/tab-unlock` answers the initrd's disk passphrase prompt over the
+  console (waits for it, reports accepted/rejected).
+- `scripts/tab-login [USER]` logs in at GDM or phrog (virtual keyboard).
+- `scripts/tab-checkpw` checks a secret against the LUKS root and the
+  account without using it (tells a wrong secret from a broken login).
+If no working secret exists for a step, batch it into the next request to
+the user instead of guessing.
+
+## 2b. Know the tablet's state
 
 `./setup.sh status` (installer suite) reports: nothing on USB / Android
 (adb) / Download mode (04e8:685d) / bring-up Linux (console TCP 23,
@@ -92,7 +106,13 @@ B. **Images**: build what the TESTPLAN lists as "under test" (kernel
 C. **Deliver** to the tablet only with `scripts/duranium-update` (A/B,
    boot counting) or `./setup.sh update --test` (same, `~test` version that
    the next remote update replaces). Never install-to-userdata on the
-   user's tablet.
+   user's tablet. Version scheme: CI publishes `YYMMDDNN`; a local test
+   build must be BUILT as `<newest published + 1>~test<N>`
+   (`build/wt/duranium/mkosi.version`), never a plain number (it would
+   block CI updates) and never renamed after the build. Published release
+   files: `zstd -d` the usr/verity `.raw.zst` next to the `.efi`, then
+   `OUT=<dir> UI=<ui> EXTENSIONS="" scripts/duranium-update <ver>`.
+   Before the first CI image on a tablet: `scripts/firmware-to-tablet`.
 D. **Boot + baseline**: `scripts/duranium-check $R/shots/boot.png`, failed
    units, journal errors, Phosh running, screenshot looked at.
 E. **Drivers**, one block at a time, in the TESTPLAN order (each case says
