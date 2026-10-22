@@ -84,11 +84,11 @@ deadline=$((SECONDS + wait))
 next=$((SECONDS + 90))
 while [ $SECONDS -lt $deadline ]; do
 	if read -r -t 5 answer <&3; then
-		[ "$answer" = done ] && { echo done; exit 0; }
+		[ "$answer" = "done" ] && { echo "done"; exit 0; }
 	fi
 	if ! kill -0 "$npid" 2>/dev/null; then
 		# Closed without the button (or no notification daemon): treat as seen
-		echo done; exit 0
+		echo "done"; exit 0
 	fi
 	if [ $SECONDS -ge $next ]; then alert; next=$((SECONDS + 90)); fi
 done

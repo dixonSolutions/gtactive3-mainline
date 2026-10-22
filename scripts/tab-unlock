@@ -1,0 +1,56 @@
+#!/bin/bash
+# Answer the tablet's disk passphrase prompt over the USB debug console, so
+# unattended tests can reboot a dev image without a human at the screen.
+# The passphrase comes on stdin (never as an argument or in the
+# environment), goes to tmpfs in the initrd and is deleted right after use:
+#
+#   printf '%s' "$PASSPHRASE" | scripts/tab-unlock [TIMEOUT-SECONDS]
+#
+# Waits (default 600 s) for the console and a pending systemd password
+# request (/run/systemd/ask-password/ask.*), answers it with
+# systemd-reply-password and waits for the request to go away.
+# Exit status: 0 answered and accepted, 1 no request in time, 2 rejected.
+set -euo pipefail
+P=$(cd "$(dirname "$0")/.." && pwd)
+timeout=${1:-600}
+IFS= read -r -d '' pw || true
+[ -n "$pw" ] || { echo "tab-unlock: no passphrase on stdin" >&2; exit 1; }
+
+t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@" 2>/dev/null | tr -d '\r'; }
+
+ask=
+deadline=$((SECONDS + timeout))
+while [ $SECONDS -lt $deadline ]; do
+	ask=$(t "ls /run/systemd/ask-password" | grep -m1 '^ask\.' || true)
+	[ -n "$ask" ] && break
+	sleep 3
+done
+[ -n "$ask" ] || { echo "tab-unlock: no password request within $timeout s" >&2; exit 1; }
+
+sock=$(t "cat /run/systemd/ask-password/$ask" | sed -n 's/^Socket=//p')
+[ -n "$sock" ] || { echo "tab-unlock: $ask names no socket" >&2; exit 1; }
+echo "tab-unlock: answering $ask ($(t "cat /run/systemd/ask-password/$ask" | sed -n 's/^Message=//p'))"
+
+# the passphrase travels only through a pipe on this side
+flock "$P/build/tab.lock" "$P/scripts/tab-put" <(printf '%s' "$pw") /run/gta3-unlock.pw >/dev/null
+unset pw
+script=$(mktemp)
+trap 'rm -f "$script"' EXIT
+cat > "$script" <<EOF
+/usr/lib/systemd/systemd-reply-password 1 '$sock' < /run/gta3-unlock.pw
+rc=\$?
+rm -f /run/gta3-unlock.pw
+exit \$rc
+EOF
+flock "$P/build/tab.lock" "$P/scripts/tab-put" "$script" /run/gta3-unlock.sh >/dev/null
+t "run /bin/sh /run/gta3-unlock.sh" >/dev/null || true
+
+# Accepted: the request disappears. Rejected: systemd asks again (a new ask.*)
+for _ in $(seq 1 20); do
+	sleep 3
+	now=$(t "ls /run/systemd/ask-password" | grep -m1 '^ask\.' || true)
+	if [ -z "$now" ]; then echo "tab-unlock: accepted"; exit 0; fi
+	if [ "$now" != "$ask" ]; then echo "tab-unlock: rejected (asked again)" >&2; exit 2; fi
+done
+echo "tab-unlock: the request is still pending" >&2
+exit 2
