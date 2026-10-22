@@ -128,6 +128,37 @@ the PLL stayed at 1053 MHz, because requests went to ACPM channel 5.
   net -6 mA (gauge, 20 s average). Duranium (coordinator): 214 mA screen
   on, 184 mA blanked.
 
+### C2 root cause found (2026-10-23) and the fix (branch drv/c2fix)
+
+- **The C2 hang is a suspend-context hash collision, not the wake handshake.**
+  Mainline `smp_build_mpidr_hash()` builds the hash shifts/mask from
+  `cpu_logical_map()` (the DT `reg`: A55 = 0,1,2,3) but `sleep.S` hashes the
+  **live** MPIDR_EL1, and on this MT SoC the A55 cores read 0x000/0x100/0x200/
+  0x300 (core id at affinity level 1, not 0). The DT-derived mask is 0x103, so
+  the real MPIDRs fold onto two slots (0x000+0x200, 0x100+0x300): two cores in
+  C2 at once overwrite each other's `sleep_save_stash` context and never
+  resume -> the 26102210 hang, and the "cores in C2 never answer IPIs" we saw.
+  Confirmed read-only: DT reg 0-3 vs live "Booted secondary processor
+  0x0000000{1,2,3}00".
+- Fix (Samsung does the same): when the MPIDR MT bit is set, shift the live
+  MPIDR down one affinity level before hashing, in both `__cpu_suspend_enter`
+  and `_cpu_resume`. `arm64: sleep: drop an affinity level for MT MPIDRs`.
+- `drv/c2fix` (from cand/1024, builds warning-free, not yet on-device):
+  1. the sleep.S hash fix (above) - the actual C2 fix, also a latent fix for
+     any multi-core PSCI cpu_suspend;
+  2. `soc: samsung: exynos-pmu`: program the Exynos9810 CPU/NONCPU
+     MEMORY_*_OPTION retention bits + cluster1 NONCPU QCH byte (Samsung's
+     pmucal lpm-init subset; mainline omitted them). Inert until a core
+     actually powers down;
+  3. C2 DT states re-enabled but **gated off by default** behind the
+     `exynos9810_c2=` kernel parameter (dt_idle_states.c): C2 registers
+     DISABLED_BY_USER so the governor never picks it, yet it is visible and a
+     single core can be enabled at runtime
+     (`/sys/devices/system/cpu/cpuN/cpuidle/stateN/disable`). Boot
+     `exynos9810_c2=1` to enable all. Default boot is unchanged / safe.
+- The MCT broadcast timer (drv/mct) is a separate, later need (all four A55s
+  in C2 at once); it is not required to prove per-core C2.
+
 ## Night Light (2026-10-22, 26102205, measured)
 
 - The window scans out from IDMA_VGRF (moved at probe) without problems.
