@@ -7,9 +7,15 @@
 # version's update artifacts (UKI, usr + verity, extensions) and the full
 # disk image, then a new SHA256SUMS listing this version and the newest
 # older one (KEEP=2 in total, like postmarketOS), signed with the project's
-# key (SHA256SUMS.gpg, what sysupdate checks), and deletes what fell out.
-# New files go up before the manifest that names them, old ones are deleted
-# only after the manifest stopped naming them.
+# key (SHA256SUMS.gpg, what systemd-pull fetches next to SHA256SUMS), and
+# deletes every older version's files.
+#
+# Order matters for tablets that are updating right now: new files go up
+# before the manifest that names them, and a version's files are deleted
+# only after the manifest stopped naming them; the previous version always
+# stays complete, so a download that started from the old manifest finishes.
+# Between replacing SHA256SUMS and SHA256SUMS.gpg (a second or two) a check
+# fails its signature check and is simply retried later.
 #
 # Needs: GH_TOKEN, GITHUB_REPOSITORY, a GNUPGHOME holding the signing key,
 # NOTES (release notes body; must contain the "Fingerprint:" line).
@@ -18,15 +24,23 @@ TAG=$1 DIR=$2 VERSION=$3 PRE=${4:-}
 KEEP=${KEEP:-2}
 REPO=${GITHUB_REPOSITORY:?}
 HERE=$(cd "$(dirname "$0")" && pwd)
-PUB=$HERE/../pmos/sysupdate-public-key.asc
 PREFIX=$TAG
 PREFIX=${PREFIX%-dev}
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
+# Published versions only ever grow and are plain YYMMDDNN: "~" versions are
+# local test builds (docs/RELEASES.md), which every published one replaces.
+[[ $VERSION =~ ^[0-9]{8}$ ]] || { echo "refusing to publish version '$VERSION'" >&2; exit 1; }
+gpg --dearmor < "$HERE/../pmos/sysupdate-public-key.asc" > "$W/ring.gpg"
+verify() { gpgv --keyring "$W/ring.gpg" "$1.gpg" "$1" 2>&1; }
+
 cd "$DIR"
-mapfile -t files < <(ls "${PREFIX}_${VERSION}".*.raw.zst "${PREFIX}_${VERSION}.raw.zst" \
-	"${PREFIX}_${VERSION}.efi" 2>/dev/null | grep -v '\.esp\.' | sort -u)
+files=()
+for f in "${PREFIX}_${VERSION}".*.raw.zst "${PREFIX}_${VERSION}.raw.zst" "${PREFIX}_${VERSION}.efi"; do
+	case $f in *.esp.*) continue ;; esac
+	[ -f "$f" ] && files+=("$f")
+done
 printf '%s\n' "${files[@]}" | grep -q '\.efi$' || { echo "no UKI for $VERSION in $DIR" >&2; exit 1; }
 printf '%s\n' "${files[@]}" | grep -q '\.usr-arm64\.[0-9a-f]*\.raw\.zst$' || { echo "no usr image" >&2; exit 1; }
 printf '%s\n' "${files[@]}" | grep -q '\.usr-arm64-verity\.[0-9a-f]*\.raw\.zst$' || { echo "no verity image" >&2; exit 1; }
@@ -39,39 +53,60 @@ if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
 	gh release create "$TAG" -R "$REPO" --target "${GITHUB_SHA:-main}" \
 		--title "$TAG" --notes "$NOTES" ${PRE:+--prerelease} --latest=false
 fi
+assets() { gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name'; }
 
 # the current manifest, if any, must carry our signature
 : > "$W/old"
 if gh release download "$TAG" -R "$REPO" -D "$W/dl" -p SHA256SUMS -p SHA256SUMS.gpg 2>/dev/null; then
-	gpg --batch --no-default-keyring --keyring "$W/ring.pgp" --import "$PUB" 2>/dev/null
-	gpg --batch --no-default-keyring --keyring "$W/ring.pgp" --verify "$W/dl/SHA256SUMS.gpg" "$W/dl/SHA256SUMS"
+	verify "$W/dl/SHA256SUMS" || { echo "the published SHA256SUMS of $TAG is not signed by our key" >&2; exit 1; }
 	grep -v " ${PREFIX}_${VERSION}\." "$W/dl/SHA256SUMS" > "$W/old" || true
 fi
-mapfile -t olds < <(sed -n "s/.* ${PREFIX}_\([0-9]\{8\}\)\..*/\1/p" "$W/old" | sort -u)
-drop=()
-n=$(( ${#olds[@]} - (KEEP - 1) ))
-if [ "$n" -gt 0 ]; then
-	drop=("${olds[@]:0:$n}")
-	for v in "${drop[@]}"; do sed -i "/ ${PREFIX}_${v}\./d" "$W/old"; done
-fi
+# never go back (a re-run of an old workflow run after a newer one published)
+newer=$(sed -n "s/^[0-9a-f]\{64\}  ${PREFIX}_\([0-9]\{8\}\)\..*/\1/p" "$W/old" | awk -v v="$VERSION" '$1 > v' | head -1)
+[ -z "$newer" ] || { echo "$TAG already has $newer, newer than $VERSION" >&2; exit 1; }
+# keep the newest KEEP-1 older versions that the old manifest names
+mapfile -t keep < <(sed -n "s/^[0-9a-f]\{64\}  ${PREFIX}_\([0-9]\{8\}\)\..*/\1/p" "$W/old" |
+	sort -u | awk -v v="$VERSION" '$1 < v' | tail -n $((KEEP - 1)))
+keep+=("$VERSION")
+: > "$W/SHA256SUMS"
+for v in "${keep[@]}"; do
+	if [ "$v" = "$VERSION" ]; then
+		sha256sum "${files[@]}" >> "$W/SHA256SUMS"
+	else
+		grep "^[0-9a-f]\{64\}  ${PREFIX}_${v}\." "$W/old" >> "$W/SHA256SUMS"
+	fi
+done
+gpg --batch --yes --detach-sign -o "$W/SHA256SUMS.gpg" "$W/SHA256SUMS"
+verify "$W/SHA256SUMS" >/dev/null || { echo "signed with a key that is not pmos/sysupdate-public-key.asc" >&2; exit 1; }
 
-sha256sum "${files[@]}" > "$W/SHA256SUMS"
-cat "$W/old" >> "$W/SHA256SUMS"
-gpg --batch --yes --detach-sign --armor -o "$W/SHA256SUMS.gpg" "$W/SHA256SUMS"
-
-echo "== upload ${#files[@]} files for $VERSION to $TAG"
+echo "== upload ${#files[@]} files for $VERSION to $TAG (keeping ${keep[*]})"
 gh release upload "$TAG" -R "$REPO" --clobber "${files[@]}"
 gh release upload "$TAG" -R "$REPO" --clobber "$W/SHA256SUMS" "$W/SHA256SUMS.gpg"
-for v in "${drop[@]}"; do
-	for a in $(gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name' |
-		grep "^${PREFIX}_${v}\."); do
-		echo "== prune $a"
-		gh release delete-asset "$TAG" "$a" -R "$REPO" -y
-	done
+
+# what a tablet sees: the public manifest, its signature, every file it names
+url=https://github.com/$REPO/releases/download/$TAG
+mkdir "$W/pub"
+for f in SHA256SUMS SHA256SUMS.gpg; do
+	curl -fsSL --retry 5 --retry-all-errors -o "$W/pub/$f" "$url/$f"
+done
+cmp -s "$W/pub/SHA256SUMS" "$W/SHA256SUMS" || { echo "the public SHA256SUMS is not the one just uploaded" >&2; exit 1; }
+verify "$W/pub/SHA256SUMS" >/dev/null || { echo "the public SHA256SUMS does not verify" >&2; exit 1; }
+assets > "$W/assets"
+awk '{ print $2 }' "$W/SHA256SUMS" | while read -r f; do
+	grep -qxF "$f" "$W/assets" || { echo "SHA256SUMS names $f, which is not in the release" >&2; exit 1; }
+done
+
+# then delete every version the manifest no longer names
+grep -E "^${PREFIX}_[0-9]{8}\." "$W/assets" | while read -r a; do
+	v=${a#"${PREFIX}_"}
+	v=${v:0:8}
+	printf '%s\n' "${keep[@]}" | grep -qx "$v" && continue
+	echo "== prune $a"
+	gh release delete-asset "$TAG" "$a" -R "$REPO" -y
 done
 
 # the tag follows the commit that produced the newest images
 git push -f origin "${GITHUB_SHA:-HEAD}:refs/tags/$TAG" 2>/dev/null ||
 	echo "::warning::could not move tag $TAG"
 gh release edit "$TAG" -R "$REPO" --notes "$NOTES" ${PRE:+--prerelease}
-echo "published $TAG $VERSION"
+echo "published $TAG $VERSION (manifest: ${keep[*]})"
