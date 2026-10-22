@@ -36,13 +36,16 @@ section 1).
   leave JVMs, dev servers or other large processes running when idle.
   zram is RAM-backed and is not a safety net; a 16 GB disk swapfile
   (/var/swap/swapfile, priority 10) and vm.min_free_kbytes=131072 are.
+- QEMU test VMs (tests/virt) hold `build/vm.lock` instead (one VM at a time,
+  ≤ 3 GiB, nice 10, start only with ≥ 5.5 GiB available, powered off below 1.5 GiB).
 - Kernel work happens on your own branch in your own worktree
   (`git -C src/linux worktree add ../../build/wt/<name> -b drv/<name> integ`,
   out of tree `O=build/wt/<name>-out`). Only the coordinator merges into
   `integ` / `gtactive3wifi` after an on-device test.
 - **The Duranium image is built by one session at a time** (the shared
   build/wt/duranium worktree, `mkosi.version` and `mkosi.output`). Current
-  image owner: "Duranium image: bake in today's live tablet fixes". Others
+  image owner (since 2026-10-22 evening): "Camera firmware drivers and OS
+  setup", which also runs the user's test campaign. Others
   hand it package/kernel changes instead of building images themselves.
 - The pmaports worktree (build/wt/pmaports-duranium) is shared: commit your
   aport change right away and bump pkgrel; never leave edits uncommitted.
