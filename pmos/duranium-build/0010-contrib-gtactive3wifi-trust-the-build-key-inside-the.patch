@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 19:07:27 +1100
-Subject: [PATCH 10/25] contrib: gtactive3wifi: trust the build key inside the
+Subject: [PATCH] contrib: gtactive3wifi: trust the build key inside the
  package builder
 
 Without -i the freshly generated abuild key is not in /etc/apk/keys and

@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:03:14 +1100
-Subject: [PATCH 03/25] scripts/pmaports.py: never fetch, switch or reset a
- symlinked pmaports
+Subject: [PATCH] scripts/pmaports.py: never fetch, switch or reset a symlinked
+ pmaports
 
 contrib/samsung-gtactive3wifi points duranium/pmaports at a local git
 worktree (branch duranium-gtactive3) with a symlink. Only the mkosi

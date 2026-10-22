@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:59:37 +1100
-Subject: [PATCH 07/25] contrib: gtactive3wifi: GNOME UI only
+Subject: [PATCH] contrib: gtactive3wifi: GNOME UI only
 
 The image for this device uses postmarketos-ui-gnome, with
 postmarketos-base-ui-gnome-duranium pulled in on Duranium. Panfrost now

@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 01:04:12 +1100
-Subject: [PATCH 18/25] contrib: gtactive3wifi: build-image: no metadata
- refresh once cached, pinned DNS, retry
+Subject: [PATCH] contrib: gtactive3wifi: build-image: no metadata refresh once
+ cached, pinned DNS, retry
 
 Builds kept dying on 'DNS: transient error': every mkosi sub-image
 refreshed the repository indexes through podman's forwarder and the

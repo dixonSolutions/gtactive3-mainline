@@ -1,8 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 08:21:35 +1100
-Subject: [PATCH 21/25] contrib: gtactive3wifi: kernel: Bluetooth RFCOMM and
- BNEP
+Subject: [PATCH] contrib: gtactive3wifi: kernel: Bluetooth RFCOMM and BNEP
 
 bluetoothd could not start any RFCOMM profile (headsets, hands-free,
 file transfer): socket(STREAM, RFCOMM) returned EPROTONOSUPPORT.

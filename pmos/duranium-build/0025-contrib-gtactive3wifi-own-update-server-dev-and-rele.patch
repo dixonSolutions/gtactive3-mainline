@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 14:20:57 +1100
-Subject: [PATCH 25/25] contrib: gtactive3wifi: own update server, dev and
- release channels
+Subject: [PATCH] contrib: gtactive3wifi: own update server, dev and release
+ channels
 
 - mkosi.finalize runs contrib/$PMOS_DEVICE/mkosi.finalize when present
 - gtactive3wifi hook: sysupdate transfers fetch from the project's GitHub

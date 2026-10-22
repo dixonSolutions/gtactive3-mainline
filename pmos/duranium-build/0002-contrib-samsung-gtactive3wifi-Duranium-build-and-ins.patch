@@ -1,8 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:52:04 +1100
-Subject: [PATCH 02/25] contrib: samsung-gtactive3wifi Duranium build and
- install
+Subject: [PATCH] contrib: samsung-gtactive3wifi Duranium build and install
 
 Build the bring-up kernel tarball (build-kernel.sh), build the local
 device/kernel/usb-debug apks and run mkosi against the local pmaports

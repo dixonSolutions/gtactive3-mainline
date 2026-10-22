@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 19:01:19 +1100
-Subject: [PATCH 09/25] contrib: gtactive3wifi: override the builder image's
+Subject: [PATCH] contrib: gtactive3wifi: override the builder image's
  entrypoint
 
 docker-postmarketos sets ENTRYPOINT ["/bin/sh", "-c", "sh"], which

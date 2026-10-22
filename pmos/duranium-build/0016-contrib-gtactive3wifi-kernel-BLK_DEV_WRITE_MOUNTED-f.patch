@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 23:13:14 +1100
-Subject: [PATCH 16/25] contrib: gtactive3wifi: kernel: BLK_DEV_WRITE_MOUNTED
- for systemd-repart
+Subject: [PATCH] contrib: gtactive3wifi: kernel: BLK_DEV_WRITE_MOUNTED for
+ systemd-repart
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---

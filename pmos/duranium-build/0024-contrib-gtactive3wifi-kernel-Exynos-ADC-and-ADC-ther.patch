@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 13:05:49 +1100
-Subject: [PATCH 24/25] contrib: gtactive3wifi: kernel: Exynos ADC and ADC
- thermal zones
+Subject: [PATCH] contrib: gtactive3wifi: kernel: Exynos ADC and ADC thermal
+ zones
 
 They were only in the bring-up config, and gen-kernel-config starts from
 the last built bring-up .config, which predates them.

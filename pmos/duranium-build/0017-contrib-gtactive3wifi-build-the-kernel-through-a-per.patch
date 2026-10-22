@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 00:58:13 +1100
-Subject: [PATCH 17/25] contrib: gtactive3wifi: build the kernel through a
- persistent ccache
+Subject: [PATCH] contrib: gtactive3wifi: build the kernel through a persistent
+ ccache
 
 The kernel aport is rebuilt from a fresh snapshot each time (about an
 hour at nice 19). Mount build/ccache into the package builder and build

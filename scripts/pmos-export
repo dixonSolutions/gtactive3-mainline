@@ -114,7 +114,7 @@ PY
 
 # 3. duranium-build: our commits as a series
 mkdir -p "$tmp/duranium-build"
-git -C "$DUR" format-patch -q --no-signature --zero-commit -o "$tmp/duranium-build" "$dbase..$dc"
+git -C "$DUR" format-patch -q -N --no-signature --zero-commit -o "$tmp/duranium-build" "$dbase..$dc"
 echo "$dbase" > "$tmp/duranium-build/BASE"
 
 # 4. nothing proprietary

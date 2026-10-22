@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:52:04 +1100
-Subject: [PATCH 01/25] scripts/pmaports.py: route device and usb-debug
- initramfs into the initrd
+Subject: [PATCH] scripts/pmaports.py: route device and usb-debug initramfs
+ into the initrd
 
 A device package may ship early-boot support (USB prep, nested-GPT udev
 rules, watchdog config) that must be in the mkosi initrd, not only the

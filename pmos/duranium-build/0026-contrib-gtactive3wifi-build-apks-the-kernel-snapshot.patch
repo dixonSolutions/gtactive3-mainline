@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 14:30:05 +1100
+Subject: [PATCH] contrib: gtactive3wifi: build-apks: the kernel snapshot
+ tarball only for the local aport
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-apks.sh | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-apks.sh b/contrib/samsung-gtactive3wifi/build-apks.sh
+index 1a94c00..e118b03 100755
+--- a/contrib/samsung-gtactive3wifi/build-apks.sh
++++ b/contrib/samsung-gtactive3wifi/build-apks.sh
+@@ -68,11 +68,12 @@ for p in "$@"; do
+ 	name=$(basename "$p")
+ 	echo "=== $name"
+ 	rm -rf /b && mkdir -p /b && cp -r "$src" "/b/$name"
+-	# the kernel builds from a local snapshot of the live-tested branch
+-	# (kernel/refresh-aport.sh puts it in the distfiles cache)
+-	case "$name" in
+-	linux-postmarketos-exynos9810) cp /distfiles/linux-gtactive3wifi-*.tar.gz "/b/$name/" ;;
+-	esac
++	# the local kernel aport builds from a snapshot of the live-tested
++	# branch (kernel/refresh-aport.sh puts it in the distfiles cache); the
++	# exported one (gtactive3-mainline pmos/) downloads torvalds/linux
++	if grep -q 'linux-gtactive3wifi-[0-9a-f]*\.tar\.gz' "/b/$name/APKBUILD"; then
++		cp /distfiles/linux-gtactive3wifi-*.tar.gz "/b/$name/"
++	fi
+ 	cd "/b/$name"
+ 	case "$name" in
+ 	firmware) ;;

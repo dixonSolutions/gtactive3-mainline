@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 02:03:15 +1100
-Subject: [PATCH 20/25] contrib: gtactive3wifi: install: verify only what
- dm-verity does not cover
+Subject: [PATCH] contrib: gtactive3wifi: install: verify only what dm-verity
+ does not cover
 
 Read back and compare the GPT and the ESP (bootloader, UKI) by default;
 the verity-protected /usr fails loudly on any bad block at boot.

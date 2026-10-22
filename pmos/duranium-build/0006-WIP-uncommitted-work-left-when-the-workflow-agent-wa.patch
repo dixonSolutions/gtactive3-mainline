@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:05:18 +1100
-Subject: [PATCH 06/25] WIP: uncommitted work left when the workflow agent was
+Subject: [PATCH] WIP: uncommitted work left when the workflow agent was
  stopped
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
