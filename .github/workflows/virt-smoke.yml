@@ -1,0 +1,97 @@
+# Boot smoke test of the published images in QEMU (tests/virt), without the
+# tablet: edk2 -> systemd-boot -> UKI -> first boot (systemd-repart, LUKS
+# root, f0rmz) -> greeter -> login -> failed units / journal errors.
+#
+# Report-only for now: it never blocks publishing, it runs after "images"
+# has published and attaches results.json, the serial log and screenshots to
+# the run. It needs a published kernel built with the virt.config fragment
+# (duranium-build contrib/samsung-gtactive3wifi/kernel/virt.config); with an
+# older kernel the harness reports SKIP.
+#
+# To run it from images.yml instead (one job after "image"):
+#   virt-smoke:
+#     needs: [state, image]
+#     if: always() && needs.image.result == 'success' && github.ref == 'refs/heads/main'
+#     uses: ./.github/workflows/virt-smoke.yml
+#     with:
+#       version: ${{ needs.state.outputs.version }}
+# and drop the workflow_run trigger below.
+name: virt-smoke
+
+on:
+  workflow_run:
+    workflows: [images]
+    types: [completed]
+    branches: [main]
+  workflow_call:
+    inputs:
+      version:
+        description: "Image version (YYMMDDNN); default: the newest published"
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version (YYMMDDNN); default: the newest published"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # an arm64 host: KVM if the runner offers /dev/kvm, else TCG
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        tag: [samsung-gtactive3wifi_phosh_edge-dev, samsung-gtactive3wifi_gnome_edge-dev]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host tools
+        run: |
+          sh tests/virt/setup-host.sh
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+              sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            echo "::notice::KVM available"
+          else
+            echo "::notice::no /dev/kvm: TCG (slow)"
+          fi
+          free -m; nproc; df -h .
+      - name: Fetch the image
+        id: fetch
+        run: |
+          set -eu
+          tag=${{ matrix.tag }}
+          ver=${{ inputs.version }}
+          # a release channel has the version only once the device verified it
+          img=$(sh tests/virt/fetch-release.sh "$tag" "$ver")
+          echo "image=$img" >> "$GITHUB_OUTPUT"
+      - name: Boot and check
+        run: |
+          set +e
+          python3 -I tests/virt/harness.py check "${{ steps.fetch.outputs.image }}" \
+            --kernel none --mem 3072 --boot-timeout 3600
+          rc=$?
+          r=$(ls -d build/virt/runs/*/ | tail -1)
+          python3 -I tests/virt/harness.py report "$r" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" = 77 ]; then echo "::notice::not testable in QEMU (see the summary)"; exit 0; fi
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: virt-${{ matrix.tag }}
+          path: |
+            build/virt/runs/*/results.json
+            build/virt/runs/*/log.txt
+            build/virt/runs/*/serial.log
+            build/virt/runs/*/shots/
+          if-no-files-found: ignore
