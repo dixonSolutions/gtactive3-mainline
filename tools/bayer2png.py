@@ -6,10 +6,14 @@ Turn a raw Bayer frame captured on the tablet (v4l2-ctl --stream-to, cam
 
 usage: bayer2png.py FRAME WIDTH HEIGHT OUT.png [options]
 
-  --format p10|u16|u8   p10: MIPI RAW10 packed, 4 pixels in 5 bytes (V4L2
-                        pRAA/pgAA/pGAA/pBAA, what exynos9810-csis delivers);
-                        u16: 10 bits in 16-bit little endian words;
-                        u8: 8 bits per pixel. Default p10.
+  --format u16|p10|le12|u8
+                        u16: 10 bits LSB-aligned in 16-bit little endian
+                        words (V4L2 RG10/BA10/GB10/BG10, what
+                        exynos9810-csis delivers); p10: MIPI RAW10 packed,
+                        4 pixels in 5 bytes (pRAA/pgAA/...); le12: 12-bit
+                        little endian containers, 2 pixels in 3 bytes (the
+                        CSIS VC DMA with PACK12 set); u8: 8 bits per pixel.
+                        Default u16.
   --order RGGB|GRBG|GBRG|BGGR
                         Bayer order of the first two lines (S5K3L6: GRBG,
                         GC5035: RGGB). Default GRBG.
@@ -43,6 +47,14 @@ def unpack(buf, w, h, fmt, stride):
         for i in range(4):
             px[:, :, i] = (q[:, :, i] << 2) | ((q[:, :, 4] >> (2 * i)) & 3)
         return px.reshape(h, w)
+    if fmt == "le12":
+        if w % 2:
+            sys.exit("le12 needs an even width")
+        q = rows[:, :w * 3 // 2].reshape(h, w // 2, 3).astype(np.uint16)
+        px = np.empty((h, w // 2, 2), np.uint16)
+        px[:, :, 0] = q[:, :, 0] | ((q[:, :, 1] & 0xf) << 8)
+        px[:, :, 1] = (q[:, :, 1] >> 4) | (q[:, :, 2] << 4)
+        return px.reshape(h, w) & 0x3ff
     if fmt == "u16":
         return rows[:, :w * 2].copy().view("<u2").reshape(h, w) & 0x3ff
     return rows[:, :w].astype(np.uint16) << 2
@@ -55,7 +67,7 @@ def main():
     ap.add_argument("width", type=int)
     ap.add_argument("height", type=int)
     ap.add_argument("out")
-    ap.add_argument("--format", choices=("p10", "u16", "u8"), default="p10")
+    ap.add_argument("--format", choices=("u16", "p10", "le12", "u8"), default="u16")
     ap.add_argument("--order", default="GRBG")
     ap.add_argument("--stride", type=int, default=0)
     ap.add_argument("--black", type=float, default=64.0)
@@ -66,7 +78,7 @@ def main():
     if sorted(order) != sorted("RGGB"):
         sys.exit(f"bad Bayer order {a.order}")
     w, h = a.width, a.height
-    minline = {"p10": w * 5 // 4, "u16": w * 2, "u8": w}[a.format]
+    minline = {"p10": w * 5 // 4, "le12": w * 3 // 2, "u16": w * 2, "u8": w}[a.format]
 
     size = os.path.getsize(a.frame)
     stride = a.stride
@@ -80,8 +92,13 @@ def main():
         else:
             stride = size // h
     frames = size // (stride * h)
-    if stride < minline or frames < 1:
+    if stride < minline or size < stride * 2:
         sys.exit(f"{size} bytes is too small for {w}x{h} {a.format} (stride {stride})")
+    if frames < 1:
+        # a truncated capture: show the complete lines it has
+        h = (size // stride) & ~1
+        frames = 1
+        print(f"warning: only {h} complete lines, decoding those")
     if a.index >= frames:
         sys.exit(f"frame {a.index} requested, the file holds {frames}")
     print(f"{size} bytes: {frames} frame(s), stride {stride} (minimum {minline})")

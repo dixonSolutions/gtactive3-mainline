@@ -1,8 +1,27 @@
 # Cameras: S5K3L6 (rear) and GC5035 (front)
 
-State 2026-10-22: drivers written and built (src/linux `drv/cam`), not yet
-run on the tablet. This file is the design summary and the staged on-device
-test plan for the test skill.
+State 2026-10-23: drivers in kernel cand/1023 (r14). On the tablet (Phosh
+26102219~test2) both sensors probe (chip IDs right, LDOs on and off through
+ACPM), SysMMU ISPPRE reads 0x00000004 (bypass), both cameras stream at
+30 fps. The first build stored pixels in 12-bit containers (see "Results");
+drv/cam e8606290d switches to 16-bit words, not yet re-tested. This file is
+the design summary and the staged on-device test plan for the test skill.
+
+## Results 2026-10-23 (Phosh 26102219~test2, cand/1023 = drv/cam 1f359392e)
+
+- Probe: CSIS 05010000 twice; `s5k3l6 5-002d`, `gc5035 6-0037`; video0 =
+  16230000.csis (rear), video1 = 16250000.csis (front).
+- Streaming: rear 2064x1548 at 33.33 ms per frame, front 2576x1932 at 30 fps.
+- DMA layout with DMA_FMT PACK12 set: 12-bit little endian containers, two
+  pixels in three bytes (p0 = b0 | (b1 & 0xf) << 8, p1 = b1 >> 4 | b2 << 4,
+  10-bit values), lines padded to 16 bytes (3104 bytes at 2064 pixels, 3872
+  at 2576): the buffers sized for MIPI RAW10 were overrun (caught by
+  v4l2-grab's 2x guard). Colour bars (test pattern 2) decode to perfect
+  GRBG bars with that layout (`bayer2png.py --format le12 --stride 3104`).
+- Black level: lens in a dark room, mean 64.0 rear / 64.2 front (10-bit):
+  `blackLevel: 4096` confirmed.
+- Captures: logs/test-runs/20261023-chunk2/{bars,rear,front}.raw (truncated
+  at the old sizeimage).
 
 ## Design
 
@@ -19,7 +38,7 @@ GC5035 (I2C_CAM1 0x37) --2 lanes,  897 Mbps--> CSIS2 + VC DMA2 --> /dev/videoY (
 
 | piece | where | notes |
 |---|---|---|
-| CSIS v5.1 + VC DMA | `drivers/media/platform/samsung/exynos9810-csis/` | one media device + video node per receiver; RAW10 packed (V4L2 `pgAA`/`pRAA`), lines padded to 16 bytes; DMA addresses 32-bit, SysMMU ISPPRE left in bypass; ISPPRE bus clocked through ACPM DVFS cam/intcam (690 MHz streaming, 590/630 MHz floor) |
+| CSIS v5.1 + VC DMA | `drivers/media/platform/samsung/exynos9810-csis/` | one media device + video node per receiver; RAW10 LSB-aligned in 16-bit words (V4L2 `BA10`/`RG10`, DMA_FMT PACK12 clear), lines padded to 16 bytes; DMA addresses 32-bit, SysMMU ISPPRE left in bypass; ISPPRE bus clocked through ACPM DVFS cam/intcam (690 MHz streaming, 590/630 MHz floor) |
 | S5K3L6 | `drivers/media/i2c/s5k3l6.c` | Samsung setfile B (stock DT `setfile = "setB"`): 4128x3096 and binned 2064x1548, both 30 fps, GRBG (flips change the order); gain code/32 (1x-16x); test pattern 0-4 |
 | GC5035 | `drivers/media/i2c/gc5035.c` | setfile A: 2576x1932 (897 Mbps) and 1288x966 (448 Mbps), 30 fps, RGGB; total gain in 1/256 (analogue step + digital); OTP defect table on rev WC1XB |
 | camera LDOs | `drivers/mfd/sec-acpm.c`, `drivers/regulator/s2mps11.c` | the S2MPS18 bus stays read-only except LDO28/32/34/39/44/45 control (0x65/0x69/0x6b/0x70/0x75/0x76) |
@@ -159,23 +178,24 @@ Expected output:
 
 ```
 sensor 2064x1548 code 300a                     (MEDIA_BUS_FMT_SGRBG10_1X10)
-video 2064x1548 pgAA, 2592 bytes/line, 4012416 bytes
-4 buffers of 8028160 bytes                      (2x sizeimage, page aligned)
-frame 0: seq 0, 4012416 bytes, written up to 40124xx, +0 us
+video 2064x1548 BA10, 4128 bytes/line, 6390144 bytes
+4 buffers of 12783616 bytes                     (2x sizeimage, page aligned)
+frame 0: seq 0, 6390144 bytes, written up to 63901xx, +0 us
 frame 1: seq 1, ..., +33333 us                  (30 fps)
 ...
-wrote 1 frame(s) of 4012416 bytes to /run/bars.raw
+wrote 1 frame(s) of 6390144 bytes to /run/bars.raw
 ```
 
-Pull and look: `scripts/tab-get /run/bars.raw /tmp/bars.raw 4012416`,
+Pull and look: `scripts/tab-get /run/bars.raw /tmp/bars.raw 6390144`,
 `python3 tools/bayer2png.py /tmp/bars.raw 2064 1548 /tmp/bars.png --order GRBG`,
 then view bars.png (8 vertical colour bars) and bars.raw.png.
 
 | result | meaning |
 |---|---|
 | bars straight and coloured | receiver, PHY, DMA layout, stride and Bayer order right |
-| `written up to` > sizeimage, `DMA OVERRUN` | the DMA stores another layout (16-bit pixels: DMA_FMT PACK12 meaning, or other padding). The tool's buffers are 2x, nothing was overwritten. Note the value; stop before libcamera |
-| bars slanted / sheared | stride wrong: the DMA does not pad to 16 bytes; retry bayer2png with `--stride 2580` |
+| `written up to` > sizeimage, `DMA OVERRUN` | the DMA stores another layout. The tool's buffers are 2x and it keeps an overrun frame whole: `bytes / height` is the real stride; try `bayer2png.py --format le12` (the PACK12 layout). Stop before libcamera |
+| bars slanted / sheared | stride wrong: retry bayer2png with `--stride` = written bytes / height |
+| bars right but very dark (max ~63) or posterized | the 16-bit words are MSB-aligned instead of LSB-aligned: values >> 6; report, the driver would then need a 16-bit format |
 | colours swapped (R/B) | Bayer order: try `--order` RGGB/BGGR/GBRG, then fix the driver's mbus code table |
 | `no frame within 2000 ms after 0 frames`; dmesg `stream: 0 frame starts, ...` | nothing arrives at the receiver: sensor not streaming (check 0x0100 readback in a debug build), lanes/settle, PHY reset not released (`peek 0x16210500` bit 0 must be 1 while streaming) |
 | `N frame starts, 0 DMA starts` | the receiver sees frames but the VC DMA never starts: DMA_DATA_CTRL/OTF path, VC DMA disabled; `peek 0x162b0000` (DMA_CTRL, 0x3 expected), `0x162b0030` (ACT_CTRL) |
@@ -188,11 +208,13 @@ A5. Real image: `run /run/v4l2-grab ctrl /dev/v4l-subdevS 0x009f0903 0`
 (pattern off), point the camera at a lit scene, grab again
 (`/run/rear.raw`), convert, look. Black level: grab with the lens covered,
 bayer2png prints per-channel min/mean: mean near 64 confirms the tuning
-file's `blackLevel: 4096`. Full resolution: `4128x3096` (bytes/line 5168,
-15.99 MB per frame) needs the 256 MB CMA.
+file's `blackLevel: 4096` (measured: 64.0 / 64.2). Full resolution:
+`4128x3096` (bytes/line 8256, 25.6 MB per frame) needs the 256 MB CMA;
+v4l2-grab's 2x guard buffers (4 x 51 MB) may not fit, so test it with
+libcamera.
 
 A6. Front sensor: same with the GC5035 subdev/`16250000.csis` node,
-`2576x1932` (bytes/line 3232) and `1288x966`; `--order RGGB`. The GC5035
+`2576x1932` (bytes/line 5152) and `1288x966`; `--order RGGB`. The GC5035
 driver has no test pattern: use a scene.
 
 A7. `rmmod exynos9810_csis gc5035 s5k3l6`: regulators back to `disabled`
@@ -211,7 +233,7 @@ B1. After booting: `lsmod | grep -E 'csis|s5k3l6|gc5035'` empty; then
 mc_driver_name=qcom-camss` and the A3 checks (`dmesg`, `ls /dev/video*
 /dev/v4l-subdev* /dev/media*`).
 B2. Raw frames with v4l2-grab (or `v4l2-ctl -d /dev/videoV
---set-fmt-video=width=2064,height=1548,pixelformat=pgAA --stream-mmap
+--set-fmt-video=width=2064,height=1548,pixelformat=BA10 --stream-mmap
 --stream-count=5 --stream-to=/tmp/f.raw` after `media-ctl -d /dev/mediaM
 -V '"s5k3l6 N-002d":0 [fmt:SGRBG10_1X10/2064x1548]'`), as A4-A6.
 B3. dma-buf permissions for the desktop user: `getfacl /dev/udmabuf
@@ -265,7 +287,7 @@ convention; fix it in the DT if the image is turned.
 | ISP_CONFIG_CH0 | +0x40 | 0x10ac (dual pixel, data type 0x2b RAW10, VC 0) |
 | ISP_RESOL_CH0 | +0x44 | height << 16 \| width |
 | PHY_CMN_CTRL | +0x704 | ENABLE_CLK (bit 0) + ENABLE_DAT (4:1) = 0x1f rear, 0x07 front |
-| VC DMA0 CTRL / FMT | 0x162b0000 / 0x162b0004 | 0x3 / 0x8 (PACK12, RAW10, 2D, legacy) |
+| VC DMA0 CTRL / FMT | 0x162b0000 / 0x162b0004 | 0x3 / 0x0 (RAW10 in 16-bit words, 2D, legacy) |
 | VC DMA0 RESOL | 0x162b0040 | width |
 | D-PHY slave reset | 0x16210500 | bit 0 (CSIS0) / bit 1 (CSIS2) = 1 while streaming |
 | D-PHY settle (rear) | 0x161628b0 + 0x400 * lane | 59 (1196 Mbps); front 0x161728b0: 44 (897 Mbps) |

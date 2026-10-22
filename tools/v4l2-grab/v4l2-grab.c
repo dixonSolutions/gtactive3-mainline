@@ -43,10 +43,11 @@ static const struct {
 	unsigned int code;
 	unsigned int fourcc;
 } raw10[] = {
-	{ MEDIA_BUS_FMT_SBGGR10_1X10, V4L2_PIX_FMT_SBGGR10P },
-	{ MEDIA_BUS_FMT_SGBRG10_1X10, V4L2_PIX_FMT_SGBRG10P },
-	{ MEDIA_BUS_FMT_SGRBG10_1X10, V4L2_PIX_FMT_SGRBG10P },
-	{ MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_PIX_FMT_SRGGB10P },
+	/* exynos9810-csis: 10 bits LSB-aligned in 16-bit words */
+	{ MEDIA_BUS_FMT_SBGGR10_1X10, V4L2_PIX_FMT_SBGGR10 },
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, V4L2_PIX_FMT_SGBRG10 },
+	{ MEDIA_BUS_FMT_SGRBG10_1X10, V4L2_PIX_FMT_SGRBG10 },
+	{ MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_PIX_FMT_SRGGB10 },
 };
 
 static void fourcc_str(unsigned int f, char *s)
@@ -246,8 +247,11 @@ static int cmd_grab(const char *vdev, const char *sdev, unsigned int w,
 		       got ? ts_us(&b) - last : 0LL);
 		last = ts_us(&b);
 		if (got++ >= skip) {
-			if (write(of, map[i], fmt.fmt.pix.sizeimage) !=
-			    (ssize_t)fmt.fmt.pix.sizeimage) {
+			/* an overrun frame is kept whole, for the analysis */
+			unsigned int n = end > fmt.fmt.pix.sizeimage ?
+					 end : fmt.fmt.pix.sizeimage;
+
+			if (write(of, map[i], n) != (ssize_t)n) {
 				printf("write failed: %d\n", errno);
 				goto stop;
 			}
