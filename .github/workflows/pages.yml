@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - "ci/pages"
+      - "scripts/tablet-remote"
       - "ci/channels"
       - "pmos/sysupdate-public-key.asc"
       - ".github/workflows/pages.yml"
@@ -37,7 +38,10 @@ jobs:
       - name: Generate the site
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 ci/pages site
+        run: |
+          python3 ci/pages site
+          # the tablet's one-line remote-access setup (docs/INSTALL.md)
+          cp scripts/tablet-remote site/remote
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site

@@ -294,3 +294,20 @@ Samsung's firmware and your backups stay on your PC: do not share them.
   packs it with the owner's stock DTB and header exactly as
   `scripts/mkboot-chain.sh` does (byte-identical before the AVB footer).
 - `--image FILE.raw[.zst]` and `--payload DIR` take local builds.
+
+## Remote access without the USB cable (testing)
+
+Dev images keep their debug console, shell and ssh on the USB link only.
+To reach a tablet over Wi-Fi (also behind enterprise networks that isolate
+clients, and next to a VPN on the PC), join it to your Tailscale tailnet:
+log in, connect to Wi-Fi, open Console and run
+
+    wget -qO- dixonsolutions.github.io/gtactive3-mainline/remote | sudo sh
+
+Scan the QR code it shows with a phone signed in to your tailnet and
+approve the tablet; then `tailscale ssh root@gtactive3` from the PC. The
+script (`scripts/tablet-remote`) installs the official static Tailscale
+build (pinned version and sha256) under /var/lib/gtactive3wifi/tailscale
+with a unit in /etc, in userspace networking mode; its header says how to
+remove it. The disk passphrase at boot still has to be typed on the tablet
+(no network before the root is unlocked).

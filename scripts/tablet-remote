@@ -1,0 +1,63 @@
+#!/bin/sh
+# Remote access to a Duranium tablet without the USB cable: the official
+# static Tailscale build joins the owner's tailnet (userspace networking: no
+# kernel module, no routes, works behind enterprise Wi-Fi client isolation
+# and next to a VPN on the other end), with Tailscale SSH for the owner's
+# devices. Run in the tablet's Console app:
+#
+#   wget -qO- dixonsolutions.github.io/gtactive3-mainline/remote | sudo sh
+#
+# It shows a QR code: scan it with a phone signed in to the same tailnet and
+# approve the tablet. Then, from the PC: tailscale ssh root@gtactive3
+# Everything lives in /var/lib/gtactive3wifi/tailscale and a unit in /etc,
+# so it survives reboots and A/B updates; remove both to undo:
+#   systemctl disable --now gta3-tailscaled; rm -r /var/lib/gtactive3wifi/tailscale \
+#     /var/lib/tailscale /etc/systemd/system/gta3-tailscaled.service
+set -eu
+
+V=1.104.2
+SHA=5776aaa901b5ef1916e66be5bb54b9f481cd399c9c28db123a8cab620efa237b
+D=/var/lib/gtactive3wifi/tailscale
+SOCK=/run/tailscale/tailscaled.sock
+UNIT=/etc/systemd/system/gta3-tailscaled.service
+
+[ "$(id -u)" = 0 ] || { echo "run it with sudo" >&2; exit 1; }
+mkdir -p "$D" /var/lib/tailscale
+
+if [ ! -x "$D/tailscaled" ] || ! "$D/tailscaled" --version 2>/dev/null | grep -q "^$V"; then
+	echo "downloading Tailscale $V (arm64)"
+	t=$(mktemp -d)
+	wget -qO "$t/ts.tgz" "https://pkgs.tailscale.com/stable/tailscale_${V}_arm64.tgz"
+	echo "$SHA  $t/ts.tgz" | sha256sum -c -
+	tar -xzf "$t/ts.tgz" -C "$t"
+	mv "$t/tailscale_${V}_arm64/tailscale" "$t/tailscale_${V}_arm64/tailscaled" "$D/"
+	rm -rf "$t"
+fi
+
+cat > "$UNIT" <<EOF
+[Unit]
+Description=Tailscale (remote test access, gtactive3-mainline scripts/tablet-remote)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=$D/tailscaled --tun=userspace-networking --state=/var/lib/tailscale/tailscaled.state --socket=$SOCK
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now gta3-tailscaled.service
+
+i=0
+until [ -S "$SOCK" ]; do
+	i=$((i + 1))
+	[ $i -lt 30 ] || { echo "tailscaled did not start: journalctl -u gta3-tailscaled" >&2; exit 1; }
+	sleep 1
+done
+
+echo "Scan the QR code with your phone and approve the tablet."
+"$D/tailscale" --socket="$SOCK" up --ssh --hostname=gtactive3 --accept-dns=false --qr
+echo "connected as $("$D/tailscale" --socket="$SOCK" ip -4)"
