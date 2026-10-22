@@ -39,6 +39,32 @@ the design summary and the staged on-device test plan for the test skill.
   - rear module EEPROM @58 exposed through at24/nvmem (AF infinity/macro
     DAC codes at 0x3314/0x3320, AWB at 0x3340/0x3364 per the stock DT).
 
+## Results 2026-10-23 morning (Phosh 26102219~test2, drv/cam + af43155fa live-swapped)
+
+Logs: logs/test-runs/20261023-chunk2/cam-cdma-tests.log, cam-matrix-auto.log,
+cam-p10-tests.log. Matrix 0 (the stock value), split 0x01400280:
+
+| stream | format | result |
+|---|---|---|
+| rear 2064x1548, first stream after insmod | 16-bit | 60 frame starts, 0 DMA starts (DMA_OTF_OVERLAP) |
+| rear 2064x1548 colour bars | packed (pgAA, 2592 B/line) | exact bars 64..1023, DMA writes exactly sizeimage |
+| front 2576x1932 | packed (pRAA, 3232 B/line) | frames complete, nothing written (buffer untouched) |
+| rear 2064x1548 after the front | 16-bit | OK |
+| rear 4128x3096 | packed (5168 B/line) | OK |
+| front 1288x966 | 16-bit | frames complete, nothing written |
+
+Earlier the same day (cam-cdma-tests): front 2576 16-bit streams only with
+matrix 14 (CSIS2 on SRAM0_0); rear fails on SRAM1_0 (matrix 14); after the
+front streamed with matrix 14, the rear on matrix 0 gets 1 frame and then
+DMA_OTF_OVERLAP. So SRAM0_0 works, the SRAM1 partition does not behave as
+the GPL comments describe (possibly one 640-entry budget shared by the
+SRAM0 and SRAM1 splits). Next test (not run: the auto-mode permission check
+refused the second remote run): front packed and 1288 16-bit with the stock
+split 0x01400140 and with 0x01300150, matrix 0.
+
+Packed RAW10 (DMA packet mode, af43155fa) is the format to use where a
+line is long: 5/8 of the 16-bit size, and libcamera's SoftISP takes it.
+
 ## Design
 
 Raw Bayer straight from the MIPI receiver to memory, image processing in
