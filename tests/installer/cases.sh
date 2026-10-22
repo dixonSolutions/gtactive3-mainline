@@ -344,8 +344,12 @@ t_install_duranium_dev_image() {
 	# the written image = the release image + the firmware on its ESP
 	dd if="$ROOT/dev/sda31" bs=4096 skip=1 count=1 status=none | head -c 8 | grep -q 'EFI PART' || fail "no GPT"
 	dd if="$ROOT/dev/sda31" of="$CASE/esp.img" bs=1M skip=1 count=32 status=none
-	MTOOLS_SKIP_CHECK=1 mcopy -i "$CASE/esp.img" ::/gtactive3wifi/firmware.tar "$CASE/fw.tar"
-	cmp "$CASE/fw.tar" "$CASE/st/firmware/firmware.tar" || fail "firmware on the ESP differs"
+	MTOOLS_SKIP_CHECK=1 mcopy -i "$CASE/esp.img" ::/gtactive3wifi-firmware.tar.zst "$CASE/fw.tar.zst"
+	MTOOLS_SKIP_CHECK=1 mcopy -i "$CASE/esp.img" ::/gtactive3wifi-firmware.tar.zst.sha256 "$CASE/fw.sha256"
+	cmp "$CASE/fw.tar.zst" "$CASE/st/firmware/gtactive3wifi-firmware.tar.zst" || fail "firmware on the ESP differs"
+	(cd "$CASE" && sed 's/ gtactive3wifi-firmware.tar.zst$/ fw.tar.zst/' fw.sha256 | sha256sum -c --quiet) || fail "ESP .sha256 does not match"
+	zstd -dc "$CASE/fw.tar.zst" | tar -t | grep -qx 'brcm/brcmfmac4375b1-pcie.samsung,gtactive3wifi.bin' || fail "tar layout"
+	zstd -dc "$CASE/fw.tar.zst" | tar -t | grep -q '^\./\|/$' && fail "tar has ./ or directory entries"
 	grep -q 'fw-to-tablet' "$CASE/state.json.calls" || fail "dev image: firmware not pushed"
 	no_violation
 }

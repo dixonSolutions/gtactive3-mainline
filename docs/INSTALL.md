@@ -149,12 +149,15 @@ back and starts Android exactly as it was, with apps and data.
    The first start creates the encrypted root partition. Then choose your
    **disk passphrase** (asked at every start) and your user.
 
-Wi-Fi, Bluetooth and audio need the vendor firmware: Duranium imports it
-from `/boot/gtactive3wifi/firmware.tar` into `/var/lib/firmware` by itself
-(updates never touch it). If Wi-Fi is missing after setup, open a terminal:
+Wi-Fi, Bluetooth and audio need the vendor firmware: the installer puts it
+on the image's boot partition (`/boot/gtactive3wifi-firmware.tar.zst`) and
+Duranium moves it into `/var/lib/firmware` at the first start, before the
+drivers load (updates never touch it). If Wi-Fi is missing after setup, copy
+`~/.local/state/gtactive3-setup/firmware/firmware.tar` to the tablet (USB
+stick) and run in a terminal:
 
 ```sh
-sudo tar -xf /boot/gtactive3wifi/firmware.tar -C /var/lib/firmware --no-same-owner
+sudo tar -xf firmware.tar -C /var/lib/firmware --no-same-owner
 sudo reboot
 ```
 

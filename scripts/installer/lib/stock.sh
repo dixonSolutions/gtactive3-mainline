@@ -188,16 +188,28 @@ fw_stage() {
 	fw_pack "$lf"
 }
 
-# the tar that goes onto the tablet (camera ISP files: no driver yet)
+# The firmware as it goes onto the tablet: a tar of regular files, paths
+# relative to the firmware search path (brcm/..., samsung/gtactive3wifi/...),
+# owner 0:0, sorted, mtime 0 (the same input gives the same bytes). Camera
+# ISP files are left out (no driver yet).
+#   firmware.tar                      ./setup.sh firmware, --export
+#   gtactive3wifi-firmware.tar.zst    + .sha256: what goes onto the image's
+#                                     ESP for the first-boot import
 fw_pack() {
-	local d=$STATE_DIR/firmware
+	local d=$STATE_DIR/firmware z
 	mkdir -p "$d"
-	tar -C "$1" --exclude=samsung/gtactive3wifi/camera --owner=0 --group=0 --sort=name \
-		--mtime=@0 -cf "$d/firmware.tar.part" .
+	(cd "$1" && find . -type f ! -path './samsung/gtactive3wifi/camera/*' | sed 's|^\./||' | LC_ALL=C sort) |
+		tar -C "$1" --owner=0 --group=0 --numeric-owner --mtime=@0 --no-recursion -cf "$d/firmware.tar.part" -T - ||
+		die "could not pack the firmware"
 	mv -f "$d/firmware.tar.part" "$d/firmware.tar"
+	z=$d/gtactive3wifi-firmware.tar.zst
+	zstd -q -19 -f -o "$z" "$d/firmware.tar" || die "could not compress the firmware"
+	(cd "$d" && sha256sum gtactive3wifi-firmware.tar.zst > gtactive3wifi-firmware.tar.zst.sha256)
 	state_set FIRMWARE_TAR "$d/firmware.tar"
 	state_set FIRMWARE_SHA "$(sha256sum "$d/firmware.tar" | cut -c1-64)"
-	ok "vendor firmware ready: $(tar -tf "$d/firmware.tar" | grep -vc '/$') files, $(human_bytes "$(stat -c %s "$d/firmware.tar")") (stays on this PC)"
+	state_set FIRMWARE_ZST "$z"
+	state_set FIRMWARE_ZST_SHA "$(cut -c1-64 "$z.sha256")"
+	ok "vendor firmware ready: $(tar -tf "$d/firmware.tar" | grep -c .) files, $(human_bytes "$(stat -c %s "$z")") compressed (stays on this PC)"
 }
 
 # vendor image -> OUT/vendor/{firmware,etc/...}

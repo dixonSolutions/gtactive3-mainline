@@ -352,8 +352,9 @@ first_boot() {
 		*)
 			info "Release images have no USB console: the installer cannot watch the first start."
 			info "Wi-Fi, Bluetooth and audio need the vendor firmware: Duranium imports it from"
-			info "/boot/$ESP_FW_DIR/firmware.tar by itself; if Wi-Fi is missing after setup, open a terminal:"
-			info "  sudo tar -xf /boot/$ESP_FW_DIR/firmware.tar -C /var/lib/firmware --no-same-owner && sudo reboot"
+			info "/boot/$ESP_FW by itself at the first start. If Wi-Fi is missing after setup,"
+			info "copy $(state_get FIRMWARE_TAR) to the tablet (USB stick) and in a terminal run:"
+			info "  sudo tar -xf firmware.tar -C /var/lib/firmware --no-same-owner && sudo reboot"
 			;;
 	esac
 	fw=$(state_get FIRMWARE_TAR)
@@ -364,9 +365,9 @@ first_boot() {
 # dev images: firmware imported from the ESP? else push it over the console
 firmware_check_installed() {
 	local want have
-	want=$(state_get FIRMWARE_SHA)
+	want=$(state_get FIRMWARE_ZST_SHA)
 	[ -n "$want" ] || return 0
-	have=$(con_cmd "cat /var/lib/firmware/.gtactive3wifi-firmware.sha256" 2>/dev/null | grep -oE '^[0-9a-f]{64}' || true)
+	have=$(con_cmd "cat /var/lib/firmware/.imported" 2>/dev/null | grep -oE '^[0-9a-f]{64}' || true)
 	if [ "$have" = "$want" ]; then
 		ok "vendor firmware is installed (imported from the ESP)"
 		return 0

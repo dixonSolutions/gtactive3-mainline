@@ -10,7 +10,7 @@
 
 FIRST_BOOT_EXTRA=${GTA3_FIRST_BOOT_EXTRA:-$(( (5 << 30) + (400 << 20) + (1 << 30) ))}
 RECOMMENDED_FREE=$((8 << 30))   # for apps and files on the root partition
-ESP_FW_DIR=gtactive3wifi        # /boot/gtactive3wifi/firmware.tar (+ .sha256)
+ESP_FW=gtactive3wifi-firmware.tar.zst   # on the ESP root (+ .sha256)
 
 # gpt_esp IMAGE: "offset size" of the ESP in bytes (4 KiB sectors)
 gpt_esp() {
@@ -77,27 +77,25 @@ image_size_check() {
 	ok "userdata: $(human_bytes "$have"); Duranium uses $(human_bytes "$need"), $(human_bytes $((have - need))) stay free for you"
 }
 
-# image_add_firmware: the vendor firmware goes into the image's ESP, where
-# the device package imports it into /var/lib/firmware on the first boot
-# (and again whenever /var/lib/firmware does not match it). The ESP is not
-# covered by dm-verity and updates only add/remove UKIs there.
+# image_add_firmware: the vendor firmware goes onto the image's ESP (the
+# ESP root: /boot/gtactive3wifi-firmware.tar.zst + .sha256), where the
+# device package's gtactive3wifi-firmware-import.service checks it and
+# moves it into /var/lib/firmware before udev loads the drivers on the
+# first boot (it records the hash in /var/lib/firmware/.imported and
+# deletes the file from the ESP). The ESP is FAT inside the nested GPT:
+# mtools writes into the image file at the ESP's offset before streaming.
 image_add_firmware() {
-	local fw sha t
-	fw=$(state_get FIRMWARE_TAR)
-	if [ ! -s "$fw" ]; then
+	local z
+	z=$(state_get FIRMWARE_ZST)
+	if [ ! -s "$z" ]; then
 		warn "no vendor firmware yet: Wi-Fi, Bluetooth and audio will not work until it is installed"
 		return 0
 	fi
-	dry && { act "copy the vendor firmware into the image's ESP" true; return 0; }
-	sha=$(sha256sum "$fw" | cut -c1-64)
-	t=$(mktemp)
-	printf '%s  firmware.tar\n' "$sha" > "$t"
+	dry && { act "copy the vendor firmware onto the image's ESP" true; return 0; }
 	export MTOOLS_SKIP_CHECK=1
-	mmd -D s -i "$IMG_FILE@@$ESP_OFF" "::/$ESP_FW_DIR" 2>/dev/null || true
-	if ! mcopy -o -i "$IMG_FILE@@$ESP_OFF" "$fw" "::/$ESP_FW_DIR/firmware.tar" ||
-		! mcopy -o -i "$IMG_FILE@@$ESP_OFF" "$t" "::/$ESP_FW_DIR/firmware.tar.sha256"; then
+	if ! mcopy -o -i "$IMG_FILE@@$ESP_OFF" "$z" "::/$ESP_FW" ||
+		! mcopy -o -i "$IMG_FILE@@$ESP_OFF" "$z.sha256" "::/$ESP_FW.sha256"; then
 		die "could not copy the firmware into the image's ESP"
 	fi
-	rm -f "$t"
-	ok "vendor firmware added to the image's ESP (/boot/$ESP_FW_DIR/firmware.tar)"
+	ok "vendor firmware added to the image's ESP (/boot/$ESP_FW)"
 }
