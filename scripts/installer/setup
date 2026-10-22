@@ -1,0 +1,156 @@
+#!/bin/bash
+# shellcheck source-path=SCRIPTDIR
+# gtactive3-mainline installer for the Samsung Galaxy Tab Active3 Wi-Fi
+# (SM-T570): postmarketOS Duranium, from a Linux PC, over USB.
+# Entry point: ./setup.sh (repo root). User guide: docs/INSTALL.md.
+set -euo pipefail
+
+INST=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+GTA3_REPO=$(cd "$INST/../.." && pwd)
+export INST GTA3_REPO
+
+usage() {
+	cat <<'EOF'
+Usage: ./setup.sh [COMMAND] [OPTIONS]
+
+Commands (default: the guided install, which resumes where it stopped):
+  (none) / live         stage 1: checks, bootloader unlock guide, your stock boot
+                        image to this PC, then our Linux (the live environment)
+                        into BOOT. Android stays untouched.
+  backup-android        full byte-exact backup of Android (userdata + metadata,
+                        read-only copy of efs) to this PC, from the live environment
+  restore-android-backup [DIR]   put that backup back, then start Android
+  install               stage 2: erase Android's data and install Duranium
+  undo                  your stock boot image back into BOOT
+  redo [linux|chain]    our Linux / the Duranium boot chain back into BOOT
+  restore-android       erase Duranium, format Android's data, start Android
+  uninstall             = restore-android
+  wipe                  fresh install over an existing Duranium (erases it)
+  update                official A/B update on a Duranium dev tablet
+  update --test [DIR] [VERSION]   a local ~test build as a one-off A/B update
+  update --next-test-version      the version to build a test image with
+  firmware [--export FILE]        (re)install the vendor firmware
+  backup-files          copy Android's files to this PC / the microSD card (adb)
+  status                what is connected, versions, slots
+  doctor                status + the PC checks (tools, USB rules, space)
+
+Options:
+  --stock-ap FILE       your stock firmware's AP_....tar.md5
+  --stock-zip FILE      the full stock firmware zip (decrypted)
+  --stock-boot FILE     only the stock boot.img(.lz4)
+  --download-stock      download the stock firmware from Samsung (tools/fusdl.py)
+  --firmware-dir DIR    vendor firmware already extracted (lib/firmware layout)
+  --stock-recovery      restore-android: also flash the stock recovery image
+  --channel ID          image channel (e.g. samsung-gtactive3wifi_phosh_edge)
+  --version V           image version (default: newest)
+  --image FILE          a local disk image (.raw / .raw.zst) instead of a download
+  --payload DIR|TAR     a local boot-chain payload instead of the published one
+  --serial SERIAL       which adb device, if several are connected
+  --yes                 non-interactive: take the default answers
+  --yes-wipe            non-interactive: also accept typed confirmations
+  --dry-run             show every action, change nothing
+  --verbose             more detail
+  -h, --help
+
+Files: state, logs, stock images, firmware: ~/.local/state/gtactive3-setup
+(GTA3_STATE_DIR); downloads: ~/.cache/gtactive3-setup (GTA3_CACHE_DIR);
+backups: ~/gtactive3-backups (GTA3_BACKUP_DIR).
+EOF
+}
+
+# shellcheck source=lib/ui.sh
+. "$INST/lib/ui.sh"
+# shellcheck source=lib/state.sh
+. "$INST/lib/state.sh"
+# shellcheck source=lib/guard.sh
+. "$INST/lib/guard.sh"
+# shellcheck source=lib/host.sh
+. "$INST/lib/host.sh"
+# shellcheck source=lib/android.sh
+. "$INST/lib/android.sh"
+# shellcheck source=lib/odin.sh
+. "$INST/lib/odin.sh"
+# shellcheck source=lib/console.sh
+. "$INST/lib/console.sh"
+# shellcheck source=lib/stock.sh
+. "$INST/lib/stock.sh"
+# shellcheck source=lib/release.sh
+. "$INST/lib/release.sh"
+# shellcheck source=lib/bootimg.sh
+. "$INST/lib/bootimg.sh"
+# shellcheck source=lib/image.sh
+. "$INST/lib/image.sh"
+# shellcheck source=lib/flow.sh
+. "$INST/lib/flow.sh"
+# shellcheck source=lib/commands.sh
+. "$INST/lib/commands.sh"
+
+CMD=install-default
+ARGS=()
+while [ $# -gt 0 ]; do
+	case $1 in
+		--stock-ap) OPT_STOCK_AP=$(realpath "${2:?}"); shift ;;
+		--stock-zip) OPT_STOCK_ZIP=$(realpath "${2:?}"); shift ;;
+		--stock-boot) OPT_STOCK_BOOT=$(realpath "${2:?}"); shift ;;
+		--download-stock) OPT_DOWNLOAD_STOCK=1 ;;
+		--firmware-dir) OPT_FIRMWARE_DIR=$(realpath "${2:?}"); shift ;;
+		--stock-recovery) OPT_STOCK_RECOVERY=1 ;;
+		--channel) OPT_CHANNEL=${2:?}; shift ;;
+		--version) OPT_VERSION=${2:?}; shift ;;
+		--image) OPT_IMAGE=$(realpath "${2:?}"); shift ;;
+		--payload) OPT_PAYLOAD=$(realpath "${2:?}"); shift ;;
+		--serial) ANDROID_SERIAL=${2:?}; export ANDROID_SERIAL; shift ;;
+		--yes|-y) YES=1 ;;
+		--yes-wipe) YES=1; YES_WIPE=1 ;;
+		--dry-run|-n) DRY_RUN=1 ;;
+		--verbose|-v) VERBOSE=1 ;;
+		-h|--help) usage; exit 0 ;;
+		-*)
+			if [ "$CMD" = update ] || [ "$CMD" = firmware ]; then ARGS+=("$1"); else
+				echo "unknown option: $1 (./setup.sh --help)" >&2; exit 2; fi ;;
+		*)
+			if [ "$CMD" = install-default ]; then CMD=$1; else ARGS+=("$1"); fi ;;
+	esac
+	shift
+done
+export YES YES_WIPE DRY_RUN VERBOSE
+
+state_init
+_log "gtactive3-setup $CMD ${ARGS[*]:-} (repo $(git -C "$GTA3_REPO" describe --always --dirty 2>/dev/null || echo ?))"
+say "${C_B}Galaxy Tab Active3 (SM-T570): postmarketOS Duranium installer${C_0}"
+say "${C_DIM}Log: $LOG_FILE${C_0}"
+[ "$DRY_RUN" = 1 ] && say "${C_Y}Dry run: nothing on the tablet or this PC is changed.${C_0}"
+
+# resume: the default command continues from the recorded stage
+resume() {
+	case $(state_get STAGE new) in
+		installing)
+			warn "the last install was interrupted while writing the image"
+			install_duranium ;;
+		installed)
+			info "the image is written; flashing the Duranium boot chain"
+			flash_boot chain; state_set STAGE chain; first_boot ;;
+		chain)
+			info "Duranium is installed. Commands: update, status, undo, restore-android (./setup.sh --help)"
+			cmd_status ;;
+		*) stage1 ;;
+	esac
+}
+
+case $CMD in
+	install-default) resume ;;
+	live) stage1 ;;
+	install) preflight; install_duranium ;;
+	backup-android) backup_android ;;
+	restore-android-backup) restore_android_backup "${ARGS[@]}" ;;
+	undo) cmd_undo ;;
+	redo) cmd_redo "${ARGS[@]}" ;;
+	restore-android|uninstall) cmd_restore_android ;;
+	wipe) preflight; cmd_wipe ;;
+	update) cmd_update "${ARGS[@]}" ;;
+	firmware) cmd_firmware "${ARGS[@]}" ;;
+	backup-files) adb_connect 300 && backup_files ;;
+	status) cmd_status ;;
+	doctor) cmd_doctor ;;
+	*) echo "unknown command: $CMD (./setup.sh --help)" >&2; exit 2 ;;
+esac

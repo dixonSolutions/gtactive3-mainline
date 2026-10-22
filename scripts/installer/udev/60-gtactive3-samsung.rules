@@ -1,0 +1,6 @@
+# Samsung Galaxy Tab Active3 (SM-T570) for the gtactive3-mainline installer:
+# lets the logged-in user reach the tablet without root, in Android (adb,
+# 04e8:6860), in Download mode (heimdall, 04e8:685d) and in our own Linux
+# (USB network gadget 1d6b:0104; no rule needed for networking).
+SUBSYSTEM=="usb", ATTR{idVendor}=="04e8", ATTR{idProduct}=="6860", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="04e8", ATTR{idProduct}=="685d", MODE="0660", TAG+="uaccess"
