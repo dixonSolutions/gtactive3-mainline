@@ -96,7 +96,14 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 ## Battery temperature and charging limits (2026-10-22, measured on 26102209)
 
 Branch `src/linux drv/battemp` (not merged into gtactive3wifi yet: the DT/ADC
-driver path has not been booted). Kernel aport refreshed to it (pkgrel 9).
+driver path has not been booted). Two stages:
+- stage 1, `drv/battemp-stage1` (cd9acc24f): ADC, NTC zones, temperature
+  steps, gauge temperature; the 1.5 A charge and input caps stay on. The
+  kernel aport (pkgrel 9) is built from this.
+- stage 2, the last commit (de8bff2c3): the caps apply only while the
+  temperature is not monitored, so charging uses 3.1 A CC and up to 3 A input.
+  Needs the user's OK in the coordinator session after stage 1 has been
+  checked on the device.
 
 - **AP ADC** (0x14230000, CMGP, SPI 8, vendor "exynos-adc-v3"): CON1 0x00
   (bit 2 soft reset, bit 1 release, bit 0 start), CON2 0x04 (C_TIME<<4 | ch),
@@ -123,15 +130,15 @@ driver path has not been booted). Kernel aport refreshed to it (pkgrel 9).
 - **Fuel gauge**: CONFIG = 0x0314, TEX = 1: TEMP is written by the host and
   was stuck at 29.6 °C from the vendor kernel. max17042 now writes the
   battery-thermal temperature every 10 s: reported 25.6 °C (NTC 25.7 °C).
-- **Charger policy** (max77705_charger, battery-thermal zone, 10 s poll),
+- **Charger policy** (max77705_charger, battery-thermal zone, 10 s poll; stage 2 values),
   stock values: < 0 °C off, 0-5 °C 450 mA, 5-15 °C 1.15 A, 15-42 °C battery
   limits (3.1 A, 4.26 V), 42-50 °C 1.75 A, >= 50 °C off; 4.05 V float outside
   15-42 °C; 2 °C recovery margin. Charger NTC >= 46 °C (44 °C recovery): input
-  1 A, charge 1.25 A. Without a readable zone: the old 1.5 A input and charge
-  caps. Verified on the real charger with faked zone temperatures (all steps,
+  1 A, charge 1.25 A. Without a readable zone (and always in stage 1): the
+  old 1.5 A input and charge caps. Verified on the real charger with faked zone temperatures (all steps,
   both hysteresis directions, charger-hot on/off): status Not charging +
   health Overheat/Cold when off, Warm/Cool when reduced.
-- **Input current**: max77705_usbc_psy no longer caps (Type-C Rp 3.0 A ->
+- **Input current** (stage 2): max77705_usbc_psy no longer caps (Type-C Rp 3.0 A ->
   3 A, DCP 1.8 A, CDP 1.5 A, SDP 475 mA).
 - **Not measured yet**: charge current from a wall charger (needs the cable
   moved from the laptop), and raising the charge current on the battery: the
