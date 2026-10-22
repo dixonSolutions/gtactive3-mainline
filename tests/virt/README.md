@@ -36,7 +36,11 @@ testable (kernel without virt drivers and `--kernel none`).
    SHA256SUMS signed with a throwaway key the guest trusts through
    /etc/systemd/import-pubring.pgp, /etc/sysupdate.d overrides), `updatectl
    update`, reboot, new version booted, boot counting blesses it
-10. with `--rollback`: the new version is made unbootable on the host (UKI
+10. with `--interrupt`: the update goes through systemd-sysupdate.service
+   (the automatic path) and the first usr download breaks off after 64 MiB;
+   the image's retry policy must finish the update (RestartSec shortened
+   to 30 s; images without a retry drop-in get Restart=on-failure)
+11. with `--rollback`: the new version is made unbootable on the host (UKI
    back to `+2-0`, usr partition overwritten), systemd-boot must count it
    down and boot the previous version again
 
@@ -70,8 +74,12 @@ tests/virt/harness.py start IMAGE [--kernel ...]  # boots, prints the run dir
 tests/virt/harness.py sh RUN 'systemctl --failed'
 tests/virt/harness.py shot RUN out.png
 tests/virt/harness.py tap RUN 0.5 0.6; tests/virt/harness.py type RUN text; tests/virt/harness.py key RUN ret
+tests/virt/harness.py step RUN firstboot ui errors   # single checks
 tests/virt/harness.py stop RUN; tests/virt/harness.py resume RUN
 ```
+
+`shot`/`tap`/`type`/`key` use a second QMP monitor, so they also work while
+`check` runs; the hvc0 shell serves one client at a time.
 
 ## Laptop rules
 

@@ -227,7 +227,13 @@ class QMP:
                     raise Fail(f"QMP socket {path} not reachable")
                 time.sleep(0.5)
         self.f = self.s.makefile("rwb")
-        self._read()
+        # a monitor serves one client at a time: don't wait forever for its greeting
+        self.s.settimeout(timeout)
+        try:
+            self._read()
+        except TimeoutError:
+            raise Fail(f"QMP socket {path} busy (another client is connected)")
+        self.s.settimeout(None)
         self.cmd("qmp_capabilities")
 
     def _read(self):
@@ -386,6 +392,8 @@ class Shell:
     def wait(self, timeout, poll=10, serial=None, initrd_ok=False):
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if serial:
+                serial.check()
             try:
                 if self.ready(timeout=poll):
                     if initrd_ok:
@@ -393,19 +401,19 @@ class Shell:
                     rc, _ = self.run("test -e /etc/initrd-release", timeout=30)
                     if rc != 0:
                         return True
-                    time.sleep(poll)
+                    time.sleep(poll)        # still in the initrd
                     continue
             except (OSError, Fail):
                 self.close()
                 time.sleep(poll)
-            if serial:
-                serial.check()
         return False
 
     def run(self, cmd, timeout=120):
         """Run a shell script, return (exit code, output)."""
         self.n += 1
         n = self.n
+        # plain output: no colours, pagers or progress bars from systemd tools
+        cmd = "export SYSTEMD_COLORS=0 SYSTEMD_PAGER= SYSTEMD_PAGERSECURE=0 TERM=dumb NO_COLOR=1\n" + cmd
         b64 = base64.b64encode(cmd.encode()).decode()
         self.buf = b""
         self._send(b"rm -f /run/vt.b64\r")
@@ -526,9 +534,11 @@ class VM:
             "-device", "virtio-serial-pci",
             "-chardev", f"socket,id=hvc,path={self.dir / 'hvc.sock'},server=on,wait=off",
             "-device", "virtconsole,chardev=hvc",
-            "-chardev", f"file,id=ser,path={self.dir / 'serial.log'}",
+            "-chardev", f"file,id=ser,path={self.dir / 'serial.log'},append=on",
             "-serial", "chardev:ser",
             "-qmp", f"unix:{self.dir / 'qmp.sock'},server=on,wait=off",
+            # a second monitor for "harness.py shot/tap/..." while a check runs
+            "-qmp", f"unix:{self.dir / 'qmp-cli.sock'},server=on,wait=off",
             "-display", "none", "-rtc", "base=utc",
             "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=" + CMDLINE_EXTRA,
         ]
@@ -545,7 +555,7 @@ class VM:
                 raise Fail(f"MemAvailable stayed below {MEM_START_MB} MiB for {MEM_WAIT_S}s: not starting a VM")
             log(f"waiting for memory: {mem_available_mb()} MiB available, {MEM_START_MB} needed")
             time.sleep(30)
-        for s in ("qmp.sock", "hvc.sock", "aborted"):
+        for s in ("qmp.sock", "qmp-cli.sock", "hvc.sock", "aborted"):
             (self.dir / s).unlink(missing_ok=True)
         (ROOT / "build").mkdir(exist_ok=True)
         cmd = ["flock", str(ROOT / "build/vm.lock"), "nice", "-n", "10"] + self.cmdline()
@@ -571,7 +581,10 @@ class VM:
         log(f"QEMU running (pid {self.proc.pid})")
 
     def attach(self):
-        self.qmp = QMP(self.dir / "qmp.sock")
+        """Connect from another process: the second monitor, so this works
+        while "check" holds the first one (older runs have only qmp.sock)."""
+        cli = self.dir / "qmp-cli.sock"
+        self.qmp = QMP(cli if cli.exists() else self.dir / "qmp.sock")
 
     def running(self):
         return self.proc is None or self.proc.poll() is None
@@ -724,6 +737,29 @@ class Server:
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    # --interrupt: the first download of a file matching CUT breaks off
+    # after CUT_AFTER bytes (a dropped mobile link)
+    CUT = None
+    CUT_AFTER = 64 << 20
+    cut_done = set()
+
+    def copyfile(self, source, outputfile):
+        name = self.path.rsplit("/", 1)[-1]
+        if not (self.CUT and self.CUT in name and name not in self.cut_done):
+            return super().copyfile(source, outputfile)
+        self.cut_done.add(name)
+        left = self.CUT_AFTER
+        while left > 0:
+            buf = source.read(min(left, 1 << 20))
+            if not buf:
+                break
+            outputfile.write(buf)
+            left -= len(buf)
+        outputfile.flush()
+        self.log_message("connection cut after %d bytes of %s", self.CUT_AFTER, name)
+        self.close_connection = True
+        self.connection.shutdown(socket.SHUT_RDWR)
+
     def log_message(self, fmt, *args):
         with open(Path(self.directory).parent / "mirror.log", "a") as f:
             f.write("%s %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
@@ -831,7 +867,7 @@ class Checks:
         for name, comm in procs.items():
             if self.wait_cond(f"pgrep -x {comm} >/dev/null", 300) is None:
                 missing.append(name)
-        time.sleep(10)
+        time.sleep(40)        # the greeter's first frames take a while under TCG
         self.shot("greeter")
         drm = self.sh.out("cat /sys/class/drm/card*-*/status 2>/dev/null | tr '\\n' ' '; "
                           "cat /sys/class/drm/card*/device/uevent 2>/dev/null | grep DRIVER | sort -u")
@@ -857,8 +893,8 @@ class Checks:
                 press(q, "ret")
             comm = "phosh"
         else:
-            press(q, "ret")       # the only user in the list
-            time.sleep(4)
+            tap(q, 0.5, 0.46)     # gdm's user list: the only user, centred
+            time.sleep(6)
             self.shot("login-0")
             type_text(q, TEST_PASSWORD)
             press(q, "ret")
@@ -921,7 +957,8 @@ class Checks:
                      f"{', '.join(paths)}; keys: {', '.join(fprs) or '? (no gpg)'}; expected {want}")
         if not ok:
             return
-        rc, out = self.sh.run("timeout 600 systemd-sysupdate list 2>&1 | tail -15", timeout=660)
+        rc, out = self.sh.run("timeout 600 /usr/lib/systemd/systemd-sysupdate list > /run/vt-list 2>&1; "
+                              "rc=$?; tail -15 /run/vt-list; exit $rc", timeout=660)
         self.res.add("update: live channel (GitHub, signature)", "pass" if rc == 0 else "warn",
                      out.replace("\n", "; ")[-400:])
 
@@ -984,7 +1021,7 @@ class Checks:
         self.sh.put(pubring, "/etc/systemd/import-pubring.pgp")
         rc, out = self.sh.run(
             "systemctl stop systemd-sysupdate.timer systemd-sysupdate-update.timer "
-            "systemd-sysupdate-reboot.timer 2>/dev/null\n"
+            "systemd-sysupdate-reboot.timer systemd-sysupdate.service 2>/dev/null\n"
             "mkdir -p /etc/sysupdate.d\n"
             "for t in /usr/lib/sysupdate.d/*.transfer; do\n"
             f"  sed -E 's|^Path=https?://.*/$|Path={url}|' \"$t\" > /etc/sysupdate.d/${{t##*/}}\n"
@@ -996,9 +1033,12 @@ class Checks:
         if rc or want not in out:
             return False
         t0 = time.time()
-        rc, out = self.sh.run("updatectl update 2>&1", timeout=3600)
-        self.res.add("update: updatectl update", "pass" if rc == 0 else "fail",
-                     f"{round(time.time() - t0)}s: {out[-500:]}")
+        if self.a.interrupt:
+            rc, out = self.update_interrupted(want)
+        else:
+            rc, out = self.sh.run("updatectl update 2>&1", timeout=3600)
+            self.res.add("update: updatectl update", "pass" if rc == 0 else "fail",
+                         f"{round(time.time() - t0)}s: {out[-500:]}")
         if rc:
             self.res.data["sysupdate_log"] = self.sh.out(
                 "journalctl -b -u systemd-sysupdated -u 'systemd-sysupdate*' --no-pager | tail -60")
@@ -1016,11 +1056,48 @@ class Checks:
             return False
         ok = info[0] == want
         self.res.add("update: new version booted", "pass" if ok else "fail", f"{info[0]} (wanted {want})")
-        blessed = self.wait_cond("systemctl is-active boot-complete.target >/dev/null && "
-                                 "! ls /boot/EFI/Linux/ | grep -q '_%s+'; ls /boot/EFI/Linux/" % want, 900)
+        blessed = self.wait_cond("systemctl is-active boot-complete.target >/dev/null || exit 1\n"
+                                 "ls /boot/EFI/Linux/ | grep -q '_%s+' && exit 1\n"
+                                 "ls /boot/EFI/Linux/" % want, 900)
         self.res.add("update: boot counting marked it good", "pass" if blessed else "fail",
                      blessed or self.sh.out("systemctl status systemd-bless-boot --no-pager | tail; ls /boot/EFI/Linux"))
         return ok and blessed is not None
+
+    def update_interrupted(self, want):
+        """The automatic update service with a download that breaks off:
+        systemd-sysupdate.service (update --cleanup=yes) must fail, be
+        restarted (device package r31: Restart=on-failure; here with a short
+        RestartSec) and finish the update on a later attempt."""
+        QuietHandler.CUT = ".usr-arm64."
+        # the image's own retry policy (device package r31+) with a shorter
+        # RestartSec; images without one get r31's Restart=on-failure
+        own = self.sh.out("systemctl show -P Restart systemd-sysupdate.service")
+        extra = "" if own == "on-failure" else "Restart=on-failure\\n"
+        self.res.data["sysupdate_retry_policy"] = own if not extra else f"{own} (r31 emulated)"
+        rc, out = self.sh.run(
+            "mkdir -p /run/systemd/system/systemd-sysupdate.service.d\n"
+            "printf '[Unit]\\nStartLimitIntervalSec=1h\\nStartLimitBurst=4\\n"
+            f"[Service]\\n{extra}RestartSec=30s\\n' "
+            "> /run/systemd/system/systemd-sysupdate.service.d/zz-virt-test.conf\n"
+            "systemctl daemon-reload\n"
+            "systemctl start --no-block systemd-sysupdate.service")
+        t0 = time.time()
+        done = self.wait_cond(
+            "[ \"$(systemctl show -P NRestarts systemd-sysupdate.service)\" -ge 1 ] || exit 1\n"
+            "systemctl is-active -q systemd-sysupdate.service && exit 1\n"
+            "[ \"$(systemctl show -P Result systemd-sysupdate.service)\" = success ] || exit 1\n"
+            f"ls /boot/EFI/Linux/ | grep '_{want}+'", 1800, poll=15)
+        log_ = self.sh.out("journalctl -b --no-pager -o short-monotonic -t systemd-sysupdate -t systemd "
+                           "| grep -E 'sysupdate|sd-pull' | grep -vE 'Acquiring|Validating|Discover' | tail -40")
+        cut = (self.vm.dir / "mirror.log").read_text().count("connection cut")
+        ok = done is not None and cut >= 1
+        self.res.add("update: broken-off download recovers (systemd-sysupdate.service)",
+                     "pass" if ok else "fail",
+                     f"{cut} download(s) cut, {round(time.time() - t0)}s, restarts "
+                     f"{self.sh.out('systemctl show -P NRestarts systemd-sysupdate.service')}",
+                     journal=log_)
+        QuietHandler.CUT = None
+        return (0 if ok else 1), log_
 
     def rollback(self, prefix, good, bad):
         """Break the blessed new version (unblessed UKI + corrupt usr) and
@@ -1222,6 +1299,21 @@ def cmd_sh(a):
     return rc
 
 
+def cmd_step(a):
+    """Run single checks against a running VM (results in RUN/step-results.json)."""
+    vm = attach(a.run)
+    res = Results(a.run, {"id": "step", "version": "", "ui": a.ui})
+    res.dir = Path(a.run)
+    c = Checks(a, vm, res)
+    if not vm.shell.ready(timeout=30):
+        raise Fail("no shell on hvc0 (yet)")
+    for step in a.steps:
+        {"firstboot": c.first_boot, "state": lambda: c.system_state("now"),
+         "ui": lambda: c.ui(a.ui), "errors": lambda: c.errors("now"),
+         "debug": c.debug_layer, "source": c.update_source}[step]()
+    (Path(a.run) / "step-results.json").write_text(json.dumps(res.data, indent=1) + "\n")
+
+
 def cmd_shot(a):
     print(screenshot(attach(a.run).qmp, a.png))
 
@@ -1281,6 +1373,8 @@ def main():
     p.add_argument("--update", metavar="DIR:VERSION",
                    help="A/B update to VERSION from DIR (mkosi.output/<id> or a downloaded release)")
     p.add_argument("--update-kernel", help="--kernel for the update's UKI (default: the same)")
+    p.add_argument("--interrupt", action="store_true",
+                   help="update through systemd-sysupdate.service with the first usr download cut off")
     p.add_argument("--rollback", action="store_true", help="after the update, test the fallback")
     p.add_argument("--no-ui", action="store_true", help="skip the greeter/login checks")
     p.add_argument("--boot-timeout", type=int, default=1800)
@@ -1303,6 +1397,11 @@ def main():
     p.add_argument("cmd")
     p.add_argument("--timeout", type=int, default=120)
     p.set_defaults(fn=cmd_sh)
+    p = sub.add_parser("step", help="run single checks on a running VM")
+    p.add_argument("run")
+    p.add_argument("steps", nargs="+", choices=["firstboot", "state", "ui", "errors", "debug", "source"])
+    p.add_argument("--ui", choices=["phosh", "gnome"], default="phosh")
+    p.set_defaults(fn=cmd_step)
     p = sub.add_parser("shot", help="screenshot (PNG) of a running VM")
     p.add_argument("run")
     p.add_argument("png")

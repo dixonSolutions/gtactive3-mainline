@@ -13,6 +13,8 @@
 #     --update DIR:VERSION     A/B update to VERSION served from DIR
 #                              (mkosi.output/<id>, or build/virt/dl/TAG after
 #                              fetch-release.sh TAG VERSION all)
+#     --interrupt              update via systemd-sysupdate.service, first usr
+#                              download cut off: the retry must recover
 #     --rollback               then break the new version, expect a fallback
 #     --kernel auto|none|PATH  kernel for the UKI (auto: build a virt Image
 #                              when the image's kernel lacks virt.config)
