@@ -31,6 +31,8 @@ Commands (default: the guided install, which resumes where it stopped):
   update --next-test-version      the version to build a test image with
   firmware [--export FILE]        (re)install the vendor firmware
   backup-files          copy Android's files to this PC / the microSD card (adb)
+  prepare               only build the BOOT images (stock boot image + payload),
+                        e.g. after a new boot-chain release; needs no tablet
   status                what is connected, versions, slots
   doctor                status + the PC checks (tools, USB rules, space)
 
@@ -150,6 +152,10 @@ case $CMD in
 	update) cmd_update "${ARGS[@]}" ;;
 	firmware) cmd_firmware "${ARGS[@]}" ;;
 	backup-files) adb_connect 300 && backup_files ;;
+	prepare)
+		preflight; stock_acquire
+		firmware_acquire android || info "no vendor firmware yet (--stock-ap or --firmware-dir)"
+		payload_acquire; build_boot_images ;;
 	status) cmd_status ;;
 	doctor) cmd_doctor ;;
 	*) echo "unknown command: $CMD (./setup.sh --help)" >&2; exit 2 ;;

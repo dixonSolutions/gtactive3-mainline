@@ -229,6 +229,7 @@ checks it before and after).
 | `./setup.sh update [--test ...]` | updates |
 | `./setup.sh firmware [--export FILE]` | (re)install the vendor firmware |
 | `./setup.sh backup-files` | copy Android's files over adb |
+| `./setup.sh prepare` | only rebuild your BOOT images (e.g. after a new boot-chain release) |
 | `./setup.sh status` / `doctor` | what is connected, versions, slots / + PC checks |
 
 Options: `--stock-ap FILE`, `--stock-zip FILE`, `--stock-boot FILE`,

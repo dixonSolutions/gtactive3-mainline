@@ -568,3 +568,17 @@ t_install_local_image_leaves_file_alone() {
 	dd if="$ROOT/dev/sda31" bs=4096 skip=1 count=1 status=none | head -c 8 | grep -q 'EFI PART' || fail "not written"
 	st_is STAGE chain
 }
+
+t_prepare_builds_boot_images_without_tablet() {
+	new_tablet off; start_console
+	mkdir -p "$CASE/fw/brcm"
+	for f in brcmfmac4375b1-pcie.samsung,gtactive3wifi.bin brcmfmac4375b1-pcie.samsung,gtactive3wifi.clm_blob \
+		brcmfmac4375b1-pcie.samsung,gtactive3wifi.txt BCM.samsung,gtactive3wifi.hcd; do echo x > "$CASE/fw/brcm/$f"; done
+	setup prepare --yes --stock-boot "$RUN/fx/stock/boot.img.lz4" --payload "$PAYLOAD_DIR" --firmware-dir "$CASE/fw"
+	rc_is 0
+	for f in boot-linux.img boot-chain.img; do [ -s "$CASE/st/boot/$f" ] || fail "no $f"; done
+	python3 -I "$REPO/scripts/installer/py/bootimg.py" find "$CASE/st/boot/boot-chain.img" FAKE-UNILOADER-CHAIN || fail "chain image"
+	python3 -I "$REPO/scripts/installer/py/bootimg.py" find "$CASE/st/boot/boot-linux.img" FAKE-UNILOADER-LINUX || fail "linux image"
+	[ -s "$CASE/st/firmware/firmware.tar" ] || fail "firmware not packed"
+	log_lacks flash
+}
