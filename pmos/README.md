@@ -10,6 +10,8 @@ the published images from this directory plus upstream postmarketOS.
 - `pmaports.BASE`: upstream pmaports commit they were last tested on
 - `duranium-build/`: our duranium-build commits as a patch series on `BASE`
 - `sysupdate-public-key.asc`: the key that signs every channel's SHA256SUMS
+- `VERIFIED` (`scripts/pmos-verify`): the aports + duranium-build trees that
+  passed on the device; only those reach the public release channels
 - `device-samsung-gtactive3wifi/`: the early (pre-Duranium) deviceinfo
 
 See [../docs/RELEASES.md](../docs/RELEASES.md).
