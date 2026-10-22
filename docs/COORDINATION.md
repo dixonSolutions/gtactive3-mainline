@@ -37,7 +37,7 @@ section 1).
   zram is RAM-backed and is not a safety net; a 16 GB disk swapfile
   (/var/swap/swapfile, priority 10) and vm.min_free_kbytes=131072 are.
 - QEMU test VMs (tests/virt) hold `build/vm.lock` instead (one VM at a time,
-  ≤ 3 GiB, nice 10, start only with ≥ 5.5 GiB available, powered off below 1.5 GiB).
+  ≤ 3 GiB, nice 10, start only with ≥ 4 GiB available, powered off below 1.5 GiB).
 - Kernel work happens on your own branch in your own worktree
   (`git -C src/linux worktree add ../../build/wt/<name> -b drv/<name> integ`,
   out of tree `O=build/wt/<name>-out`). Only the coordinator merges into

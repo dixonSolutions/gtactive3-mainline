@@ -1,0 +1,21 @@
+# Journal lines and failed units that are expected in QEMU only (no SM-T570
+# hardware), one Python regular expression per line. Anything that
+# harness.py finds in "journalctl -b -p err" or "systemctl --failed" and
+# that matches neither this file nor known-benign.txt is reported as
+# "unexpected": a real bug, or a line to add here with a comment saying why
+# it cannot happen on the tablet.
+
+# no hardware watchdog on QEMU virt (the tablet has s3c2410_wdt)
+[Ww]atchdog
+# device package: USB PHY clocks / MAX77705 switch (Exynos + PMIC registers)
+gtactive3wifi-usb-prep
+Galaxy Tab Active3 USB clocks and MAX77705
+# no USB device controller: the debug gadget's usb0 never appears (the
+# debug layer skips itself), nor does upstream's usb-signaller find a UDC
+usb-signaller
+sys-subsystem-net-devices-usb0|/sys/subsystem/net/devices/usb0
+# no Bluetooth controller
+org\.bluez|bluetooth
+# repacked UKIs only (tests/virt/build-kernel.sh): the image's modules carry
+# BTF generated against the packaged vmlinux
+BPF: |failed to validate module \[.*\] BTF

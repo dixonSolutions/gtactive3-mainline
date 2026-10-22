@@ -8,25 +8,46 @@
 # ccache, and only the built-in part (make Image): the image's own modules
 # (/usr/lib/modules/<release>) keep loading because the release string and
 # the module ABI do not change (no MODVERSIONS; virt.config only adds
-# built-in drivers).
+# built-in drivers). Their BTF was generated against the packaged vmlinux,
+# though, and fails validation against this one ("BPF: Invalid name"), which
+# makes the kernel reject every module: this Image alone sets
+# MODULE_ALLOW_BTF_MISMATCH (a test kernel, never packaged).
 #
-#   tests/virt/build-kernel.sh [KREF]
-#     KREF   src/linux commit (default: _commit of the aport)
-#   output: build/virt/kernel/Image-<sha12>  (path printed on stdout)
+# The config must be the one the image's modules were built with (e.g.
+# CONFIG_PM changes struct device): build from the aport revision that
+# produced the image's kernel package.
+#
+#   [APORT_REV=<pmaports-duranium revision>] tests/virt/build-kernel.sh
+#     APORT_REV  default HEAD; its APKBUILD _commit is the src/linux commit,
+#                its config-postmarketos-exynos9810.aarch64 the config.
+#                Find it with: git -C build/wt/pmaports-duranium log --
+#                device/testing/linux-postmarketos-exynos9810 (the UKI's
+#                "Linux version ... #N-postmarketOS" is pkgrel N-1)
+#     PMAPORTS, APORT  for a published image: PMAPORTS=. (this repository)
+#                APORT=pmos/aports/device/testing/linux-postmarketos-exynos9810
+#   output: build/virt/kernel/Image-<sha12>-<config hash> (path on stdout)
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PMAPORTS=${PMAPORTS:-$ROOT/build/wt/pmaports-duranium}
 CONTRIB=${CONTRIB:-$ROOT/build/wt/duranium/contrib/samsung-gtactive3wifi}
-APORT=$PMAPORTS/device/testing/linux-postmarketos-exynos9810
+APORT=${APORT:-device/testing/linux-postmarketos-exynos9810}
+REV=${APORT_REV:-HEAD}
 BUILDER=${BUILDER:-gta3-pkgbuilder}
 JOBS=${JOBS:-8}
 OUT=$ROOT/build/virt/kernel
 
-kref=${1:-$(sed -n 's/^_commit="\([0-9a-f]*\)"/\1/p' "$APORT/APKBUILD")}
+mkdir -p "$OUT"
+cfg=$(mktemp "$OUT/config.XXXXXX")
+trap 'rm -f "$cfg"' EXIT
+git -C "$PMAPORTS" show "$REV:$APORT/config-postmarketos-exynos9810.aarch64" > "$cfg"
+kref=$(git -C "$PMAPORTS" show "$REV:$APORT/APKBUILD" | sed -n 's/^_commit="\([0-9a-f]*\)"/\1/p')
 sha=$(git -C "$ROOT/src/linux" rev-parse "$kref^{commit}")
 short=$(echo "$sha" | cut -c1-12)
-image=$OUT/Image-$short
+# repack.config below is part of the recipe too
+hash=$(printf 'CONFIG_MODULE_ALLOW_BTF_MISMATCH=y\n' | cat "$cfg" "$CONTRIB/kernel/virt.config" - |
+	sha256sum | cut -c1-8)
+image=$OUT/Image-$short-$hash
 if [ -s "$image" ]; then
 	echo "$image"
 	exit 0
@@ -40,7 +61,7 @@ if [ ! -d "$src" ]; then
 	mkdir -p "$src"
 	git -C "$ROOT/src/linux" archive "$sha" | tar -x -C "$src"
 fi
-cp "$APORT/config-postmarketos-exynos9810.aarch64" "$src/pkg.config"
+cp "$cfg" "$src/pkg.config"
 cp "$CONTRIB/kernel/virt.config" "$CONTRIB/kernel/mergecfg.py" "$src/"
 
 mkdir -p "$ROOT/build/ccache"
@@ -52,7 +73,8 @@ flock "$ROOT/build/kbuild.lock" nice -n 19 podman run --rm --entrypoint /bin/sh 
 	-v "$src:/b/linux-postmarketos-exynos9810/src/linux-$sha:Z" \
 	-w "/b/linux-postmarketos-exynos9810/src/linux-$sha" -e JOBS="$JOBS" \
 	"$BUILDER" -euc '
-	python3 mergecfg.py pkg.config .config virt.config
+	echo CONFIG_MODULE_ALLOW_BTF_MISMATCH=y > repack.config
+	python3 mergecfg.py pkg.config .config virt.config repack.config
 	k="make ARCH=arm64 CROSS_COMPILE=aarch64-alpine-linux-musl-"
 	$k olddefconfig
 	$k -j"$JOBS" CC="ccache aarch64-alpine-linux-musl-gcc" \

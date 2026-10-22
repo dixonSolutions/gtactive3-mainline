@@ -1,0 +1,16 @@
+# Error-priority journal lines that also appear on the tablet and are known
+# to be harmless (upstream noise), one Python regular expression per line.
+# Each needs a reason; anything not listed here or in qemu-only.txt is
+# reported as unexpected.
+
+# systemd-growfs: the LUKS root already fills its partition (repart made
+# it); the failed no-op resize is logged, the ext4 resize succeeds
+crypt_resize\(\) of .* failed: Operation not permitted|Unable to resize underlying device of "/"
+# phrog greeter session torn down at login: its OSK / portal restart into
+# a compositor that is gone
+cannot open display: :0
+Failed to start Stevia, a user friendly on screen keyboard
+Failed to start Portal service \(GTK/GNOME implementation\)
+Failed to start Application launched by gnome-session-service
+# no login keyring yet on the first login
+gkr-pam:
