@@ -82,13 +82,16 @@ rm -rf "$F"; mkdir -p "$F"
 F2FS_VER=none
 if [ "${NO_F2FS:-0}" != 1 ]; then
 	log "f2fs-tools (Alpine aarch64)"
-	RT=$(command -v docker || command -v podman)
+	# rootful docker: hand the files back to us; rootless podman: its root
+	# already is us (a chown would move them to a subordinate uid)
+	if command -v docker >/dev/null; then RT=docker OWN="chown -R $(id -u):$(id -g) /out"
+	else RT=podman OWN=true; fi
 	"$RT" run --rm -v "$F:/out:Z" docker.io/library/alpine:3.22 sh -euc '
 		apk add --quiet --no-cache --arch aarch64 --root /out --initdb --no-scripts \
 			--keys-dir /usr/share/apk/keys/aarch64 \
 			--repository https://dl-cdn.alpinelinux.org/alpine/v3.22/main f2fs-tools
 		apk info --root /out -v 2>/dev/null | sort > /out/.versions
-		chown -R '"$(id -u):$(id -g)"' /out'
+		'"$OWN"
 	F2FS_VER=$(tr '\n' ' ' < "$F/.versions")
 	[ -x "$F/usr/sbin/mkfs.f2fs" ] || { echo "no mkfs.f2fs from Alpine" >&2; exit 1; }
 fi
