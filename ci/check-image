@@ -1,0 +1,133 @@
+#!/bin/bash
+# Check a built image before it is published:
+#
+#   ci/check-image DIR VERSION CHANNEL TAG
+#
+# DIR = mkosi.output/<IMAGE_ID> of a --profile=compressed build, CHANNEL =
+# release or dev, TAG = the release it goes to. Fails when
+#
+#  - the /usr image does not trust exactly the project's signing key, or a
+#    sysupdate transfer fetches from anywhere but TAG's GitHub release, or
+#    the channel file names another channel
+#  - the UKI's os-release does not carry VERSION
+#  - a release image (/usr, its package list or the initrd in the UKI)
+#    contains any part of the USB debug layer (root over USB without a
+#    password); a dev image lacks it
+#
+# Needs zstd, gpg, python3 and sudo (loop-mounts the EROFS /usr) or
+# erofs-utils. USR_TREE=dir checks an already extracted /usr instead
+# (fsck.erofs --extract), without sudo.
+set -euo pipefail
+DIR=$1 VERSION=$2 CHANNEL=$3 TAG=$4
+REPO=${GITHUB_REPOSITORY:-dixonSolutions/gtactive3-mainline}
+HERE=$(cd "$(dirname "$0")" && pwd)
+PREFIX=${TAG%-dev}
+BASE="https://github.com/$REPO/releases/download/"
+W=$(mktemp -d)
+M=${USR_TREE:-$W/usr}
+cleanup() {
+	[ -n "${USR_TREE:-}" ] || ! mountpoint -q "$M" || sudo umount "$M"
+	rm -rf "$W"
+}
+trap cleanup EXIT
+mkdir -m 700 "$W/gnupg"
+export GNUPGHOME=$W/gnupg
+FPR=$(gpg --batch --show-keys --with-colons "$HERE/../pmos/sysupdate-public-key.asc" |
+	awk -F: '$1 == "fpr" { print $10; exit }')
+# the debug layer: packages and file names (base image and initrd)
+DEBUG_PKGS='^(duranium-usb-debug(-adb|-initramfs)?|device-samsung-gtactive3wifi-console)$'
+DEBUG_FILES='duranium-usb-debug|duranium-debug-|gta3-debug-console|gta3-console'
+bad=0
+fail() { echo "::error::$TAG $VERSION: $*"; bad=1; }
+
+uki=$DIR/${PREFIX}_$VERSION.efi
+[ -f "$uki" ] || { fail "no UKI $uki"; exit 1; }
+python3 -I - "$uki" "$W" <<'EOF'
+# the base profile's .osrel, .cmdline and the initrd's file names
+import struct, subprocess, sys, zlib
+uki, out = sys.argv[1:3]
+d = open(uki, "rb").read()
+pe = struct.unpack_from("<I", d, 0x3C)[0]
+assert d[pe:pe + 4] == b"PE\0\0", "not a PE file"
+n, opt = struct.unpack_from("<H12xH", d, pe + 6)
+sec = {}
+for i in range(n):
+    name, vsize, _, rsize, roff = struct.unpack_from("<8sIIII", d, pe + 24 + opt + 40 * i)
+    sec.setdefault(name.rstrip(b"\0").decode(), d[roff:roff + min(vsize, rsize)])
+
+def names(b):
+    while b:
+        b = b.lstrip(b"\0")
+        if b.startswith(b"\x1f\x8b"):
+            z = zlib.decompressobj(31)
+            yield from names(z.decompress(b))
+            b = z.unused_data
+        elif b.startswith(b"\x28\xb5\x2f\xfd"):
+            yield from names(subprocess.run(["zstd", "-dcq"], input=b, capture_output=True, check=True).stdout)
+            return
+        elif b[:6] in (b"070701", b"070702"):
+            o = 0
+            while True:
+                fsize, nsize = int(b[o + 54:o + 62], 16), int(b[o + 94:o + 102], 16)
+                name = b[o + 110:o + 109 + nsize].decode(errors="replace")
+                o = (o + 110 + nsize + 3) & ~3
+                o = (o + fsize + 3) & ~3
+                if name == "TRAILER!!!":
+                    break
+                yield name
+            b = b[o:]
+        elif b:
+            sys.exit(f"unknown data in the UKI initrd: {b[:8].hex()}")
+
+open(f"{out}/osrel", "wb").write(sec[".osrel"])
+open(f"{out}/cmdline", "wb").write(sec[".cmdline"])
+open(f"{out}/initrd", "w").write("".join(n + "\n" for n in names(sec[".initrd"])))
+EOF
+grep -qx "IMAGE_VERSION=\"\{0,1\}$VERSION\"\{0,1\}" "$W/osrel" || fail "UKI os-release is not version $VERSION"
+grep -q 'usrhash=[0-9a-f]\{64\}' "$W/cmdline" || fail "UKI command line has no usrhash="
+
+if [ -z "${USR_TREE:-}" ]; then
+	zstd -dq "$DIR/${PREFIX}_$VERSION".usr-arm64.*.raw.zst -o "$W/usr.raw"
+	mkdir "$M"
+	# no erofs in the kernel: unpack it (erofs-utils)
+	sudo mount -t erofs -o loop,ro "$W/usr.raw" "$M" 2>/dev/null ||
+		fsck.erofs --extract="$M" "$W/usr.raw" >/dev/null
+	rm -f "$W/usr.raw"
+fi
+
+ring=$M/lib/systemd/import-pubring.pgp
+if [ -f "$ring" ]; then
+	have=$(gpg --batch --show-keys --with-colons "$ring" | awk -F: '$1 == "fpr" && !s { print $10 } $1 == "sub" { s = 1 }')
+	[ "$have" = "$FPR" ] || fail "sysupdate keyring holds '$have', not only $FPR"
+else
+	fail "no sysupdate keyring $ring"
+fi
+n=0
+for t in "$M"/lib/sysupdate.d/*.transfer; do
+	src=$(awk '/^\[/ { s = $0 } s == "[Source]" && /^Path=/ { print substr($0, 6) }' "$t")
+	[ "$src" = "${BASE}%M_%W_%w${TAG#"$PREFIX"}/" ] || fail "$(basename "$t") fetches from '$src'"
+	n=$((n + 1))
+done
+[ "$n" -ge 3 ] || fail "only $n sysupdate transfers"
+grep -qx "UPDATE_CHANNEL=$TAG" "$M/lib/gtactive3wifi/update-channel" || fail "update-channel is not $TAG"
+grep -q '^Verify=no' "$M"/lib/sysupdate.d/*.transfer && fail "a transfer has Verify=no"
+
+pkgs=$M/share/duranium/base.packages
+[ -s "$pkgs" ] || fail "no package list $pkgs"
+dpk=$(sed 's/-[0-9][^-]*-r[0-9]*$//' "$pkgs" | grep -E "$DEBUG_PKGS" || true)
+dfiles=$( (cd "$M" && find . -path ./share/doc -prune -o -print) | grep -E "$DEBUG_FILES" || true)
+dinit=$(grep -E "$DEBUG_FILES" "$W/initrd" || true)
+case "$CHANNEL" in
+release)
+	[ -z "$dpk" ] || fail "release image has debug packages: $(echo "$dpk" | xargs)"
+	[ -z "$dfiles" ] || fail "release /usr has debug layer files: $(echo "$dfiles" | head -5 | xargs)"
+	[ -z "$dinit" ] || fail "release initrd has debug layer files: $(echo "$dinit" | head -5 | xargs)"
+	;;
+dev)
+	[ -n "$dpk" ] || fail "dev image without the USB debug layer"
+	[ -n "$dinit" ] || fail "dev initrd without the USB debug layer"
+	;;
+*) fail "CHANNEL must be release or dev" ;;
+esac
+[ "$bad" = 0 ] || exit 1
+echo "checked $TAG $VERSION: key $FPR, $n transfers -> $TAG, $CHANNEL contents ok"

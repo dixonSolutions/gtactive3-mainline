@@ -19,6 +19,8 @@ on:
     paths:
       - "pmos/**"
       - "ci/**"
+      - "!ci/pages*"
+      - "!ci/bootchain/**"
       - ".github/workflows/images.yml"
   workflow_dispatch:
     inputs:
@@ -26,6 +28,10 @@ on:
         description: "Build and publish even if nothing changed"
         type: boolean
         default: false
+      min_version:
+        description: "Publish a version above this one (YYMMDDNN), e.g. the newest local build the tablets run"
+        type: string
+        default: ""
 
 concurrency:
   group: images
@@ -44,11 +50,13 @@ jobs:
       upstream: ${{ steps.s.outputs.upstream }}
       fingerprint: ${{ steps.s.outputs.fingerprint }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: s
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force && '1' || '' }}
+          # the input, else the repository variable (Settings > Variables)
+          MIN_VERSION: ${{ inputs.min_version || vars.MIN_VERSION }}
         run: |
           ci/state | tee -a "$GITHUB_OUTPUT"
 
@@ -61,12 +69,12 @@ jobs:
       duranium_build: ${{ steps.prep.outputs.duranium_build }}
       pmaports: ${{ steps.prep.outputs.pmaports }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: prep
         run: ci/prepare
       - name: Kernel package cache
         id: kcache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: kpkgs
           key: kernel-${{ hashFiles('pmos/aports/device/testing/linux-postmarketos-exynos9810/**', 'work/duranium-build/contrib/samsung-gtactive3wifi/pkgbuilder.Containerfile') }}
@@ -90,7 +98,7 @@ jobs:
           ls -l pkgs
       - name: Keep the trees for the image jobs
         run: tar -cf trees.tar work
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: packages
           path: |
@@ -108,7 +116,7 @@ jobs:
         ui: [phosh, gnome]
         channel: [release, dev]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Release channels only for a device-verified export
         id: gate
         run: |
@@ -127,10 +135,10 @@ jobs:
         if: steps.gate.outputs.skip != 'yes'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq qemu-user-static binfmt-support
+          sudo apt-get install -yq qemu-user-static binfmt-support erofs-utils
           ls /proc/sys/fs/binfmt_misc/ | grep -i aarch64
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: steps.gate.outputs.skip != 'yes'
         with:
           name: packages
@@ -148,6 +156,12 @@ jobs:
           GTA3_ROOT=$PWD/ci-root PMAPORTS=$PWD/work/pmaports PKGS=$PWD/pkgs SKIP_APKS=1 FRESH=1 \
             sh work/duranium-build/contrib/samsung-gtactive3wifi/build-image.sh --profile=compressed
           ls -l work/duranium-build/mkosi.output/*/
+      - name: Check the image (keyring, update channel, debug layer)
+        if: steps.gate.outputs.skip != 'yes'
+        run: |
+          set -eu
+          tag=$(sh ci/channels | awk -v u="${{ matrix.ui }}" -v c="${{ matrix.channel }}" '$1 == u && $2 == c { print $3 }')
+          ci/check-image "work/duranium-build/mkosi.output/${tag%-dev}" "${{ needs.state.outputs.version }}" "${{ matrix.channel }}" "$tag"
       - name: Publish
         if: github.ref == 'refs/heads/main' && steps.gate.outputs.skip != 'yes'
         env:
