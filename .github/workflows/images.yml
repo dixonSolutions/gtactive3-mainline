@@ -32,6 +32,10 @@ on:
         description: "Publish a version above this one (YYMMDDNN), e.g. the newest local build the tablets run"
         type: string
         default: ""
+      try_release:
+        description: "Also build and check the release images of an unverified export (never published)"
+        type: boolean
+        default: false
 
 concurrency:
   group: images
@@ -124,8 +128,13 @@ jobs:
         id: gate
         run: |
           if [ "${{ matrix.channel }}" = release ] && [ "${{ needs.state.outputs.verified }}" != yes ]; then
-            echo "::notice::pmos/ export not verified on the device (pmos/VERIFIED): no ${{ matrix.ui }} release image this time, dev channel only"
-            echo "skip=yes" >> "$GITHUB_OUTPUT"
+            echo "publish=no" >> "$GITHUB_OUTPUT"
+            if [ "${{ inputs.try_release }}" = true ]; then
+              echo "::notice::pmos/ export not verified on the device: building and checking the ${{ matrix.ui }} release image, not publishing it"
+            else
+              echo "::notice::pmos/ export not verified on the device (pmos/VERIFIED): no ${{ matrix.ui }} release image this time, dev channel only"
+              echo "skip=yes" >> "$GITHUB_OUTPUT"
+            fi
           fi
       - name: Free disk space
         if: steps.gate.outputs.skip != 'yes'
@@ -166,7 +175,7 @@ jobs:
           tag=$(sh ci/channels | awk -v u="${{ matrix.ui }}" -v c="${{ matrix.channel }}" '$1 == u && $2 == c { print $3 }')
           ci/check-image "work/duranium-build/mkosi.output/${tag%-dev}" "${{ needs.state.outputs.version }}" "${{ matrix.channel }}" "$tag"
       - name: Publish
-        if: github.ref == 'refs/heads/main' && steps.gate.outputs.skip != 'yes'
+        if: github.ref == 'refs/heads/main' && steps.gate.outputs.skip != 'yes' && steps.gate.outputs.publish != 'no'
         env:
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ secrets.SYSUPDATE_SIGNING_KEY }}

@@ -231,7 +231,9 @@ line `Verified on the device:`); `bootchain` only when that release exists.
    `scripts/pmos-verify "what passed"`, commit, push. `pmos/VERIFIED` names
    the aports and duranium-build trees; only an export named there is built
    for and published to the public release channels. Any later export goes
-   to the dev channels only until it is verified again.
+   to the dev channels only until it is verified again. "Run workflow" with
+   `try_release` (and `force`) builds and checks the release images of an
+   unverified export without publishing them.
 4. If a run warns that our duranium-build patches no longer apply upstream:
    rebase `build/wt/duranium` (branch `gtactive3wifi`) on `origin/main`,
    export, push. If upstream pmaports gained one of our aport names, the run
