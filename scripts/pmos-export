@@ -19,6 +19,9 @@
 #
 #   scripts/pmos-export [PMAPORTS_REF] [DURANIUM_REF]
 #       defaults: HEAD of both worktrees
+#   ONLY=duranium-build scripts/pmos-export [PMAPORTS_REF] [DURANIUM_REF]
+#       only the duranium-build series (an image build / update server fix):
+#       the exported aports and kernel stay what passed on the device
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 PMA=$P/build/wt/pmaports-duranium
@@ -38,11 +41,16 @@ device/testing/gnome-shell-extension-blur-my-shell
 device/testing/gnome-shell-extension-touchup"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+case "${ONLY:-}" in "" | duranium-build) ;; *) die "ONLY must be empty or duranium-build" ;; esac
 pc=$(git -C "$PMA" rev-parse --verify "$PREF^{commit}")
 dc=$(git -C "$DUR" rev-parse --verify "$DREF^{commit}")
 pbase=$(git -C "$PMA" merge-base "$pc" origin/main)
 dbase=$(git -C "$DUR" merge-base "$dc" origin/main)
 
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+if [ -z "${ONLY:-}" ]; then
 # 1. aports: every directory our branch adds or changes
 mapfile -t dirs < <(git -C "$PMA" diff --name-only "$pbase" "$pc" | awk -F/ '
 	$1 == "device" { print $1 "/" $2 "/" $3; next }
@@ -52,8 +60,6 @@ for d in "${dirs[@]}"; do
 	git -C "$PMA" cat-file -e "$pbase:$d" 2>/dev/null &&
 		die "$d exists upstream: we only add aports, never fork upstream ones"
 done
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/aports"
 for d in "${dirs[@]}"; do
 	git -C "$PMA" archive "$pc" "$d" | tar -x -C "$tmp/aports"
@@ -111,6 +117,7 @@ for need in ('_base="', 'gtactive3wifi.patch', 'linux-$_base"'):
     assert need in s, need
 open(path, "w").write(s)
 PY
+fi
 
 # 3. duranium-build: our commits as a series
 mkdir -p "$tmp/duranium-build"
@@ -123,14 +130,19 @@ if grep -rIlE 'BEGIN (OPENSSH|PGP|RSA|EC) PRIVATE|PRIVATE KEY-----' "$tmp"; then
 fi
 big=$(find "$tmp" -type f -size +2M ! -name gtactive3wifi.patch)
 [ -z "$big" ] || die "unexpectedly large files: $big"
-find "$tmp/aports" -type f \( -name '*.bin' -o -name '*.img' -o -name '*.fw' -o -name '*.hcd' \) | grep . &&
+if [ -d "$tmp/aports" ] && find "$tmp/aports" -type f \( -name '*.bin' -o -name '*.img' -o -name '*.fw' -o -name '*.hcd' \) | grep .; then
 	die "firmware-like files in the export"
+fi
 
 # 5. replace pmos/{aports,duranium-build,pmaports.BASE}
-rm -rf "$OUT/aports" "$OUT/duranium-build" "$OUT/pmaports.BASE"
 mkdir -p "$OUT"
-cp -r "$tmp/aports" "$tmp/duranium-build" "$tmp/pmaports.BASE" "$OUT/"
+rm -rf "$OUT/duranium-build"
+cp -r "$tmp/duranium-build" "$OUT/"
+if [ -z "${ONLY:-}" ]; then
+rm -rf "$OUT/aports" "$OUT/pmaports.BASE"
+cp -r "$tmp/aports" "$tmp/pmaports.BASE" "$OUT/"
 echo "exported pmaports $(git -C "$PMA" rev-parse --short "$pc") (${#dirs[@]} aports, base $(git -C "$PMA" rev-parse --short "$pbase")),"
-echo "  duranium-build $(git -C "$DUR" rev-parse --short "$dc") ($(ls "$OUT"/duranium-build/*.patch | wc -l) patches on $(git -C "$DUR" rev-parse --short "$dbase")),"
 echo "  kernel $(git -C "$LINUX" rev-parse --short "$kc") = torvalds $(git -C "$LINUX" rev-parse --short "$kbase") + $(($(stat -c %s "$K/gtactive3wifi.patch") >> 10)) KiB patch"
+fi
+echo "exported duranium-build $(git -C "$DUR" rev-parse --short "$dc") ($(find "$OUT"/duranium-build -name '*.patch' | wc -l) patches on $(git -C "$DUR" rev-parse --short "$dbase"))"
 git -C "$P" status --short pmos | head -20
