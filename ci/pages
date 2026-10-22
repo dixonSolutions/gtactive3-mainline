@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Generate the official release records (GitHub Pages) from the releases.
+
+    ci/pages OUT
+
+Writes OUT/releases.json (schema 1, below), OUT/channels/<id>.json (one
+channel each, same fields plus schema/generated/repo), OUT/index.html (the
+same data for humans) and OUT/sysupdate-public-key.asc.
+
+Only what a tablet would accept is listed: for every channel (ci/channels)
+the release's SHA256SUMS must verify against pmos/sysupdate-public-key.asc
+(gpgv), and the versions, files and sha256 values come from it. Sizes and
+URLs come from the GitHub release assets. A channel without a valid manifest
+is left out (with a warning). Installers still verify the signature
+themselves.
+
+releases.json:
+  {"schema": 1, "generated": iso8601, "repo": "owner/name",
+   "channels": [{"id", "ui", "flavour": "release"|"dev", "title",
+     "description", "prerelease", "verified", "latest",
+     "versions": [{"version", "date",
+       "files": [{"name", "size", "sha256", "url", "kind"}]}]}],
+   "bootchain": {...}}   (only when the boot-chain release exists)
+"verified" = built from an export that passed on the device
+(pmos/VERIFIED); only such builds reach the release channels.
+Environment: GITHUB_REPOSITORY, GH_TOKEN (API rate limit).
+"""
+import datetime
+import hashlib
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = os.environ.get("GITHUB_REPOSITORY", "dixonSolutions/gtactive3-mainline")
+KEY = HERE.parent / "pmos" / "sysupdate-public-key.asc"
+BOOTCHAIN_TAG = "samsung-gtactive3wifi_bootchain"
+TITLES = {"phosh": "Phosh", "gnome": "GNOME"}
+DESCRIPTIONS = {
+    "release": "{title} for everyone: postmarketOS Duranium with the gtactive3-mainline kernel and drivers.",
+    "dev": "{title} development build: adds the USB debug layer (root shell, ssh and adb over USB "
+           "without a password). For development tablets only.",
+}
+
+
+def warn(msg):
+    print(f"::warning::{msg}", file=sys.stderr)
+
+
+def fetch(url, api=False):
+    req = urllib.request.Request(url, headers={"User-Agent": "gtactive3-mainline-pages"})
+    if api:
+        req.add_header("Accept", "application/vnd.github+json")
+        if os.environ.get("GH_TOKEN"):
+            req.add_header("Authorization", f"Bearer {os.environ['GH_TOKEN']}")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+
+def releases():
+    out, page = [], 1
+    while True:
+        batch = json.loads(fetch(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}", api=True))
+        out += batch
+        if len(batch) < 100:
+            return {r["tag_name"]: r for r in out}
+        page += 1
+
+
+def channels():
+    lines = subprocess.run(["sh", str(HERE / "channels")], check=True, capture_output=True, text=True).stdout
+    return [line.split() for line in lines.splitlines() if line.strip()]
+
+
+def verified_manifest(rel, ring, tmp):
+    """{name: sha256} of the release's SHA256SUMS if our key signed it."""
+    assets = {a["name"]: a for a in rel["assets"]}
+    if "SHA256SUMS" not in assets or "SHA256SUMS.gpg" not in assets:
+        return None, None
+    data = fetch(assets["SHA256SUMS"]["browser_download_url"])
+    sig = fetch(assets["SHA256SUMS.gpg"]["browser_download_url"])
+    (tmp / "m").write_bytes(data)
+    (tmp / "m.gpg").write_bytes(sig)
+    if subprocess.run(["gpgv", "--keyring", str(ring), str(tmp / "m.gpg"), str(tmp / "m")],
+                      capture_output=True).returncode != 0:
+        return None, None
+    sums = {}
+    for line in data.decode().splitlines():
+        m = re.fullmatch(r"([0-9a-f]{64}) [ *](\S+)", line)
+        if m:
+            sums[m.group(2)] = m.group(1)
+    extra = {
+        "SHA256SUMS": hashlib.sha256(data).hexdigest(),
+        "SHA256SUMS.gpg": hashlib.sha256(sig).hexdigest(),
+    }
+    return sums, extra
+
+
+def kind(name):
+    for pat, k in ((r"\.efi$", "uki"), (r"\.usr-[a-z0-9]+-verity\.[0-9a-f]+\.raw\.zst$", "usr-verity"),
+                   (r"\.usr-[a-z0-9]+\.[0-9a-f]+\.raw\.zst$", "usr"), (r"-sysext-[a-z0-9]+\.raw\.zst$", "sysext"),
+                   (r"-confext-[a-z0-9]+\.raw\.zst$", "confext"), (r"_[0-9]{8}\.raw\.zst$", "install-raw")):
+        if re.search(pat, name):
+            return k
+    return None
+
+
+def file_entry(asset, sha, k):
+    return {"name": asset["name"], "size": asset["size"], "sha256": sha,
+            "url": asset["browser_download_url"], "kind": k}
+
+
+def channel(ui, flavour, tag, rel, ring, tmp):
+    sums, extra = verified_manifest(rel, ring, tmp)
+    if sums is None:
+        warn(f"{tag}: no SHA256SUMS signed by our key, left out")
+        return None
+    assets = {a["name"]: a for a in rel["assets"]}
+    prefix = tag.removesuffix("-dev") + "_"
+    versions = {}
+    for name, sha in sums.items():
+        m = re.match(re.escape(prefix) + r"([0-9]{8})\.", name)
+        k = kind(name)
+        if not m or not k:
+            continue
+        if name not in assets:
+            warn(f"{tag}: SHA256SUMS names {name}, which is not in the release")
+            continue
+        versions.setdefault(m.group(1), []).append(file_entry(assets[name], sha, k))
+    out = []
+    for v in sorted(versions, reverse=True):
+        files = sorted(versions[v], key=lambda f: f["name"])
+        uki = next((f for f in files if f["kind"] == "uki"), None)
+        if not uki:
+            warn(f"{tag}: version {v} has no UKI, left out")
+            continue
+        date = assets[uki["name"]]["updated_at"]
+        files += [file_entry(assets[n], extra[n], "manifest" if n == "SHA256SUMS" else "signature")
+                  for n in ("SHA256SUMS", "SHA256SUMS.gpg")]
+        out.append({"version": v, "date": date, "files": files})
+    if not out:
+        warn(f"{tag}: no complete version, left out")
+        return None
+    notes = rel.get("body") or ""
+    m = re.search(r"^Verified on the device: (yes|no)\b", notes, re.M)
+    title = TITLES.get(ui, ui.capitalize())
+    return {
+        "id": tag, "ui": ui, "flavour": flavour, "title": title,
+        "description": DESCRIPTIONS[flavour].format(title=title),
+        "prerelease": bool(rel["prerelease"]),
+        "verified": (m.group(1) == "yes") if m else flavour == "release",
+        "latest": out[0]["version"], "versions": out,
+    }
+
+
+def bootchain(rel, ring, tmp):
+    sums, extra = verified_manifest(rel, ring, tmp)
+    if sums is None:
+        warn(f"{BOOTCHAIN_TAG}: no SHA256SUMS signed by our key, left out")
+        return None
+    assets = {a["name"]: a for a in rel["assets"]}
+    files = [{"name": n, "size": assets[n]["size"], "sha256": s, "url": assets[n]["browser_download_url"]}
+             for n, s in sorted(sums.items()) if n in assets]
+    files += [{"name": n, "size": assets[n]["size"], "sha256": extra[n],
+               "url": assets[n]["browser_download_url"]} for n in ("SHA256SUMS", "SHA256SUMS.gpg")]
+    return {"tag": BOOTCHAIN_TAG, "prerelease": bool(rel["prerelease"]),
+            "date": rel.get("published_at") or rel.get("created_at"), "files": files}
+
+
+def fingerprint(ring):
+    out = subprocess.run(["gpg", "--batch", "--show-keys", "--with-colons", str(ring)],
+                         check=True, capture_output=True, text=True,
+                         env={**os.environ, "GNUPGHOME": str(ring.parent)}).stdout
+    fpr = next(l.split(":")[9] for l in out.splitlines() if l.startswith("fpr:"))
+    return " ".join(fpr[i:i + 4] for i in range(0, 40, 4))
+
+
+def size(n):
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+KIND_LABEL = {"install-raw": "Install image", "uki": "Kernel (UKI)", "usr": "/usr image",
+              "usr-verity": "/usr verity", "sysext": "System extension", "confext": "Config extension",
+              "manifest": "Manifest", "signature": "Signature"}
+
+CSS = """
+:root{--bg:#fafaf8;--fg:#1d1d1f;--muted:#5f6368;--line:#e2e2de;--card:#fff;--accent:#2e6b4f;
+--warn-bg:#fff4e0;--warn-fg:#7a4a00;--ok-bg:#e5f3ea;--ok-fg:#1e5a37;--pre-bg:#eceaf6;--pre-fg:#463c8a}
+@media (prefers-color-scheme:dark){:root{--bg:#131314;--fg:#e8e8e6;--muted:#a0a0a6;--line:#2c2c30;
+--card:#1b1b1d;--accent:#7cc8a0;--warn-bg:#3a2a10;--warn-fg:#f5c77a;--ok-bg:#16301f;--ok-fg:#8fd9ad;
+--pre-bg:#25223d;--pre-fg:#bdb4f5}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:1.6rem;margin:0 0 4px}h2{font-size:1.2rem;margin:0}h3{font-size:1rem;margin:18px 0 6px}
+p{margin:6px 0}a{color:var(--accent)}code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em}
+.muted{color:var(--muted)}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:18px 20px;margin:18px 0}.head{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.badge{font-size:.75rem;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.ok{background:var(--ok-bg);color:var(--ok-fg)}.warn{background:var(--warn-bg);color:var(--warn-fg)}
+.pre{background:var(--pre-bg);color:var(--pre-fg)}
+.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:560px}
+th,td{text-align:left;padding:6px 8px;border-top:1px solid var(--line);vertical-align:top}
+th{font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-top:0}
+td.sha{max-width:16ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.num{white-space:nowrap;text-align:right}nav a{margin-right:14px}
+details summary{cursor:pointer;color:var(--muted)}
+"""
+
+
+def page(data, fpr):
+    e = html.escape
+    out = [f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SM-T570 Duranium releases</title><style>{CSS}</style></head><body><main>
+<h1>Galaxy Tab Active3 (SM-T570) releases</h1>
+<p class="muted">postmarketOS Duranium images with the
+<a href="https://github.com/{e(REPO)}">gtactive3-mainline</a> kernel and drivers.
+Official record, generated {e(data['generated'])} from the GitHub releases.</p>
+<nav><a href="releases.json">releases.json</a><a href="sysupdate-public-key.asc">signing key</a>
+<a href="https://github.com/{e(REPO)}/blob/main/docs/INSTALL.md">install instructions</a>
+<a href="https://github.com/{e(REPO)}/blob/main/docs/RELEASES.md">how releases work</a></nav>
+<div class="card"><p><b>Signing key</b> <span class="mono">{e(fpr)}</span></p>
+<p class="muted">Every channel's <code>SHA256SUMS</code> is signed with this key (<code>SHA256SUMS.gpg</code>);
+installed tablets accept nothing else. The checksums below come from manifests whose signature this page
+checked. To install, follow <a href="https://github.com/{e(REPO)}/blob/main/docs/INSTALL.md">docs/INSTALL.md</a>;
+installed tablets update with <code>updatectl update</code>.
+Vendor firmware is not included in any image.</p></div>"""]
+    if not data["channels"]:
+        out.append('<div class="card"><p>No channel has a signed release yet.</p></div>')
+    for c in data["channels"]:
+        badges = [f'<span class="badge {"pre" if c["prerelease"] else "ok"}">'
+                  f'{"pre-release" if c["prerelease"] else "release"}</span>',
+                  '<span class="badge ok">verified on the device</span>' if c["verified"]
+                  else '<span class="badge warn">not verified on the device</span>',
+                  '<span class="badge ok">signature checked</span>']
+        if c["flavour"] == "dev":
+            badges.append('<span class="badge warn">root over USB, no password</span>')
+        out.append(f"""<div class="card" id="{e(c['id'])}"><div class="head"><h2>{e(c['title'])}
+{'development' if c['flavour'] == 'dev' else ''}</h2>{''.join(badges)}</div>
+<p class="muted">{e(c['description'])}</p>
+<p>Channel <code>{e(c['id'])}</code> &middot; latest <b>{e(c['latest'])}</b> &middot;
+<a href="https://github.com/{e(REPO)}/releases/tag/{e(c['id'])}">GitHub release</a> &middot;
+<a href="channels/{e(c['id'])}.json">{e(c['id'])}.json</a></p>""")
+        for i, v in enumerate(c["versions"]):
+            rows = "".join(
+                f'<tr><td>{e(KIND_LABEL.get(f["kind"], f["kind"]))}</td>'
+                f'<td><a class="mono" href="{e(f["url"])}">{e(f["name"])}</a></td>'
+                f'<td class="num">{size(f["size"])}</td>'
+                f'<td class="sha mono" title="{e(f["sha256"])}">{e(f["sha256"])}</td></tr>'
+                for f in v["files"])
+            table = (f'<div class="tbl"><table><tr><th>Kind</th><th>File</th><th>Size</th><th>SHA-256</th></tr>'
+                     f'{rows}</table></div>')
+            label = f'Version {e(v["version"])} <span class="muted">({e(v["date"][:10])})</span>'
+            out.append(f"<h3>{label}</h3>{table}" if i == 0 else
+                       f"<details><summary>{label}</summary>{table}</details>")
+        out.append("</div>")
+    if data.get("bootchain"):
+        b = data["bootchain"]
+        rows = "".join(f'<tr><td><a class="mono" href="{e(f["url"])}">{e(f["name"])}</a></td>'
+                       f'<td class="num">{size(f["size"])}</td>'
+                       f'<td class="sha mono" title="{e(f["sha256"])}">{e(f["sha256"])}</td></tr>'
+                       for f in b["files"])
+        out.append(f"""<div class="card"><div class="head"><h2>Boot chain</h2>
+<span class="badge ok">signature checked</span></div>
+<p class="muted">uniLoader + U-Boot payload for the BOOT partition (GPL, no Samsung files); used by the installer.</p>
+<div class="tbl"><table><tr><th>File</th><th>Size</th><th>SHA-256</th></tr>{rows}</table></div></div>""")
+    out.append("</main></body></html>\n")
+    return "\n".join(out)
+
+
+def main():
+    out = Path(sys.argv[1])
+    (out / "channels").mkdir(parents=True, exist_ok=True)
+    rels = releases()
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        os.chmod(tmp, 0o700)
+        ring = tmp / "ring.gpg"
+        ring.write_bytes(subprocess.run(["gpg", "--dearmor"], input=KEY.read_bytes(),
+                                        check=True, capture_output=True).stdout)
+        fpr = fingerprint(ring)
+        chans = []
+        for ui, flavour, tag in channels():
+            if tag in rels and (c := channel(ui, flavour, tag, rels[tag], ring, tmp)):
+                chans.append(c)
+        bc = bootchain(rels[BOOTCHAIN_TAG], ring, tmp) if BOOTCHAIN_TAG in rels else None
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    data = {"schema": 1, "generated": now, "repo": REPO, "channels": chans}
+    if bc:
+        data["bootchain"] = bc
+    (out / "releases.json").write_text(json.dumps(data, indent=2) + "\n")
+    for c in chans:
+        (out / "channels" / f"{c['id']}.json").write_text(
+            json.dumps({"schema": 1, "generated": now, "repo": REPO, **c}, indent=2) + "\n")
+    (out / "sysupdate-public-key.asc").write_bytes(KEY.read_bytes())
+    (out / "index.html").write_text(page(data, fpr))
+    print(f"{len(chans)} channels: " + ", ".join(f"{c['id']} {c['latest']}" for c in chans))
+
+
+if __name__ == "__main__":
+    main()
