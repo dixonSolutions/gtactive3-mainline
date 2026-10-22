@@ -276,7 +276,13 @@ for d in /etc/sysupdate.d /usr/lib/sysupdate.d; do [ -d $d ] && find $d -type f 
 update_test() {
 	local dir=${1:-$GTA3_REPO/build/wt/duranium/mkosi.output} ver=${2:-} ui name uki osv booted l before after stage f
 	step "Install a test build as an A/B update"
-	ui=${UI:-$(con_probe | awk '{ print $3 }')}
+	# the build's UI: UI=, else the image directory given, else the booted
+	# one (a test build may switch UI, e.g. Phosh on a tablet running GNOME)
+	case ${dir%/} in
+		*/samsung-gtactive3wifi_*_edge) ui=${dir%/}; ui=${ui##*/samsung-gtactive3wifi_}; ui=${ui%_edge} ;;
+		*) ui= ;;
+	esac
+	ui=${UI:-${ui:-$(con_probe | awk '{ print $3 }')}}
 	name=samsung-gtactive3wifi_${ui}_edge
 	[ -d "$dir/$name" ] && dir=$dir/$name
 	if [ -z "$ver" ]; then
