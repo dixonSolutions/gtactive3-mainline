@@ -15,11 +15,11 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 |---|---|---|---|---|
 | **CPU** Exynos 9810: 4× Mongoose M3 (2.7 GHz) + 4× Cortex-A55 (1.9 GHz) | A55 ×4 via PSCI. M3 ×4: powered by EL3 but cluster 1 hangs the bus on power-up | ◐ 4 of 8 cores | ◐ 4 of 8 cores | ACPM DVFS init (ECT/fvmap) so cluster 1 has a clock, then the PMU wake-event sequence (found), then online 4-7 |
 | **CPU frequency** | cpufreq-dt on the ACPM DVFS clock, requests on ACPM channel 0 (drv/dvfs2); APM sets the voltage | ✔ A55 208-1950 MHz, PLL measured, schedutil | ? (next kernel; image blacklists cpufreq-dt until then) | boot it in Duranium; M3 cluster with the big cores |
-| **CPU idle** | PSCI core power-down C2 (stock: 0x10000, 70/160/2000 us on A55) + flexpmu CPU_INFORM/pmu-intr-gen hints in exynos-pmu (drv/dvfs2); no cluster power-down (stock never powers down the A55 cluster) | ◐ psci_idle registers, hotplug core power-down verified (PMU status 0); C2 residency not yet measured | ? | measure C2 usage/residency in long idle (needs NO_HZ_IDLE, see below) |
+| **CPU idle** | PSCI core power-down C2 (stock: 0x10000) + flexpmu hints (drv/dvfs2) | ◐ psci_idle registers, hotplug core power-down verified | ✘ C2 disabled in the DT: cores in C2 are never woken (26102210 hang) | C2 wake-up path (PMU wake events) |
 | **GPU** Mali-G72 MP18 | panfrost probes, runs jobs, fixed 260 MHz (S-Boot level) | ◐ jobs run | ✘ not used: GNOME renders in software | GPU via the new KMS driver + Mesa kmsro (built, untested in GNOME); then GPU DVFS through ACPM |
 | **RAM** 4 GB LPDDR4X | 3.9 GiB usable; 128 MiB CMA added for scanout | ✔ | ✔ (boots, 2 GB+ in use) | MIF DVFS (bandwidth) later |
 | **Storage** 64 GB UFS 2.1 | ufs-exynos; 32-bit DMA, inline crypto/FMP PRDT format | ✔ (byte-exact 6.9 GB writes) | ✔ (boots, verity /usr, LUKS root) | — |
-| **microSD** | not wired up (FSYS1 MMC, clocks) | — | — | DT + dw_mmc-exynos + clocks |
+| **microSD** | dw_mmc-exynos (exynos9810-dw-mshc → exynos7), CMU_FSYS1 SD clocks, vmmc LDO31 / vqmmc LDO2 (drv/hwgaps) | ? | ◐ driver probes (26102219~test2), card detect + insert untested | insert a card: SDR104 tuning, read rate, hotplug |
 | **Display** 8.0" 1200×1920 TFT, Himax HX83102E TDDI, dual-link DSI | new `exynos` KMS driver: takes over DECON window 5 / IDMA_G0, page flips at vsync | ✔ fbcon on hardware scanout, clean | ✘ **pixelated/glitchy** (old simpledrm + software path; the new driver is not in a booted Duranium yet) | boot it in Duranium, verify GNOME on the GPU (screenshots via debugfs scanout); real panel/DSI power control (blank/unblank, DPMS) |
 | **Backlight** | DSIM DCS 0x51, both links, 0-3977 | ◐ values accepted; brightness change not visually confirmed | ✘ no slider in GNOME (needs a DSI connector, now provided) | verify slider + visible change |
 | **Rotation** (manual) | Mutter software rotation | ? | ? (reported broken) | verify with the KMS driver |
@@ -40,10 +40,10 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | **USB-C** charging / data | MAX77705 charger + USB-C BC1.2 input, DWC3 gadget | ✔ (SDP 475 mA, charging) | ◐ charging; host mode untested | USB host/OTG role switching (SM5504 role switch missing) |
 | **Battery** 5050 mAh | max17042 fuel gauge; temperature from the battery NTC (AP ADC ch1) | ✔ capacity/voltage; temp: was a stale 29.5 °C (FG in host-temperature mode), now the NTC | ◐ NTC + temperature policy verified with test modules on 26102209; ADC driver + DT not booted yet (drv/battemp) | boot drv/battemp; wall-charger measurement |
 | **Thermal** | TMU 8 zones; battery/charger/USB NTCs (exynos_adc 9810 + generic-adc-thermal) | ✔ TMU | ◐ NTC zones via test module | LITTLE zone: cpufreq cooling bound to a passive 86 C trip (bring-up; not yet driven by real heat) |
-| **PMIC** S2MPS18 | ACPM read-only regulators | ◐ read-only | ◐ | regulator control through ACPM (LDO40/41 for grip/NFC) |
-| **Grip sensor** A96T3x6 | driver, bus at 100 kHz | ✘ needs LDO40 | ? | PMIC regulator control |
+| **PMIC** S2MPS18 | ACPM: read-only except a whitelist of LDOs (camera, SD, grip, NFC) | ◐ | ✔ LDO switching through ACPM works (camera rails on for the sensor ID read and off again, LDO40 3.0 V, LDO41 1.8 V; 26102219~test2, 2026-10-23) | drop regulator_ignore_unused after a longer run |
+| **Grip sensor** A96T3x6 | driver, bus at 100 kHz, VDD_GRIP_3P0 = LDO40 | ✘ needs LDO40 | ◐ probes: fw 0x01 vendor 0xab model 0x50 (was no response) | proximity values with a hand near the edge (user) |
 | **Pogo pins** SM5504 MUIC | extcon-sm5502 | ✘ probe fails (no USB role switch) | ? | dwc3 role switch |
-| **Cameras** S5K3L6 8 MP rear, GC5035 5 MP front | none (no FIMC-IS/CSIS in mainline) | — | — | entire camera pipeline |
+| **Cameras** S5K3L6 8 MP rear, GC5035 5 MP front | exynos9810-csis raw capture (16-bit RAW10 words) + s5k3l6 + gc5035 (drv/cam), libcamera simple pipeline + SoftISP | — | ◐ both sensors probe and stream at 30 fps; rear test pattern = exact colour bars (64..1023); libcamera registers both, PipeWire shows Built-in Front/Back Camera (2026-10-23) | Snapshot in a lit room (user); libcamera sensor helpers (patches/libcamera/0002) |
 | **Sensors** accel/gyro/mag/light/proximity | behind BCM4773 sensor hub | — | — | sensor hub protocol |
 | **GPS** | BCM4773 GNSS | — | — | GNSS protocol |
 | **Fingerprint** | TrustZone-owned | — | — | not reachable from Linux |
@@ -60,7 +60,10 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | Hardware keys in GNOME | ✘ Home/Recent; fixed in the next image |
 | Audio (PipeWire/UCM) | next image (untested) |
 | Updates instead of 6.9 GB reinstalls | ✔ `scripts/duranium-update` (A/B usr + verity, UKI with boot counting, dev-tools sysext/confext per version in /var/lib/duranium-extensions) |
-| distrobox / podman / brew | ✔ podman 6.1.4 + distrobox 1.8.2.5 (dev-tools sysext), Fedora 44 box, `distrobox-export --bin` tested (26102209) |
+| Update server (GitHub releases, signed, sysupdate) | ✔ the tablet installed GNOME 26102218 from gnome_edge-dev with its own systemd-sysupdate; Phosh 26102217 booted and was blessed (boot counting through U-Boot EFI works); a broken-off download leaves the slot partial, recovered by vacuum (device r34 does it automatically) |
+| Suspend | ✔ suspend to idle (PSCI 0.1: the only state), 15 s sleep woken by the SoC RTC alarm, UFS powered down and relinked, USB console back; Wi-Fi is unloaded around sleep (brcmfmac PCIe D3 fails); power-key wake and battery drain still to measure; logind suspend stays off until the wake path is marked proven |
+| Hang recovery | ✔ watchdog handed over by U-Boot (82.6 s) and kept by the kernel; a deliberate lockup reset the board, the fallback Linux restarted Duranium after 15 s, disk unlocked; 3.5 min at the passphrase prompt causes no reset |
+| distrobox / podman / brew | ✔ podman in every image with Alpine 3.24.3 preinstalled (device -containers): root self-test all PASS offline (26102219~test2); distrobox in the dev-tools sysext (26102209) |
 
 ## CPU DVFS and idle (2026-10-22, measured)
 
