@@ -302,7 +302,7 @@ To reach a tablet over Wi-Fi (also behind enterprise networks that isolate
 clients, and next to a VPN on the PC), join it to your Tailscale tailnet:
 log in, connect to Wi-Fi, open Console and run
 
-    wget -qO- dixonsolutions.github.io/gtactive3-mainline/remote | sudo sh
+    wget -qO- https://dixonsolutions.github.io/gtactive3-mainline/remote | sudo sh
 
 Scan the QR code it shows with a phone signed in to your tailnet and
 approve the tablet; then `tailscale ssh root@gtactive3` from the PC. The

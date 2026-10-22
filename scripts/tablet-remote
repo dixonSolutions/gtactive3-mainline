@@ -5,7 +5,7 @@
 # and next to a VPN on the other end), with Tailscale SSH for the owner's
 # devices. Run in the tablet's Console app:
 #
-#   wget -qO- dixonsolutions.github.io/gtactive3-mainline/remote | sudo sh
+#   wget -qO- https://dixonsolutions.github.io/gtactive3-mainline/remote | sudo sh
 #
 # It shows a QR code: scan it with a phone signed in to the same tailnet and
 # approve the tablet. Then, from the PC: tailscale ssh root@gtactive3
