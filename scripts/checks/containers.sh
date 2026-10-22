@@ -1,10 +1,18 @@
 #!/bin/bash
-# Queued check (run from scripts/duranium-queue once Duranium is up): podman,
-# distrobox and Homebrew (inside a glibc distrobox; Duranium is musl) on the
-# tablet, over ssh with the local dev key. Needs Wi-Fi for the image pulls.
+# Queued check (run from scripts/duranium-queue once Duranium is up): podman
+# offline with the preinstalled Alpine image (device-samsung-gtactive3wifi-
+# containers), rootful and rootless; then distrobox and Homebrew (inside a
+# glibc distrobox; Duranium is musl), which need Wi-Fi for the image pulls.
+# Over ssh with the local dev key.
 P=$(cd "$(dirname "$0")/../.." && pwd)
 SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i $P/build/secrets/duranium-dev-ed25519 root@fe80::57:aff:fe00:1%$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1)"
 r() { echo "\$ $*"; timeout 1800 $SSH "$@" 2>&1 | tail -25; echo "(exit ${PIPESTATUS[0]})"; }
+
+# offline self-test: root, then the first-boot user in their own session
+# (systemd --user must be running: logged in on the screen)
+r '/usr/libexec/gtactive3wifi/containers-selftest'
+r 'u=$(cat /etc/default_user); loginctl list-sessions --no-legend; systemd-run --machine="$u@" --user --wait --pipe --quiet /usr/libexec/gtactive3wifi/containers-selftest'
+r 'systemctl status --no-pager gtactive3wifi-container-images.service | head -5; u=$(cat /etc/default_user); systemctl --machine="$u@" --user status --no-pager gtactive3wifi-container-images.service | head -5'
 
 r 'systemd-sysext list; systemd-sysext status'
 # dev-tools sysext: enable it if it is not merged yet
