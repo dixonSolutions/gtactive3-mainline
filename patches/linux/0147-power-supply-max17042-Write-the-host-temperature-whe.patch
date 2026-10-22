@@ -1,0 +1,111 @@
+From cd9acc24f1a7f4e5cb3c3b5678da8b796cbcbee7 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:58:14 +1100
+Subject: [PATCH 147/152] power: supply: max17042: Write the host temperature
+ when CONFIG.TEX is set
+
+With CONFIG.TEX the gauge does not measure the temperature; the host
+writes TEMP, which the gauge uses for its model and reports back. The
+MAX77705 gauge on the Galaxy Tab Active3 runs this way (CONFIG 0x0314)
+and kept a stale 29.6 C from the vendor kernel. Take the temperature
+from a "battery-thermal" zone every 10 s when there is one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/max17042_battery.c | 52 +++++++++++++++++++++++++
+ 1 file changed, 52 insertions(+)
+
+diff --git a/drivers/power/supply/max17042_battery.c b/drivers/power/supply/max17042_battery.c
+index 9f8413e89..4c2fb1515 100644
+--- a/drivers/power/supply/max17042_battery.c
++++ b/drivers/power/supply/max17042_battery.c
+@@ -19,6 +19,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/pm.h>
+ #include <linux/power_supply.h>
++#include <linux/thermal.h>
+ #include <linux/power/max17042_battery.h>
+ #include <linux/of.h>
+ #include <linux/regmap.h>
+@@ -38,6 +39,7 @@
+ 
+ /* Interrupt mask bits */
+ #define CFG_ALRT_BIT_ENBL	(1 << 2)
++#define CFG_TEX_BIT		(1 << 8)
+ #define CFG2_DSOCI_BIT_ENBL	(1 << 7)
+ 
+ #define VFSOC0_LOCK		0x0000
+@@ -80,6 +82,7 @@ struct max17042_chip {
+ 	enum max170xx_chip_type chip_type;
+ 	struct max17042_config_data *config_data;
+ 	struct delayed_work work;
++	struct delayed_work temp_work;
+ 	int    irq;
+ 	int    task_period;
+ 	bool   enable_current_sense;
+@@ -126,6 +129,43 @@ static enum power_supply_property max17042_battery_props[] = {
+ 	POWER_SUPPLY_PROP_CURRENT_AVG,
+ };
+ 
++#define MAX17042_HOST_TEMP_PERIOD_MS	10000
++
++/*
++ * With CONFIG.TEX set the gauge does not measure the temperature itself and
++ * the host has to write it to TEMP. Take it from the "battery-thermal" zone
++ * (for instance an NTC read by the SoC's ADC) when there is one. This runs
++ * from a work item only: the thermal core may call our own zone's get_temp
++ * with its zone list locked, so the lookup must not happen from there.
++ */
++static int max17042_write_host_temp(struct max17042_chip *chip)
++{
++	struct thermal_zone_device *tz;
++	int temp, ret;
++
++	tz = thermal_zone_get_zone_by_name("battery-thermal");
++	if (IS_ERR(tz))
++		return PTR_ERR(tz);
++
++	ret = thermal_zone_get_temp(tz, &temp);
++	if (ret)
++		return ret;
++
++	/* m°C to 1/256 °C */
++	return regmap_write(chip->regmap, MAX17042_TEMP,
++			    (u16)DIV_ROUND_CLOSEST(temp * 256, 1000));
++}
++
++static void max17042_host_temp_worker(struct work_struct *work)
++{
++	struct max17042_chip *chip = container_of(to_delayed_work(work),
++				struct max17042_chip, temp_work);
++
++	max17042_write_host_temp(chip);
++	schedule_delayed_work(&chip->temp_work,
++			      msecs_to_jiffies(MAX17042_HOST_TEMP_PERIOD_MS));
++}
++
+ static int max17042_get_temperature(struct max17042_chip *chip, int *temp)
+ {
+ 	int ret;
+@@ -1548,6 +1588,18 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
+ 
+ 	chip->irq = irq;
+ 
++	ret = regmap_read(chip->regmap, MAX17042_CONFIG, &val);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read config\n");
++
++	if (val & CFG_TEX_BIT) {
++		ret = devm_delayed_work_autocancel(dev, &chip->temp_work,
++						   max17042_host_temp_worker);
++		if (ret)
++			return ret;
++		schedule_delayed_work(&chip->temp_work, 0);
++	}
++
+ 	ret = regmap_read(chip->regmap, MAX17042_STATUS, &val);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "failed to read status\n");
+-- 
+2.56.0
+

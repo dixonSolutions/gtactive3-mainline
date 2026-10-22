@@ -1,0 +1,94 @@
+From 4c787d064963925fcf0225deaaef60059d5649d1 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 21:14:08 +1100
+Subject: [PATCH 121/152] Input: himax_hx83112b - HX83102E: use the chip ID
+ check, read events with AHB burst off
+
+Probe called the generic product ID check instead of the chip's
+check_id hook, so the HX83102E detection never ran; with it the chip is
+found (ID 83102e). Read the event stack like Samsung's driver (AHB burst
+off around the read) and dump frames that fail the checksum.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/himax_hx83112b.c | 36 +++++++++++++++++++---
+ 1 file changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/input/touchscreen/himax_hx83112b.c b/drivers/input/touchscreen/himax_hx83112b.c
+index 2e82a88c7..0d799dd89 100644
+--- a/drivers/input/touchscreen/himax_hx83112b.c
++++ b/drivers/input/touchscreen/himax_hx83112b.c
+@@ -426,6 +426,9 @@ static bool himax_verify_checksum(struct himax_ts_data *ts,
+ 	if ((checksum & 0x00ff) != 0) {
+ 		dev_err_ratelimited(ts->dev, "Wrong event checksum: %04x\n",
+ 				    checksum);
++		if (printk_ratelimit())
++			print_hex_dump(KERN_DEBUG, "himax event: ", DUMP_PREFIX_OFFSET,
++				       16, 1, data, length, false);
+ 		return false;
+ 	}
+ 
+@@ -439,6 +442,31 @@ static int himax_read_events(struct himax_ts_data *ts,
+ 			       length);
+ }
+ 
++/*
++ * HX83102E over SPI: Samsung's driver turns AHB burst off (0x11 = 0) for
++ * the event stack read and back on afterwards.
++ */
++#define HIMAX_AHB_ADDR_AHB		0x11
++
++static int hx83102e_read_events(struct himax_ts_data *ts,
++				void *event, size_t length)
++{
++	u8 v = 0;
++	int error, error2;
++
++	if (!ts->regmap8)
++		return himax_read_events(ts, event, length);
++
++	error = regmap_raw_write(ts->regmap8, HIMAX_AHB_ADDR_AHB, &v, 1);
++	if (error)
++		return error;
++	error = regmap_raw_read(ts->regmap, HIMAX_AHB_ADDR_EVENT_STACK, event,
++				length);
++	v = 1;
++	error2 = regmap_raw_write(ts->regmap8, HIMAX_AHB_ADDR_AHB, &v, 1);
++	return error ?: error2;
++}
++
+ static int hx83100a_read_events(struct himax_ts_data *ts,
+ 				void *event, size_t length)
+ {
+@@ -522,7 +550,7 @@ static int himax_probe_common(struct device *dev, struct regmap *regmap,
+ 	himax_reset(ts);
+ 
+ 	if (ts->chip->check_id) {
+-		error = himax_check_product_id(ts);
++		error = ts->chip->check_id(ts);
+ 		if (error)
+ 			return error;
+ 	}
+@@ -566,7 +594,7 @@ static const struct himax_chip hx83100a_chip __maybe_unused = {
+ static const struct himax_chip hx83102e_chip __maybe_unused = {
+ 	.id = 0x83102e,
+ 	.check_id = hx83102e_check_id,
+-	.read_events = himax_read_events,
++	.read_events = hx83102e_read_events,
+ 	.event_size = HX83102E_EVENT_SIZE,
+ 	/* Samsung's driver waits 50 ms before talking to the firmware */
+ 	.reset_delay_ms = 50,
+@@ -748,8 +776,8 @@ static int himax_spi_probe(struct spi_device *spi)
+ 	error = spi_setup(spi);
+ 	if (error)
+ 		return error;
+-	dev_info(dev, "SPI mode %u, %u Hz\n", spi->mode & SPI_MODE_X_MASK,
+-		 spi->max_speed_hz);
++	dev_info(dev, "SPI mode %u, %u Hz\n",
++		 (unsigned int)(spi->mode & SPI_MODE_X_MASK), spi->max_speed_hz);
+ 
+ 	hs = devm_kzalloc(dev, sizeof(*hs), GFP_KERNEL);
+ 	if (!hs)
+-- 
+2.56.0
+

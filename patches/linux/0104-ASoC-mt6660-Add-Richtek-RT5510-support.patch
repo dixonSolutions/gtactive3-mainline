@@ -1,7 +1,7 @@
 From e80c0a0bc5fd5bf892c8e5324d43d79a2ea00cd6 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:31:39 +1100
-Subject: [PATCH 104/119] ASoC: mt6660: Add Richtek RT5510 support
+Subject: [PATCH 104/152] ASoC: mt6660: Add Richtek RT5510 support
 
 The RT5510 is the Richtek-branded MT6660: Samsung's rt5510.c (SM-T570
 kernel) uses the same register map, the same chip ID check (DEVID & 0xff0

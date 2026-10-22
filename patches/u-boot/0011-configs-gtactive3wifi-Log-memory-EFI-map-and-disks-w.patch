@@ -1,7 +1,7 @@
 From 73db3742965e15a4f9035ab30b48801677469147 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:49:06 +1100
-Subject: [PATCH 11/13] configs: gtactive3wifi: Log memory, EFI map and disks
+Subject: [PATCH 11/18] configs: gtactive3wifi: Log memory, EFI map and disks
  when the boot fails
 
 Before the fastboot window, print bdinfo, efidebug memmap and the UFS LU0

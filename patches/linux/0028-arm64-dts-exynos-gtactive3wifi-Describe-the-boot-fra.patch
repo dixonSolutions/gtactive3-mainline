@@ -1,7 +1,7 @@
 From 6ebe9ae81aa1e24a3fdf23386b93b9c0e31031d9 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:08:18 +1100
-Subject: [PATCH 028/119] arm64: dts: exynos: gtactive3wifi: Describe the boot
+Subject: [PATCH 028/152] arm64: dts: exynos: gtactive3wifi: Describe the boot
  framebuffer for simpledrm
 
 Point the simple-framebuffer at its reserved-memory region instead of

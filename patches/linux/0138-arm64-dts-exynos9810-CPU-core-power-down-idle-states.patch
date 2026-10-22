@@ -1,0 +1,136 @@
+From 9255bd4e2890367c09bc6498c14b3473f56da159 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:41:08 +1100
+Subject: [PATCH 138/152] arm64: dts: exynos9810: CPU core power-down idle
+ states
+
+Add Samsung's C2 (core power-down, PSCI 0x10000) idle states with the
+stock latencies and residencies, and the PMU interrupt generator the
+PMU driver needs for the C2 handshake.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 44 ++++++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 5fabb34d8..554e57997 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -84,6 +84,7 @@ cpu0: cpu@0 {
+ 			reg = <0x0>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
++			cpu-idle-states = <&little_cpu_sleep>;
+ 		};
+ 
+ 		cpu1: cpu@1 {
+@@ -92,6 +93,7 @@ cpu1: cpu@1 {
+ 			reg = <0x1>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
++			cpu-idle-states = <&little_cpu_sleep>;
+ 		};
+ 
+ 		cpu2: cpu@2 {
+@@ -100,6 +102,7 @@ cpu2: cpu@2 {
+ 			reg = <0x2>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
++			cpu-idle-states = <&little_cpu_sleep>;
+ 		};
+ 
+ 		cpu3: cpu@3 {
+@@ -108,6 +111,7 @@ cpu3: cpu@3 {
+ 			reg = <0x3>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
++			cpu-idle-states = <&little_cpu_sleep>;
+ 		};
+ 
+ 		cpu4: cpu@100 {
+@@ -116,6 +120,7 @@ cpu4: cpu@100 {
+ 			reg = <0x100>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
++			cpu-idle-states = <&big_cpu_sleep>;
+ 		};
+ 
+ 		cpu5: cpu@101 {
+@@ -124,6 +129,7 @@ cpu5: cpu@101 {
+ 			reg = <0x101>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
++			cpu-idle-states = <&big_cpu_sleep>;
+ 		};
+ 
+ 		cpu6: cpu@102 {
+@@ -132,6 +138,7 @@ cpu6: cpu@102 {
+ 			reg = <0x102>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
++			cpu-idle-states = <&big_cpu_sleep>;
+ 		};
+ 
+ 		cpu7: cpu@103 {
+@@ -140,6 +147,37 @@ cpu7: cpu@103 {
+ 			reg = <0x103>;
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
++			cpu-idle-states = <&big_cpu_sleep>;
++		};
++
++		/*
++		 * Core power-down (Samsung's "C2"), parameters from the stock
++		 * device tree. Samsung's kernel never powers down the boot
++		 * (Cortex-A55) cluster, and powers down the Mongoose cluster
++		 * only from its own last-man logic (PSCI affinity level 1).
++		 */
++		idle-states {
++			entry-method = "psci";
++
++			little_cpu_sleep: cpu-sleep-little {
++				compatible = "arm,idle-state";
++				idle-state-name = "c2";
++				arm,psci-suspend-param = <0x0010000>;
++				local-timer-stop;
++				entry-latency-us = <70>;
++				exit-latency-us = <160>;
++				min-residency-us = <2000>;
++			};
++
++			big_cpu_sleep: cpu-sleep-big {
++				compatible = "arm,idle-state";
++				idle-state-name = "c2";
++				arm,psci-suspend-param = <0x0010000>;
++				local-timer-stop;
++				entry-latency-us = <235>;
++				exit-latency-us = <220>;
++				min-residency-us = <3500>;
++			};
+ 		};
+ 	};
+ 
+@@ -566,6 +604,7 @@ pmu_system_controller: system-controller@14060000 {
+ 			compatible = "samsung,exynos9810-pmu",
+ 				     "samsung,exynos7-pmu", "syscon";
+ 			reg = <0x14060000 0x10000>;
++			samsung,pmu-intr-gen-syscon = <&pmu_intr_gen>;
+ 		};
+ 
+ 		pd_g3d: power-domain@14064040 {
+@@ -577,6 +616,11 @@ pd_g3d: power-domain@14064040 {
+ 			status = "disabled";
+ 		};
+ 
++		pmu_intr_gen: syscon@14070000 {
++			compatible = "samsung,exynos9810-pmu-intr-gen", "syscon";
++			reg = <0x14070000 0x10000>;
++		};
++
+ 		cmu_cmgp: clock-controller@14200000 {
+ 			compatible = "samsung,exynos9810-cmu-cmgp";
+ 			reg = <0x14200000 0x8000>;
+-- 
+2.56.0
+

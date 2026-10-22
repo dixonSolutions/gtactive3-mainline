@@ -1,7 +1,7 @@
 From 415529d9ffe26153148cb78064c2a01eab62d57f Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:20 +1100
-Subject: [PATCH 071/119] arm64: dts: exynos: gtactive3wifi: Add Wi-Fi and
+Subject: [PATCH 071/152] arm64: dts: exynos: gtactive3wifi: Add Wi-Fi and
  Bluetooth
 
 Wi-Fi is a BCM4375 on PCIe channel 0 (stock pcie0@116A0000, enabled by

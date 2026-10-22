@@ -1,7 +1,7 @@
 From 553f9ed23ab40fc5b106405354f12c63b4f56672 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 13:53:36 +1100
-Subject: [PATCH 001/119] dt-bindings: arm: samsung: Add Samsung Galaxy Tab
+Subject: [PATCH 001/152] dt-bindings: arm: samsung: Add Samsung Galaxy Tab
  Active3 (SM-T570)
 
 Add the compatible for the Exynos9810 based Galaxy Tab Active3 Wi-Fi.

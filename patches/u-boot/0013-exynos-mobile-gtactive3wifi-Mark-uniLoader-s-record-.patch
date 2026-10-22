@@ -1,7 +1,7 @@
 From 7a08356f9eee6df478866dce7f2703b59ec840c6 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 20:01:43 +1100
-Subject: [PATCH 13/13] exynos-mobile: gtactive3wifi: Mark uniLoader's record
+Subject: [PATCH 13/18] exynos-mobile: gtactive3wifi: Mark uniLoader's record
  when handing over to the OS
 
 Stage 7 tells uniLoader that the chained boot reached the OS, so a

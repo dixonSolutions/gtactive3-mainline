@@ -1,0 +1,267 @@
+From 4e72991e9b766f629f50859ef43f3ae5024056cb Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 11:50:14 +1100
+Subject: [PATCH 148/152] Exynos9810: backlight off while the screen is blanked
+
+GNOME's screen blank switches the CRTC off, but the panel kept its
+backlight: measured on the device, 214 mA with the screen on and still
+184 mA blanked (backlight 1545/3977, bl_power 0).
+
+The DPU <-> panel hook becomes a small ops table (set_gamma for Night
+Light, set_power for blank/unblank). On disable the DPU tells the panel
+driver, which sends brightness 0 over DCS (from a work item) and only
+remembers brightness changes until the CRTC is enabled again, when the
+saved level is restored. The TDDI stays awake, so touch still wakes the
+screen.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/exynos9810/exynos9810_dpu.c  | 52 ++++++++++++------
+ drivers/video/backlight/exynos9810-dsim-bl.c | 58 ++++++++++++++++----
+ include/soc/samsung/exynos9810-panel-gamma.h | 21 ++++---
+ 3 files changed, 96 insertions(+), 35 deletions(-)
+
+diff --git a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+index 7509734c3..2e2b43ad1 100644
+--- a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
++++ b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+@@ -151,25 +151,39 @@ static void e9810_flip(struct e9810_dpu *dpu, dma_addr_t addr)
+ 
+ /* ---- gamma LUT -> panel digital gamma ---- */
+ 
+-static DEFINE_MUTEX(e9810_gamma_lock);
+-static exynos9810_panel_gamma_fn e9810_gamma_fn;
+-static void *e9810_gamma_priv;
++static DEFINE_MUTEX(e9810_panel_lock);
++static const struct exynos9810_panel_ops *e9810_panel_ops;
++static void *e9810_panel_priv;
+ static u16 e9810_gamma_scale[3] = { 0xffff, 0xffff, 0xffff };
++static bool e9810_panel_on = true;
+ 
+ /*
+  * Called by the panel driver (NULL to unregister). It gets the current
+- * scales at once, so it may load after the first commit.
++ * state at once, so it may load after the first commit.
+  */
+-void exynos9810_dpu_set_panel_gamma(exynos9810_panel_gamma_fn fn, void *priv)
++void exynos9810_dpu_set_panel(const struct exynos9810_panel_ops *ops, void *priv)
+ {
+-	mutex_lock(&e9810_gamma_lock);
+-	e9810_gamma_fn = fn;
+-	e9810_gamma_priv = priv;
+-	if (fn)
+-		fn(priv, e9810_gamma_scale);
+-	mutex_unlock(&e9810_gamma_lock);
++	mutex_lock(&e9810_panel_lock);
++	e9810_panel_ops = ops;
++	e9810_panel_priv = priv;
++	if (ops && ops->set_gamma)
++		ops->set_gamma(priv, e9810_gamma_scale);
++	if (ops && ops->set_power && !e9810_panel_on)
++		ops->set_power(priv, false);
++	mutex_unlock(&e9810_panel_lock);
++}
++EXPORT_SYMBOL_GPL(exynos9810_dpu_set_panel);
++
++static void e9810_set_panel_power(bool on)
++{
++	mutex_lock(&e9810_panel_lock);
++	if (on != e9810_panel_on) {
++		e9810_panel_on = on;
++		if (e9810_panel_ops && e9810_panel_ops->set_power)
++			e9810_panel_ops->set_power(e9810_panel_priv, on);
++	}
++	mutex_unlock(&e9810_panel_lock);
+ }
+-EXPORT_SYMBOL_GPL(exynos9810_dpu_set_panel_gamma);
+ 
+ /* each channel's top LUT entry: exact for GNOME's linear Night Light ramps */
+ static void e9810_set_gamma(struct e9810_dpu *dpu, struct drm_property_blob *blob)
+@@ -190,13 +204,14 @@ static void e9810_set_gamma(struct e9810_dpu *dpu, struct drm_property_blob *blo
+ 		}
+ 	}
+ 
+-	mutex_lock(&e9810_gamma_lock);
++	mutex_lock(&e9810_panel_lock);
+ 	if (memcmp(scale, e9810_gamma_scale, sizeof(scale))) {
+ 		memcpy(e9810_gamma_scale, scale, sizeof(scale));
+-		if (e9810_gamma_fn)
+-			e9810_gamma_fn(e9810_gamma_priv, e9810_gamma_scale);
++		if (e9810_panel_ops && e9810_panel_ops->set_gamma)
++			e9810_panel_ops->set_gamma(e9810_panel_priv,
++						   e9810_gamma_scale);
+ 	}
+-	mutex_unlock(&e9810_gamma_lock);
++	mutex_unlock(&e9810_panel_lock);
+ }
+ 
+ static int e9810_check(struct drm_simple_display_pipe *pipe,
+@@ -257,12 +272,17 @@ static void e9810_enable(struct drm_simple_display_pipe *pipe,
+ 	if (dpu->irq_ok)
+ 		drm_crtc_vblank_on(&pipe->crtc);
+ 	e9810_send_event(&pipe->crtc, dpu->irq_ok);
++	if (dpu->panel_gamma)
++		e9810_set_panel_power(true);
+ }
+ 
+ static void e9810_disable(struct drm_simple_display_pipe *pipe)
+ {
+ 	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
+ 
++	/* screen blank: the backlight goes dark, the video stream keeps running */
++	if (dpu->panel_gamma)
++		e9810_set_panel_power(false);
+ 	/* keep the panel fed: point the IDMA back at the boot framebuffer */
+ 	if (dpu->boot_addr)
+ 		e9810_flip(dpu, dpu->boot_addr);
+diff --git a/drivers/video/backlight/exynos9810-dsim-bl.c b/drivers/video/backlight/exynos9810-dsim-bl.c
+index 2c13e56e8..71d5807b8 100644
+--- a/drivers/video/backlight/exynos9810-dsim-bl.c
++++ b/drivers/video/backlight/exynos9810-dsim-bl.c
+@@ -112,6 +112,8 @@ struct dsim_bl {
+ 	struct mutex lock;		/* serialises the command FIFOs */
+ 
+ 	bool dgc;
++	bool blanked;			/* DPU switched the CRTC off */
++	struct work_struct power_work;
+ 	struct work_struct dgc_work;
+ 	spinlock_t dgc_slock;
+ 	u16 dgc_want[3], dgc_sent[3];	/* channel scales, 0xffff = Samsung's */
+@@ -253,6 +255,37 @@ static void dsim_bl_dgc_work(struct work_struct *work)
+ 		want[0], want[1], want[2]);
+ }
+ 
++static int dsim_bl_send_brightness(struct dsim_bl *bl, int brightness)
++{
++	u8 cmd[3] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS };
++
++	if (bl->brightness_bytes == 2) {
++		cmd[1] = brightness >> 8;
++		cmd[2] = brightness & 0xff;
++	} else {
++		cmd[1] = brightness;
++	}
++
++	return dsim_bl_dcs_write(bl, cmd, 1 + bl->brightness_bytes);
++}
++
++/* screen blank/unblank from the DPU: backlight to 0 or back to its level */
++static void dsim_bl_power_work(struct work_struct *work)
++{
++	struct dsim_bl *bl = container_of(work, struct dsim_bl, power_work);
++	bool blanked = READ_ONCE(bl->blanked);
++
++	dsim_bl_send_brightness(bl, blanked ? 0 : backlight_get_brightness(bl->bd));
++}
++
++static void dsim_bl_set_power(void *priv, bool on)
++{
++	struct dsim_bl *bl = priv;
++
++	WRITE_ONCE(bl->blanked, !on);
++	schedule_work(&bl->power_work);
++}
++
+ /* from the DPU's commit: keep only the newest request, send it from a work */
+ static void dsim_bl_set_gamma(void *priv, const u16 scale[3])
+ {
+@@ -265,28 +298,28 @@ static void dsim_bl_set_gamma(void *priv, const u16 scale[3])
+ 	schedule_work(&bl->dgc_work);
+ }
+ 
++static const struct exynos9810_panel_ops dsim_bl_panel_ops = {
++	.set_gamma = dsim_bl_set_gamma,
++	.set_power = dsim_bl_set_power,
++};
++
+ static void dsim_bl_dgc_remove(void *data)
+ {
+ 	struct dsim_bl *bl = data;
+ 
+-	exynos9810_dpu_set_panel_gamma(NULL, NULL);
++	exynos9810_dpu_set_panel(NULL, NULL);
+ 	cancel_work_sync(&bl->dgc_work);
++	cancel_work_sync(&bl->power_work);
+ }
+ 
+ static int dsim_bl_update_status(struct backlight_device *bd)
+ {
+ 	struct dsim_bl *bl = bl_get_data(bd);
+-	int brightness = backlight_get_brightness(bd);
+-	u8 cmd[3] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS };
+ 
+-	if (bl->brightness_bytes == 2) {
+-		cmd[1] = brightness >> 8;
+-		cmd[2] = brightness & 0xff;
+-	} else {
+-		cmd[1] = brightness;
+-	}
+-
+-	return dsim_bl_dcs_write(bl, cmd, 1 + bl->brightness_bytes);
++	/* while the screen is blanked the level is only remembered */
++	if (READ_ONCE(bl->blanked))
++		return 0;
++	return dsim_bl_send_brightness(bl, backlight_get_brightness(bd));
+ }
+ 
+ static const struct backlight_ops dsim_bl_ops = {
+@@ -487,6 +520,7 @@ static int dsim_bl_probe(struct platform_device *pdev)
+ 	bl->dgc = device_property_read_bool(dev, "samsung,hx83102e-dgc");
+ 	if (bl->dgc) {
+ 		INIT_WORK(&bl->dgc_work, dsim_bl_dgc_work);
++		INIT_WORK(&bl->power_work, dsim_bl_power_work);
+ 		spin_lock_init(&bl->dgc_slock);
+ 		/* the bootloader loaded Samsung's curves */
+ 		bl->dgc_sent[0] = bl->dgc_sent[1] = bl->dgc_sent[2] = 0xffff;
+@@ -494,7 +528,7 @@ static int dsim_bl_probe(struct platform_device *pdev)
+ 		ret = devm_add_action_or_reset(dev, dsim_bl_dgc_remove, bl);
+ 		if (ret)
+ 			return ret;
+-		exynos9810_dpu_set_panel_gamma(dsim_bl_set_gamma, bl);
++		exynos9810_dpu_set_panel(&dsim_bl_panel_ops, bl);
+ 	}
+ 
+ 	dev_info(dev, "%u DSI link(s), brightness %u/%u%s\n", bl->nlinks,
+diff --git a/include/soc/samsung/exynos9810-panel-gamma.h b/include/soc/samsung/exynos9810-panel-gamma.h
+index 51a6f0e16..6807c5b54 100644
+--- a/include/soc/samsung/exynos9810-panel-gamma.h
++++ b/include/soc/samsung/exynos9810-panel-gamma.h
+@@ -1,21 +1,28 @@
+ /* SPDX-License-Identifier: GPL-2.0-only */
+ /*
+- * Exynos9810 DPU <-> panel gamma hook: the DPU KMS driver turns the CRTC
+- * gamma LUT into per-channel scales (0..65535) and hands them to whoever
+- * drives the panel's own digital gamma (exynos9810-dsim-bl).
++ * Exynos9810 DPU <-> panel hooks, for whoever drives the panel over DSI
++ * (exynos9810-dsim-bl):
++ *  - set_gamma: the CRTC gamma LUT as per-channel scales (0..65535), for
++ *    the panel's own digital gamma;
++ *  - set_power: the CRTC was switched off/on (DPMS, screen blank), so the
++ *    backlight can go dark while the bootloader-run video stream continues.
+  */
+ #ifndef __SOC_SAMSUNG_EXYNOS9810_PANEL_GAMMA_H
+ #define __SOC_SAMSUNG_EXYNOS9810_PANEL_GAMMA_H
+ 
+ #include <linux/types.h>
+ 
+-typedef void (*exynos9810_panel_gamma_fn)(void *priv, const u16 scale[3]);
++struct exynos9810_panel_ops {
++	void (*set_gamma)(void *priv, const u16 scale[3]);
++	void (*set_power)(void *priv, bool on);
++};
+ 
+ #if IS_ENABLED(CONFIG_DRM_EXYNOS9810_DPU)
+-void exynos9810_dpu_set_panel_gamma(exynos9810_panel_gamma_fn fn, void *priv);
++void exynos9810_dpu_set_panel(const struct exynos9810_panel_ops *ops,
++			      void *priv);
+ #else
+-static inline void exynos9810_dpu_set_panel_gamma(exynos9810_panel_gamma_fn fn,
+-						  void *priv) { }
++static inline void exynos9810_dpu_set_panel(const struct exynos9810_panel_ops *ops,
++					    void *priv) { }
+ #endif
+ 
+ #endif
+-- 
+2.56.0
+

@@ -1,7 +1,7 @@
 From 0ad0e50797db6a37974d55d52ddbf1fc131414f2 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:32:13 +1100
-Subject: [PATCH 092/119] arm64: dts: exynos: gtactive3wifi: Add per-bus HSI2C
+Subject: [PATCH 092/152] arm64: dts: exynos: gtactive3wifi: Add per-bus HSI2C
  test variants
 
 The USI driver programs a bus's SW_CONF register at boot, and the PERIC

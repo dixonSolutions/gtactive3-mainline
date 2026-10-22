@@ -1,7 +1,7 @@
 From 81ced8a47cc50b09f97e1cc59bf6179b66c16d01 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:32:07 +1100
-Subject: [PATCH 110/119] arm64: dts: exynos: gtactive3wifi: Add audio
+Subject: [PATCH 110/152] arm64: dts: exynos: gtactive3wifi: Add audio
 
 Enable the A-Box with UAIF0/UAIF1 pins, the RT5665 codec at 0x1b on
 HSI2C_7 (IRQ gpa2-2, differential IN1/IN3/IN4, stock dtbo-4.dts

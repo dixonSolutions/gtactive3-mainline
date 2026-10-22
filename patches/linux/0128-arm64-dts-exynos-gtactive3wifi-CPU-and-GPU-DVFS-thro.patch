@@ -1,0 +1,266 @@
+From 75214c0b536de295a51c9a4765e62e6da9947b0d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 02:08:34 +1100
+Subject: [PATCH 128/152] arm64: dts: exynos: gtactive3wifi: CPU and GPU DVFS
+ through ACPM
+
+OPP tables from the APM firmware's fvmap (A55 208-1950 MHz, M3
+598-2704 MHz, G3D 260-572 MHz, capped at the retail clocks); the CPUs
+and the GPU take their clocks from the ACPM DVFS domains, the firmware
+sets the voltages.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 221 +++++++++++++++++-
+ 1 file changed, 220 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 4f1ea3db3..4f00d21c6 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -13,6 +13,7 @@
+ 
+ /dts-v1/;
+ #include "exynos9810.dtsi"
++#include <dt-bindings/clock/samsung,exynos9810-acpm.h>
+ #include <dt-bindings/gpio/gpio.h>
+ #include <dt-bindings/input/input.h>
+ #include <dt-bindings/interrupt-controller/irq.h>
+@@ -1087,6 +1088,193 @@ proximity@20 {
+ 	};
+ };
+ 
++/*
++ * CPU DVFS through the APM firmware (ACPM DVFS, channel 5). Levels from its
++ * fvmap in APM SRAM (domain 2: A55 208-2002 MHz, domain 3: M3 598-2886 MHz);
++ * the firmware sets the voltages. Capped at the retail clocks: 1.95 GHz
++ * (A55), 2.7 GHz (M3, the 2.86/2.89 GHz levels are 1-2 core turbo).
++ */
++/ {
++	cluster0_opp: opp-table-cluster0-opp {
++		compatible = "operating-points-v2";
++		opp-shared;
++
++		opp-208000000 {
++			opp-hz = /bits/ 64 <208000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-299000000 {
++			opp-hz = /bits/ 64 <299000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-455000000 {
++			opp-hz = /bits/ 64 <455000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-598000000 {
++			opp-hz = /bits/ 64 <598000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-715000000 {
++			opp-hz = /bits/ 64 <715000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-832000000 {
++			opp-hz = /bits/ 64 <832000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-949000000 {
++			opp-hz = /bits/ 64 <949000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1053000000 {
++			opp-hz = /bits/ 64 <1053000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1248000000 {
++			opp-hz = /bits/ 64 <1248000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1456000000 {
++			opp-hz = /bits/ 64 <1456000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1690000000 {
++			opp-hz = /bits/ 64 <1690000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1794000000 {
++			opp-hz = /bits/ 64 <1794000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1950000000 {
++			opp-hz = /bits/ 64 <1950000000>;
++			clock-latency-ns = <100000>;
++		};
++	};
++
++	cluster1_opp: opp-table-cluster1-opp {
++		compatible = "operating-points-v2";
++		opp-shared;
++
++		opp-598000000 {
++			opp-hz = /bits/ 64 <598000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-650000000 {
++			opp-hz = /bits/ 64 <650000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-741000000 {
++			opp-hz = /bits/ 64 <741000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-858000000 {
++			opp-hz = /bits/ 64 <858000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-962000000 {
++			opp-hz = /bits/ 64 <962000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1066000000 {
++			opp-hz = /bits/ 64 <1066000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1170000000 {
++			opp-hz = /bits/ 64 <1170000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1261000000 {
++			opp-hz = /bits/ 64 <1261000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1469000000 {
++			opp-hz = /bits/ 64 <1469000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1586000000 {
++			opp-hz = /bits/ 64 <1586000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1690000000 {
++			opp-hz = /bits/ 64 <1690000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1794000000 {
++			opp-hz = /bits/ 64 <1794000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1924000000 {
++			opp-hz = /bits/ 64 <1924000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-2002000000 {
++			opp-hz = /bits/ 64 <2002000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-2106000000 {
++			opp-hz = /bits/ 64 <2106000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-2314000000 {
++			opp-hz = /bits/ 64 <2314000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-2496000000 {
++			opp-hz = /bits/ 64 <2496000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-2652000000 {
++			opp-hz = /bits/ 64 <2652000000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-2704000000 {
++			opp-hz = /bits/ 64 <2704000000>;
++			clock-latency-ns = <100000>;
++		};
++	};
++};
++
++&cpu0 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL0>; operating-points-v2 = <&cluster0_opp>; };
++&cpu1 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL0>; operating-points-v2 = <&cluster0_opp>; };
++&cpu2 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL0>; operating-points-v2 = <&cluster0_opp>; };
++&cpu3 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL0>; operating-points-v2 = <&cluster0_opp>; };
++&cpu4 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL1>; operating-points-v2 = <&cluster1_opp>; };
++&cpu5 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL1>; operating-points-v2 = <&cluster1_opp>; };
++&cpu6 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL1>; operating-points-v2 = <&cluster1_opp>; };
++&cpu7 { clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_CPUCL1>; operating-points-v2 = <&cluster1_opp>; };
++
+ &soc {
+ 	/*
+ 	 * DECON0 + the IDMA channel S-Boot scans the panel out from
+@@ -1164,8 +1352,39 @@ gpu_clk: clock-gpu {
+ 	};
+ };
+ 
++/ {
++	/* G3D DVFS through ACPM (fvmap domain 4: 260-598 MHz, retail max 572) */
++	gpu_opp: opp-table-gpu {
++		compatible = "operating-points-v2";
++
++		opp-260000000 {
++			opp-hz = /bits/ 64 <260000000>;
++		};
++		opp-299000000 {
++			opp-hz = /bits/ 64 <299000000>;
++		};
++		opp-338000000 {
++			opp-hz = /bits/ 64 <338000000>;
++		};
++		opp-385000000 {
++			opp-hz = /bits/ 64 <385000000>;
++		};
++		opp-455000000 {
++			opp-hz = /bits/ 64 <455000000>;
++		};
++		opp-546000000 {
++			opp-hz = /bits/ 64 <546000000>;
++		};
++		opp-572000000 {
++			opp-hz = /bits/ 64 <572000000>;
++		};
++	};
++};
++
+ &gpu {
+-	clocks = <&gpu_clk>;
++	/* ACPM sets the G3D clock and BUCK6 voltage together */
++	clocks = <&acpm_ipc EXYNOS9810_CLK_ACPM_DVFS_G3D>;
++	operating-points-v2 = <&gpu_opp>;
+ 	/*
+ 	 * Stage 1: G3D is left on by S-Boot and the pm-domain driver is not
+ 	 * built (CONFIG_PM=n), so a power-domains link would only make
+-- 
+2.56.0
+

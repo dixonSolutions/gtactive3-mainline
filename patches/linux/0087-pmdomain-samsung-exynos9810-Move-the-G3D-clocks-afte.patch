@@ -1,7 +1,7 @@
 From 2352414191f118d774583af5064233cbb6b9f31e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:15:26 +1100
-Subject: [PATCH 087/119] pmdomain: samsung: exynos9810: Move the G3D clocks
+Subject: [PATCH 087/152] pmdomain: samsung: exynos9810: Move the G3D clocks
  after power-on
 
 The SM-T570 GPL kernel (the tablet's own vendor tree) orders

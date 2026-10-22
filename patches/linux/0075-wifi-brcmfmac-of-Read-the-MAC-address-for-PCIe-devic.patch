@@ -1,7 +1,7 @@
 From 9822dec8340cd3c0dd332a6a6494621b1bfdcc1d Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:22:35 +1100
-Subject: [PATCH 075/119] wifi: brcmfmac: of: Read the MAC address for PCIe
+Subject: [PATCH 075/152] wifi: brcmfmac: of: Read the MAC address for PCIe
  devices too
 
 PCIe devices are described in the device tree by their "pciVVVV,DDDD"

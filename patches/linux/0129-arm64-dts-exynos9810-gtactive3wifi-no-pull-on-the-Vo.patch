@@ -1,0 +1,31 @@
+From 6ad10d7ec60881296dd5707fadd417335f8653af Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 03:12:00 +1100
+Subject: [PATCH 129/152] arm64: dts: exynos9810-gtactive3wifi: no pull on the
+ Volume Down key
+
+Measured on the device: with the internal pull-up enabled, gpa0-4 never
+goes low when Volume Down is pressed; with the pull disabled, as in the
+stock device tree, every press reaches gpio-keys.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 4f00d21c6..9ac3adfac 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -286,7 +286,7 @@ key_power: key-power-pins {
+ 	key_voldown: key-voldown-pins {
+ 		samsung,pins = "gpa0-4";
+ 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+-		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+ 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+ 	};
+ 
+-- 
+2.56.0
+

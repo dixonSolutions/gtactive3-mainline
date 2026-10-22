@@ -1,7 +1,7 @@
 From dfa049d1404d36283a09c46d7adefd04d0797eb5 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:04:30 +1100
-Subject: [PATCH 080/119] dt-bindings: power: pd-samsung: Add Exynos9810 power
+Subject: [PATCH 080/152] dt-bindings: power: pd-samsung: Add Exynos9810 power
  domains
 
 Exynos9810 domains use a 4-bit LOCAL_PWR_CFG like Exynos5433, and the

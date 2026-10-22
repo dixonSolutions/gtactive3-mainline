@@ -1,0 +1,207 @@
+From 691e2f8feee905647a8ac5eee3aa9a7e7dbf2abc Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:40:30 +1100
+Subject: [PATCH 18/18] board: exynos-mobile: gtactive3wifi: no boot watchdog
+ deadline
+
+uniLoader arms the cluster 0 watchdog and the Download-mode reboot reason
+before it jumps to U-Boot. Stop the counter in misc_init_r, mask its PMU
+reset again and set the reboot reason back to normal, hand the OS a
+stopped watchdog (wdt_handover=stop) and drop EXYNOS9810_EARLY_SAFETY.
+A failed boot now ends in the boot menu, whose bring-up Linux entry still
+fires the watchdog on purpose. Running systems pet the watchdog from
+systemd (RuntimeWatchdogSec) without a reboot deadline.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ board/samsung/exynos-mobile/exynos-mobile.c   | 27 ++++++++--
+ board/samsung/exynos-mobile/gtactive3wifi.env | 52 +++++--------------
+ configs/gtactive3wifi_defconfig               |  2 +-
+ 3 files changed, 38 insertions(+), 43 deletions(-)
+
+diff --git a/board/samsung/exynos-mobile/exynos-mobile.c b/board/samsung/exynos-mobile/exynos-mobile.c
+index 6a2e50ca..7c002875 100644
+--- a/board/samsung/exynos-mobile/exynos-mobile.c
++++ b/board/samsung/exynos-mobile/exynos-mobile.c
+@@ -557,6 +557,26 @@ static void gtactive3_max77705_com_usb(void)
+ 	writel(con_scl, GTA3_SCL);
+ }
+ 
++/*
++ * uniLoader arms the cluster 0 watchdog (~82 s) and the Download-mode
++ * reboot reason before it jumps here. Undo both: stop the counter, mask its
++ * PMU reset again as S-Boot leaves it, and make a reset boot normally
++ * (syscon-reboot-mode "normal" in the kernel DT). A hang now stays on
++ * screen instead of resetting; the bring-up Linux is in the boot menu.
++ */
++#define GTA3_PMU		0x14060000UL
++#define GTA3_WDT_CL0		0x10050000UL
++
++static void gtactive3_watchdog_off(void)
++{
++	writel(0, GTA3_WDT_CL0);
++	writel(readl(GTA3_PMU + 0x40c) | BIT(24), GTA3_PMU + 0x40c);
++	writel(readl(GTA3_PMU + 0x408) | BIT(24), GTA3_PMU + 0x408);
++	writel(0x12345678, GTA3_PMU + 0x808);
++	writel(0x12345670, GTA3_PMU + 0x80c);
++	log_info("watchdog stopped, reboot reason normal\n");
++}
++
+ #if IS_ENABLED(CONFIG_EXYNOS_MOBILE_RAMLOG)
+ /*
+  * uniLoader's boot decision record (struct chain_info, main/chainload.h in
+@@ -600,9 +620,9 @@ static void exynos_mark_uniloader_os(void)
+ 
+ /*
+  * Hand the watchdog to the OS (EFI ExitBootServices and booti both end up
+- * here). wdt_handover=keep (default): leave it running with a full timeout,
+- * so a kernel that hangs before its watchdog driver takes over resets into
+- * uniLoader's fallback Linux. wdt_handover=stop: stop it.
++ * here). wdt_handover=keep: leave it running with a full timeout, so a
++ * kernel that hangs before its watchdog driver takes over resets into
++ * uniLoader's fallback Linux. wdt_handover=stop (gtactive3wifi): stop it.
+  */
+ void board_quiesce_devices(void)
+ {
+@@ -635,6 +655,7 @@ int misc_init_r(void)
+ 	env_set("board", board_info->name);
+ 
+ 	if (!strcmp(board_info->name, "gtactive3wifi")) {
++		gtactive3_watchdog_off();
+ 		exynos_show_uniloader_record();
+ 		gtactive3_max77705_com_usb();
+ 	}
+diff --git a/board/samsung/exynos-mobile/gtactive3wifi.env b/board/samsung/exynos-mobile/gtactive3wifi.env
+index 9f8f137f..a841dca0 100644
+--- a/board/samsung/exynos-mobile/gtactive3wifi.env
++++ b/board/samsung/exynos-mobile/gtactive3wifi.env
+@@ -1,10 +1,11 @@
+ /*
+  * Galaxy Tab Active3 (SM-T570), chain-loaded by uniLoader from BOOT:
+  *   S-Boot -> uniLoader -> U-Boot (EFI) -> systemd-boot -> Duranium UKI
+- * uniLoader arms the cluster 0 watchdog before starting U-Boot and boots its
+- * embedded bring-up Linux after a watchdog reset. Every failure below ends in
+- * "run fallback", which fires that watchdog now, and any hang in the
+- * watchdog reset (nothing services it unless asked to, see "kick").
++ * uniLoader arms the cluster 0 watchdog before starting U-Boot; the board
++ * code stops it at once (misc_init_r) and nothing here starts it again, so
++ * there is no boot deadline. A failed boot ends in the boot menu, whose
++ * "Bring-up Linux" entry fires the watchdog on purpose ("run fallback"):
++ * uniLoader boots its embedded bring-up Linux after a watchdog reset.
+  *
+  * No UART is wired out: the console is the display, input the keys.
+  */
+@@ -18,41 +19,27 @@ bootmenu_delay=15
+ 
+ /*
+  * Hold Volume Up after the S-Boot warning screen for the boot menu; it
+- * picks entry 0 after bootmenu_delay s, well inside the watchdog period.
++ * picks entry 0 after bootmenu_delay s.
+  */
+ button_cmd_0_name=Volume Up
+-button_cmd_0=run kick; bootmenu ${bootmenu_delay}
++button_cmd_0=bootmenu ${bootmenu_delay}
+ 
+ /* Duranium image written raw to userdata (sda31), with its own GPT */
+ ud_part=31
+ esp_part=1
+ kernel_addr_r=0x90000000
+ 
+-/* Watchdog for the OS: keep (running, ~80 s) or stop */
+-wdt_handover=keep
++/* Watchdog for the OS: stop, or keep (running, wdt_handover_ms) */
++wdt_handover=stop
+ wdt_handover_ms=80000
+-
+-/*
+- * The cluster 0 watchdog runs from U-Boot's entry (uniLoader and
+- * EXYNOS9810_EARLY_SAFETY arm ~82 s) and is not serviced in the background
+- * (no WATCHDOG_AUTOSTART): "kick" gives each boot step a fresh ~82 s, so a
+- * step that loops forever, even one that calls schedule(), still ends in
+- * the reset to the bring-up Linux. "keepalive" starts the driver's
+- * background servicing for interactive use (fastboot, menu, prompt).
+- */
+ wdt_dev=watchdog@10050000
+-kick=wdt dev ${wdt_dev} && wdt reset
+-keepalive=wdt dev ${wdt_dev} && wdt start 60000
+ 
+ /* DECON_F HW_SW_TRIG_CONTROL: keep the bootloader framebuffer on screen */
+ bootcmd=mw.l 0x16030070 0x1281;
+-	run kick;
+ 	run duranium;
+ 	echo "gtactive3wifi: boot failed";
+-	run kick;
+ 	run diag;
+-	run fastboot_window;
+-	run fallback
++	bootmenu -1
+ 
+ ufs_scan=ufs init && scsi scan
+ 
+@@ -72,10 +59,8 @@ duranium=echo "gtactive3wifi: userdata as a disk";
+ 	run userdata_map &&
+ 	part list blkmap ${ud_dev} &&
+ 	echo "gtactive3wifi: EFI boot manager" &&
+-	run kick &&
+ 	bootefi bootmgr;
+ 	echo "gtactive3wifi: systemd-boot from blkmap ${ud_dev}:${esp_part}";
+-	run kick;
+ 	load blkmap ${ud_dev}:${esp_part} ${kernel_addr_r} EFI/BOOT/BOOTAA64.EFI &&
+ 	bootefi ${kernel_addr_r}
+ 
+@@ -85,16 +70,6 @@ diag=bdinfo;
+ 	part list scsi 0;
+ 	if test -n "${ud_dev}"; then blkmap info; fi
+ 
+-/*
+- * Fastboot for one watchdog period (~82 s), then the bring-up Linux.
+- * From the host: "fastboot oem run:run keepalive" keeps U-Boot running,
+- * "fastboot oem run:run fallback" goes to the bring-up Linux at once.
+- */
+-fastboot_window=echo "gtactive3wifi: fastboot for ~80 s, then the bring-up Linux";
+-	run ufs_scan;
+-	run kick;
+-	fastboot usb 0
+-
+ /* Back to uniLoader's bring-up Linux: watchdog reset now */
+ fallback=echo "gtactive3wifi: watchdog reset to the bring-up Linux";
+ 	wdt dev ${wdt_dev} && wdt expire;
+@@ -112,9 +87,8 @@ fallback_raw=mw.l 0x10050000 0;
+ 	sleep 1;
+ 	reset
+ 
+-/* Someone is holding the tablet: service the watchdog, no deadline */
++/* From the host: "fastboot oem run:run fallback" for the bring-up Linux */
+ fastbootcmd=echo "Fastboot Mode";
+-	run keepalive;
+ 	run ufs_scan;
+ 	fastboot usb 0
+ 
+@@ -127,9 +101,9 @@ reboot_recovery=mw.l 0x14060808 0x12345678;
+ 	mw.l 0x1406080c 0x12345674;
+ 	reset
+ 
+-bootmenu_0=Boot postmarketOS Duranium=run duranium; run fallback
++bootmenu_0=Boot postmarketOS Duranium=run duranium; bootmenu -1
+ bootmenu_1=Bring-up Linux (USB console)=run fallback
+ bootmenu_2=Fastboot=run fastbootcmd
+-bootmenu_3=UEFI Maintenance Menu=run keepalive; eficonfig
++bootmenu_3=UEFI Maintenance Menu=eficonfig
+ bootmenu_4=Download Mode=run reboot_download
+ bootmenu_5=Reboot=reset
+diff --git a/configs/gtactive3wifi_defconfig b/configs/gtactive3wifi_defconfig
+index 6e0a1deb..77b2f064 100644
+--- a/configs/gtactive3wifi_defconfig
++++ b/configs/gtactive3wifi_defconfig
+@@ -86,7 +86,7 @@ CONFIG_HEXDUMP=y
+ CONFIG_ENV_SOURCE_FILE="gtactive3wifi"
+ # CONFIG_REQUIRE_SERIAL_CONSOLE is not set
+ CONFIG_SYSRESET_PSCI=y
+-CONFIG_EXYNOS9810_EARLY_SAFETY=y
++# CONFIG_EXYNOS9810_EARLY_SAFETY is not set
+ CONFIG_EXYNOS_MOBILE_RAMLOG=y
+ CONFIG_MULTI_DTB_FIT=y
+ CONFIG_BUTTON_CMD=y
+-- 
+2.56.0
+

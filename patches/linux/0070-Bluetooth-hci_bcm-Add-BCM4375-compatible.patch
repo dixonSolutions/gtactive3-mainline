@@ -1,7 +1,7 @@
 From 26211a202a48cc5c4bd39fbf7506a703b7222e82 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:20 +1100
-Subject: [PATCH 070/119] Bluetooth: hci_bcm: Add BCM4375 compatible
+Subject: [PATCH 070/152] Bluetooth: hci_bcm: Add BCM4375 compatible
 
 UART Bluetooth part of the BCM4375 Wi-Fi/BT combo chip.
 

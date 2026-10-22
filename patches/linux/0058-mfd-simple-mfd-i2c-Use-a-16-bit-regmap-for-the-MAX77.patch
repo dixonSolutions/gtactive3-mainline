@@ -1,7 +1,7 @@
 From 0c6bf8207ad1cd217dde715891efbac471f0e628 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:13:21 +1100
-Subject: [PATCH 058/119] mfd: simple-mfd-i2c: Use a 16-bit regmap for the
+Subject: [PATCH 058/152] mfd: simple-mfd-i2c: Use a 16-bit regmap for the
  MAX77705 fuel gauge
 
 The MAX77705 fuel gauge block (the "maxim,max77705-battery" device)

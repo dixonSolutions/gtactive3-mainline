@@ -1,0 +1,507 @@
+From cac9f9b43eb49f0afec22e5f126b95dbf86603ce Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 11:25:20 +1100
+Subject: [PATCH 146/152] power: supply: max77705: Limit charging by battery
+ temperature
+
+Read the battery temperature from a "battery-thermal" thermal zone,
+when there is one, every 10 s and step the charging down outside the
+normal range, with the values of the Galaxy Tab Active3 battery tables
+(sec-battery temperature thresholds and swelling steps):
+
+  below 0 C   off                      (health cold)
+  0-5 C       450 mA, 4.05 V           (cool)
+  5-15 C      1.15 A, 4.05 V           (cool)
+  15-42 C     battery limits           (good)
+  42-50 C     1.75 A, 4.05 V           (warm)
+  from 50 C   off                      (overheat)
+
+Steps back towards normal need 2 C of margin (stock recovery values).
+A "charger-thermal" zone at 46 C (recovery 44 C) limits the input to
+1 A and the charge current to 1.25 A, as chg_high_temp does in stock.
+
+The requested limits (battery info, sysfs, the supplier's input limit)
+are kept and the reduced values programmed only when they change, so an
+input limit lowered by AICL is not undone. The existing 1.5 A
+fast-charge cap stays and gets a matching 1.5 A input cap (ilim_cap_ua);
+lifting them is a separate step once this has run on the device.
+
+Also report a disabled charger as not charging (online) or discharging
+instead of a charge-type value in the status property.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/max77705_charger.c | 322 +++++++++++++++++++++---
+ include/linux/power/max77705_charger.h  |  14 ++
+ 2 files changed, 296 insertions(+), 40 deletions(-)
+
+diff --git a/drivers/power/supply/max77705_charger.c b/drivers/power/supply/max77705_charger.c
+index 83d60d716..be7384273 100644
+--- a/drivers/power/supply/max77705_charger.c
++++ b/drivers/power/supply/max77705_charger.c
+@@ -17,22 +17,65 @@
+ #include <linux/platform_device.h>
+ #include <linux/power_supply.h>
+ #include <linux/regmap.h>
++#include <linux/thermal.h>
+ 
+ /* CHGIN_LIM selectors up to this one all select MAX77705_CURRENT_CHGIN_MIN */
+ #define MAX77705_CHGIN_LIM_MIN_SEL	3
+ 
+ static const char *max77705_charger_model		= "max77705";
+ 
++static const char *max77705_charger_manufacturer	= "Maxim Integrated";
++
+ /*
+- * Nothing in the kernel watches the battery temperature on boards where it
+- * comes from an AP-side NTC that has no driver yet. Until it does, keep the
+- * fast-charge current to a level that is safe without thermal supervision.
+- * 0 removes the cap.
++ * Caps on the fast-charge and input currents, on top of the temperature
++ * steps below. They stay at levels that are safe without thermal
++ * supervision until the temperature-driven limits have been checked on the
++ * device. 0 removes a cap.
+  */
+ static unsigned int cc_cap_ua = 1500000;
+ module_param(cc_cap_ua, uint, 0444);
+-MODULE_PARM_DESC(cc_cap_ua, "Fast-charge current cap without battery temperature monitoring, uA (0 = none)");
+-static const char *max77705_charger_manufacturer	= "Maxim Integrated";
++MODULE_PARM_DESC(cc_cap_ua, "Fast-charge current cap, uA (0 = none)");
++
++static unsigned int ilim_cap_ua = 1500000;
++module_param(ilim_cap_ua, uint, 0444);
++MODULE_PARM_DESC(ilim_cap_ua, "Input current cap, uA (0 = none)");
++
++#define MAX77705_TEMP_POLL_MS		10000
++#define MAX77705_TEMP_HYST		2000	/* m°C */
++#define MAX77705_TEMP_MAX_ERRORS	3
++
++/*
++ * Charging by battery temperature, from the Samsung Galaxy Tab Active3
++ * battery tables (sec-battery temp_*_threshold and swelling_* values):
++ * off below 0 °C, 450 mA below 5 °C, 1.15 A below 15 °C, 1.75 A from 42 °C,
++ * off from 50 °C, with the float voltage lowered to 4.05 V outside 15-42 °C.
++ * Steps back towards normal need 2 °C of margin.
++ */
++struct max77705_temp_step {
++	int temp_max;		/* m°C, upper bound */
++	int cc_ua;		/* 0: charging off */
++	int cv_uv;		/* 0: the battery's float voltage */
++	int health;
++};
++
++static const struct max77705_temp_step max77705_temp_steps[] = {
++	{       0,       0,       0, POWER_SUPPLY_HEALTH_COLD },
++	{    5000,  450000, 4050000, POWER_SUPPLY_HEALTH_COOL },
++	{   15000, 1150000, 4050000, POWER_SUPPLY_HEALTH_COOL },
++	{   42000, INT_MAX,       0, POWER_SUPPLY_HEALTH_GOOD },
++	{   50000, 1750000, 4050000, POWER_SUPPLY_HEALTH_WARM },
++	{ INT_MAX,       0,       0, POWER_SUPPLY_HEALTH_OVERHEAT },
++};
++
++#define MAX77705_TEMP_STEP_NORMAL	3
++
++/*
++ * Charger IC hot (stock chg_high_temp 46 °C, recovery 44 °C): input 1 A,
++ * fast charge 1.25 A.
++ */
++#define MAX77705_CHG_HOT		46000
++#define MAX77705_CHG_HOT_ILIM_UA	1000000
++#define MAX77705_CHG_HOT_CC_UA		1250000
+ 
+ static const struct regmap_config max77705_chg_regmap_config = {
+ 	.reg_base = MAX77705_CHG_REG_BASE,
+@@ -125,22 +168,13 @@ static const struct regmap_irq_chip max77705_charger_irq_chip = {
+ 	.num_irqs		= ARRAY_SIZE(max77705_charger_irqs),
+ };
+ 
+-static int max77705_charger_enable(struct max77705_charger_data *chg)
+-{
+-	int rv;
+-
+-	rv = regmap_field_write(chg->rfield[MAX77705_CHG_EN], 1);
+-	if (rv)
+-		dev_err(chg->dev, "unable to enable the charger: %d\n", rv);
+-
+-	return rv;
+-}
+-
+ static void max77705_charger_disable(void *data)
+ {
+ 	struct max77705_charger_data *chg = data;
+ 	int rv;
+ 
++	cancel_delayed_work_sync(&chg->temp_work);
++
+ 	rv = regmap_field_write(chg->rfield[MAX77705_CHG_EN], MAX77705_CHG_DISABLE);
+ 	if (rv)
+ 		dev_err(chg->dev, "unable to disable the charger: %d\n", rv);
+@@ -170,9 +204,6 @@ static int max77705_set_charge_current(struct max77705_charger_data *chg, int uA
+ {
+ 	unsigned int regval;
+ 
+-	if (cc_cap_ua && uA > (int)cc_cap_ua)
+-		uA = cc_cap_ua;
+-
+ 	regval = clamp_val(uA, MAX77705_CURRENT_CHG_MIN, MAX77705_CURRENT_CHG_MAX) /
+ 		 MAX77705_CURRENT_CHG_STEP;
+ 
+@@ -243,10 +274,13 @@ static int max77705_get_status(struct max77705_charger_data *chg, int *val)
+ {
+ 	struct regmap *regmap = chg->regmap;
+ 	unsigned int reg_data, chg_en;
++	int online = 0;
+ 
+ 	regmap_field_read(chg->rfield[MAX77705_CHG_EN], &chg_en);
+ 	if (!chg_en) {
+-		*val = POWER_SUPPLY_CHARGE_TYPE_NONE;
++		max77705_get_online(regmap, &online);
++		*val = online ? POWER_SUPPLY_STATUS_NOT_CHARGING :
++				POWER_SUPPLY_STATUS_DISCHARGING;
+ 		return 0;
+ 	}
+ 
+@@ -358,6 +392,15 @@ static int max77705_get_health(struct max77705_charger_data *chg, int *val)
+ {
+ 	struct regmap *regmap = chg->regmap;
+ 	int ret, is_online = 0;
++	int step;
++
++	mutex_lock(&chg->lock);
++	step = chg->temp_step;
++	mutex_unlock(&chg->lock);
++	if (step >= 0 && max77705_temp_steps[step].health != POWER_SUPPLY_HEALTH_GOOD) {
++		*val = max77705_temp_steps[step].health;
++		return 0;
++	}
+ 
+ 	ret = max77705_get_online(regmap, &is_online);
+ 	if (ret)
+@@ -429,6 +472,174 @@ static int max77705_get_float_voltage(struct max77705_charger_data *chg,
+ 	return 0;
+ }
+ 
++/*
++ * Program the requested limits, capped and reduced for the battery
++ * temperature. Registers are only written when the
++ * result changes, so an input limit lowered by AICL is left alone.
++ */
++static void max77705_apply_limits(struct max77705_charger_data *chg)
++{
++	int cc = chg->cc_req_ua, cv = chg->cv_req_uv, ilim = chg->ilim_req_ua;
++	int en = 1;
++	int err;
++
++	lockdep_assert_held(&chg->lock);
++
++	if (cc_cap_ua)
++		cc = min(cc, (int)cc_cap_ua);
++	if (ilim_cap_ua && ilim > 0)
++		ilim = min(ilim, (int)ilim_cap_ua);
++
++	if (chg->temp_step >= 0) {
++		const struct max77705_temp_step *step =
++			&max77705_temp_steps[chg->temp_step];
++
++		if (!step->cc_ua)
++			en = 0;
++		else
++			cc = min(cc, step->cc_ua);
++		if (step->cv_uv)
++			cv = min(cv, step->cv_uv);
++		if (chg->chg_hot) {
++			cc = min(cc, MAX77705_CHG_HOT_CC_UA);
++			if (ilim > 0)
++				ilim = min(ilim, MAX77705_CHG_HOT_ILIM_UA);
++		}
++	}
++
++	if (cv != chg->cv_set_uv) {
++		err = max77705_set_float_voltage(chg, cv);
++		if (err)
++			dev_err(chg->dev, "cannot set the float voltage: %d\n", err);
++		else
++			chg->cv_set_uv = cv;
++	}
++
++	if (cc > 0 && cc != chg->cc_set_ua) {
++		err = max77705_set_charge_current(chg, cc);
++		if (err)
++			dev_err(chg->dev, "cannot set the charge current: %d\n", err);
++		else
++			chg->cc_set_ua = cc;
++	}
++
++	if (ilim > 0 && ilim != chg->ilim_set_ua) {
++		err = max77705_set_input_current(chg, ilim);
++		if (err)
++			dev_err(chg->dev, "cannot set the input current limit: %d\n", err);
++		else
++			chg->ilim_set_ua = ilim;
++	}
++
++	if (en != chg->en_set) {
++		err = regmap_field_write(chg->rfield[MAX77705_CHG_EN], en);
++		if (err)
++			dev_err(chg->dev, "cannot %s charging: %d\n",
++				en ? "enable" : "disable", err);
++		else
++			chg->en_set = en;
++	}
++}
++
++static int max77705_temp_step_of(int temp)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(max77705_temp_steps) - 1; i++)
++		if (temp < max77705_temp_steps[i].temp_max)
++			break;
++
++	return i;
++}
++
++static int max77705_read_zone(const char *name, int *temp)
++{
++	struct thermal_zone_device *tz;
++
++	tz = thermal_zone_get_zone_by_name(name);
++	if (IS_ERR(tz))
++		return PTR_ERR(tz);
++
++	return thermal_zone_get_temp(tz, temp);
++}
++
++static void max77705_temp_work(struct work_struct *work)
++{
++	struct max77705_charger_data *chg =
++		container_of(work, struct max77705_charger_data, temp_work.work);
++	int temp, chg_temp, step, cur, ret;
++	bool changed = false;
++
++	ret = max77705_read_zone("battery-thermal", &temp);
++
++	mutex_lock(&chg->lock);
++	cur = chg->temp_step;
++
++	if (ret) {
++		/* no zone (yet), or repeated read errors: fall back to the caps */
++		if (cur >= 0 && (ret == -ENODEV ||
++				 ++chg->temp_errors >= MAX77705_TEMP_MAX_ERRORS)) {
++			dev_warn(chg->dev, "battery temperature lost (%d), capping the charge current\n",
++				 ret);
++			chg->temp_step = -1;
++			changed = true;
++		}
++		goto apply;
++	}
++	chg->temp_errors = 0;
++
++	step = max77705_temp_step_of(temp);
++	if (cur < 0 || cur == MAX77705_TEMP_STEP_NORMAL)
++		;
++	else if (cur < MAX77705_TEMP_STEP_NORMAL && step > cur)
++		step = max(cur, max77705_temp_step_of(temp - MAX77705_TEMP_HYST));
++	else if (cur > MAX77705_TEMP_STEP_NORMAL && step < cur)
++		step = min(cur, max77705_temp_step_of(temp + MAX77705_TEMP_HYST));
++
++	if (step != cur) {
++		const struct max77705_temp_step *s = &max77705_temp_steps[step];
++
++		if (!s->cc_ua)
++			dev_info(chg->dev, "battery %s%d.%d C: charging stopped\n",
++				 temp < 0 ? "-" : "", abs(temp) / 1000,
++				 abs(temp) % 1000 / 100);
++		else if (s->cc_ua == INT_MAX)
++			dev_info(chg->dev, "battery %s%d.%d C: normal charging\n",
++				 temp < 0 ? "-" : "", abs(temp) / 1000,
++				 abs(temp) % 1000 / 100);
++		else
++			dev_info(chg->dev, "battery %s%d.%d C: charging at up to %d mA, %d mV\n",
++				 temp < 0 ? "-" : "", abs(temp) / 1000,
++				 abs(temp) % 1000 / 100,
++				 s->cc_ua / 1000, s->cv_uv / 1000);
++		chg->temp_step = step;
++		changed = true;
++	}
++
++	if (!max77705_read_zone("charger-thermal", &chg_temp)) {
++		bool hot = chg_temp >= MAX77705_CHG_HOT ||
++			   (chg->chg_hot && chg_temp > MAX77705_CHG_HOT - MAX77705_TEMP_HYST);
++
++		if (hot != chg->chg_hot) {
++			dev_info(chg->dev, "charger %s%d.%d C: %s\n",
++				 chg_temp < 0 ? "-" : "", abs(chg_temp) / 1000,
++				 abs(chg_temp) % 1000 / 100,
++				 hot ? "input limited to 1 A" : "input limit restored");
++			chg->chg_hot = hot;
++		}
++	}
++
++apply:
++	max77705_apply_limits(chg);
++	mutex_unlock(&chg->lock);
++
++	if (changed)
++		power_supply_changed(chg->psy_chg);
++
++	queue_delayed_work(chg->wqueue, &chg->temp_work,
++			   msecs_to_jiffies(MAX77705_TEMP_POLL_MS));
++}
++
+ static int max77705_chg_get_property(struct power_supply *psy,
+ 					enum power_supply_property psp,
+ 					union power_supply_propval *val)
+@@ -475,16 +686,29 @@ static int max77705_set_property(struct power_supply *psy,
+ 	struct max77705_charger_data *chg = power_supply_get_drvdata(psy);
+ 	int err = 0;
+ 
++	if (val->intval <= 0)
++		return -EINVAL;
++
++	mutex_lock(&chg->lock);
+ 	switch (psp) {
+ 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
+-		err = max77705_set_charge_current(chg, val->intval);
++		chg->cc_req_ua = val->intval;
++		/* never above the battery's own limit */
++		if (chg->bat_info->constant_charge_current_max_ua > 0)
++			chg->cc_req_ua = min(chg->cc_req_ua,
++					     chg->bat_info->constant_charge_current_max_ua);
+ 		break;
+ 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+-		err = max77705_set_input_current(chg, val->intval);
++		chg->ilim_req_ua = val->intval;
++		/* rewrite even if unchanged, e.g. after AICL lowered it */
++		chg->ilim_set_ua = -1;
+ 		break;
+ 	default:
+ 		err = -EINVAL;
+ 	}
++	if (!err)
++		max77705_apply_limits(chg);
++	mutex_unlock(&chg->lock);
+ 
+ 	return err;
+ };
+@@ -517,11 +741,14 @@ static void max77705_external_power_changed(struct power_supply *psy)
+ 	if (ret || val.intval <= 0)
+ 		return;
+ 
+-	ret = max77705_set_input_current(chg, val.intval);
+-	if (ret)
+-		dev_err(chg->dev, "cannot set the input current limit: %d\n", ret);
+-	else
+-		dev_dbg(chg->dev, "input current limit %d uA\n", val.intval);
++	dev_dbg(chg->dev, "supplier input current limit %d uA\n", val.intval);
++
++	mutex_lock(&chg->lock);
++	chg->ilim_req_ua = val.intval;
++	/* a new source: start from its limit again, not from AICL's */
++	chg->ilim_set_ua = -1;
++	max77705_apply_limits(chg);
++	mutex_unlock(&chg->lock);
+ }
+ 
+ static const struct power_supply_desc max77705_charger_psy_desc = {
+@@ -613,21 +840,24 @@ static int max77705_charger_initialize(struct max77705_charger_data *chg)
+ 	/* MINVSYS 3.6V(default) */
+ 	if (info->voltage_max_design_uv < 0) {
+ 		dev_warn(chg->dev, "missing battery:voltage-max-design-microvolt\n");
+-		max77705_set_float_voltage(chg, 4200000);
++		chg->cv_req_uv = 4200000;
+ 	} else {
+-		max77705_set_float_voltage(chg, info->voltage_max_design_uv);
++		chg->cv_req_uv = info->voltage_max_design_uv;
+ 	}
+ 
+ 	/*
+ 	 * Fast-charge current: the battery's limit if it has one, otherwise
+-	 * keep the 450 mA reset default. The input current limit still caps
+-	 * what is actually drawn from the source.
++	 * the 450 mA reset default. The input current limit still caps what
++	 * is actually drawn from the source.
+ 	 */
+-	if (info->constant_charge_current_max_ua > 0) {
+-		err = max77705_set_charge_current(chg, info->constant_charge_current_max_ua);
+-		if (err)
+-			goto err;
+-	}
++	if (info->constant_charge_current_max_ua > 0)
++		chg->cc_req_ua = info->constant_charge_current_max_ua;
++	else
++		chg->cc_req_ua = 450000;
++
++	mutex_lock(&chg->lock);
++	max77705_apply_limits(chg);
++	mutex_unlock(&chg->lock);
+ 
+ 	err = regmap_field_write(chg->rfield[MAX77705_VCHGIN], MAX77705_VCHGIN_4_5);
+ 	if (err)
+@@ -681,6 +911,15 @@ static int max77705_charger_probe(struct i2c_client *i2c)
+ 	chg->dev = dev;
+ 	i2c_set_clientdata(i2c, chg);
+ 
++	ret = devm_mutex_init(dev, &chg->lock);
++	if (ret)
++		return ret;
++	chg->temp_step = -1;
++	chg->cc_set_ua = -1;
++	chg->cv_set_uv = -1;
++	chg->ilim_set_ua = -1;
++	chg->en_set = -1;
++
+ 	chip_desc = devm_kmemdup(dev, &max77705_charger_irq_chip,
+ 				 sizeof(max77705_charger_irq_chip),
+ 				 GFP_KERNEL);
+@@ -721,6 +960,10 @@ static int max77705_charger_probe(struct i2c_client *i2c)
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "failed to initialize interrupt work\n");
+ 
++	ret = devm_delayed_work_autocancel(dev, &chg->temp_work, max77705_temp_work);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to initialize temperature work\n");
++
+ 	ret = max77705_charger_initialize(chg);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "failed to initialize charger IC\n");
+@@ -742,9 +985,8 @@ static int max77705_charger_probe(struct i2c_client *i2c)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = max77705_charger_enable(chg);
+-	if (ret)
+-		return dev_err_probe(dev, ret, "failed to enable charge\n");
++	/* follow the battery temperature from now on */
++	queue_delayed_work(chg->wqueue, &chg->temp_work, 0);
+ 
+ 	return devm_add_action_or_reset(dev, max77705_charger_disable, chg);
+ }
+diff --git a/include/linux/power/max77705_charger.h b/include/linux/power/max77705_charger.h
+index 948b3b36d..e1ee98ff8 100644
+--- a/include/linux/power/max77705_charger.h
++++ b/include/linux/power/max77705_charger.h
+@@ -190,6 +190,20 @@ struct max77705_charger_data {
+ 	struct workqueue_struct *wqueue;
+ 	struct work_struct	chgin_work;
+ 	struct power_supply	*psy_chg;
++
++	/* charging limits: requested, and adjusted by temperature */
++	struct mutex		lock;
++	struct delayed_work	temp_work;
++	int			cc_req_ua;
++	int			cv_req_uv;
++	int			ilim_req_ua;
++	int			cc_set_ua;
++	int			cv_set_uv;
++	int			ilim_set_ua;
++	int			en_set;
++	int			temp_step;	/* -1: not monitored */
++	int			temp_errors;
++	bool			chg_hot;
+ };
+ 
+ #endif /* __MAX77705_CHARGER_H */
+-- 
+2.56.0
+

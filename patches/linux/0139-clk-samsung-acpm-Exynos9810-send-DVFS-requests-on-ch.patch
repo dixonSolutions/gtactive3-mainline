@@ -1,0 +1,60 @@
+From 4e398d8d80a17f0648920ec95b2db4f4ebb8d701 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:47:57 +1100
+Subject: [PATCH 139/152] clk: samsung: acpm: Exynos9810: send DVFS requests on
+ channel 0
+
+Channel 5 of the Exynos9810 APM firmware is a buffer-type, interrupt-
+driven channel (q_len 1) through which the DVFS plugin notifies the AP;
+it never accepts a request. The stock kernel looks the DVFS channel up
+from a node without acpm-ipc-channel and so sends FREQ_REQ on channel
+0, a polled queue (q_len 15) owned by the same plugin. Measured with
+hand-made requests on channel 0: PLL_CON0_PLL_CPUCL0 follows
+1053 -> 949 -> 832 -> 949 -> 1053 MHz, and requests are rounded down
+to a table level.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/clk/samsung/clk-acpm.c | 19 +++++++++++--------
+ 1 file changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/clk/samsung/clk-acpm.c b/drivers/clk/samsung/clk-acpm.c
+index 89fceb307..9923c0125 100644
+--- a/drivers/clk/samsung/clk-acpm.c
++++ b/drivers/clk/samsung/clk-acpm.c
+@@ -79,13 +79,16 @@ static const struct acpm_clk_driver_data acpm_clk_gs101 = {
+ };
+ 
+ /*
+- * Exynos9810: the DVFS plugin of the APM firmware listens on ACPM channel 5
+- * ("acpm-ipc-channel" of the stock acpm_dvfs node) and takes the same
+- * FREQ_REQ messages as gs101, rates in kHz; it sets the voltage itself
+- * from its fvmap (ECT/ASV) table. FREQ_GET does not report the current
+- * rate (the stock kernel caches what it set), so neither do we. Boot
+- * rates are the fvmap init levels read from APM SRAM. The IDs must stay
+- * sequential from zero (domain index of the fvmap).
++ * Exynos9810: the DVFS plugin of the APM firmware takes the same FREQ_REQ
++ * messages as gs101 on ACPM channel 0 (a polled queue), rates in kHz,
++ * rounded down to a table level; it sets the voltage itself from its
++ * fvmap (ECT/ASV) table. Channel 5 ("acpm-ipc-channel" of the stock
++ * acpm_dvfs node) is the same plugin's APM-to-AP notification buffer;
++ * the stock kernel's FREQ_REQ channel lookup fails and falls back to 0.
++ * FREQ_GET does not report the current rate (the stock kernel caches what
++ * it set), so neither do we. Boot rates are the fvmap init levels read
++ * from APM SRAM. The IDs must stay sequential from zero (domain index of
++ * the fvmap).
+  */
+ static const struct acpm_clk_variant exynos9810_acpm_clks[] = {
+ 	ACPM_CLK("dvfs_mif"),
+@@ -98,7 +101,7 @@ static const struct acpm_clk_variant exynos9810_acpm_clks[] = {
+ static const struct acpm_clk_driver_data acpm_clk_exynos9810 = {
+ 	.clks = exynos9810_acpm_clks,
+ 	.nr_clks = ARRAY_SIZE(exynos9810_acpm_clks),
+-	.mbox_chan_id = 5,
++	.mbox_chan_id = 0,
+ 	.cache_rate = true,
+ };
+ 
+-- 
+2.56.0
+

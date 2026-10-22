@@ -1,7 +1,7 @@
 From 6c365566882400b6e08d8c78dff13f68f23ccb77 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 17:34:53 +1100
-Subject: [PATCH 074/119] wifi: brcmfmac: Add BCM4375 single-band PCIe device
+Subject: [PATCH 074/152] wifi: brcmfmac: Add BCM4375 single-band PCIe device
  IDs
 
 bcmdhd_100_15 include/bcmdevs.h:299-301 lists 0x4476 (2.4 GHz) and

@@ -1,7 +1,7 @@
 From 2afa3fd929d3ff209c652e7cb497c0e32d66d289 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 17:34:52 +1100
-Subject: [PATCH 072/119] PCI: dwc: exynos9810: Fail on link timeout and guard
+Subject: [PATCH 072/152] PCI: dwc: exynos9810: Fail on link timeout and guard
  Root Port config
 
 Three fixes for paths where the link is down:

@@ -1,7 +1,7 @@
 From 95fb5ee1c171ffe6897dc1f2bee8059dd1db6038 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:31:39 +1100
-Subject: [PATCH 105/119] ASoC: dt-bindings: Add Samsung Exynos9810 A-Box
+Subject: [PATCH 105/152] ASoC: dt-bindings: Add Samsung Exynos9810 A-Box
 
 Describe the Exynos9810 A-Box audio subsystem when Linux drives its UAIF
 ports and DMA engines directly. Register ranges from the stock DT

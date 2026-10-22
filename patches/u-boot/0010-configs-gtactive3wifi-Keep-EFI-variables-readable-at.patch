@@ -1,7 +1,7 @@
 From 75612c79654890207fbf5045bdcf37b7f991cc02 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:49:06 +1100
-Subject: [PATCH 10/13] configs: gtactive3wifi: Keep EFI variables readable at
+Subject: [PATCH 10/18] configs: gtactive3wifi: Keep EFI variables readable at
  runtime
 
 EFI_RT_VOLATILE_STORE: with variables in a file on the ESP, Linux can

@@ -1,7 +1,7 @@
 From 0f0a5b51451ff4c03204abf8a4164aec0cc523fe Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 20:20:12 +1100
-Subject: [PATCH 116/119] wifi: brcmfmac: pcie: Log the BCM4375 OTP module with
+Subject: [PATCH 116/152] wifi: brcmfmac: pcie: Log the BCM4375 OTP module with
  dev_info()
 
 brcmf_info() is brcmf_err() with DEBUG (CONFIG_BRCMDBG), and pcie.c

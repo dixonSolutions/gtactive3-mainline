@@ -1,7 +1,7 @@
 From f174e4b3b6271440d631ea1ac459b08ffe3db93e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:31:38 +1100
-Subject: [PATCH 103/119] ASoC: dt-bindings: Document MediaTek MT6660 and
+Subject: [PATCH 103/152] ASoC: dt-bindings: Document MediaTek MT6660 and
  Richtek RT5510
 
 The MT6660 driver has no binding document. Add one, together with the

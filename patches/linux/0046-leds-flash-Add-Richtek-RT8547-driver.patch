@@ -1,7 +1,7 @@
 From 58ec98472ba7ca4b5413160a51afcc76d3dab741 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:21:33 +1100
-Subject: [PATCH 046/119] leds: flash: Add Richtek RT8547 driver
+Subject: [PATCH 046/152] leds: flash: Add Richtek RT8547 driver
 
 The RT8547 drives the rear camera flash LED of the Galaxy Tab Active3.
 FLEN switches the output and a single-wire CTRL line programs the

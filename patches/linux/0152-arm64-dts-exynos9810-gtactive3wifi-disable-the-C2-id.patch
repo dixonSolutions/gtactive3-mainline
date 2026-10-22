@@ -1,0 +1,43 @@
+From 227cd689a0d729c99ef49ef1bf36807341dfb5d6 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 13:49:59 +1100
+Subject: [PATCH 152/152] arm64: dts: exynos9810-gtactive3wifi: disable the C2
+ idle states for now
+
+The first Duranium boot with C2 available hung for good: PID 1 blocked
+for >480 s in binder_init -> misc_register -> devtmpfs_create_node ->
+wait_for_completion (photographed boot console). Cores that power down
+in C2 are not woken again yet. Keep DVFS and the rest, drop C2 until the
+PMU wake-up path is in place.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../boot/dts/exynos/exynos9810-gtactive3wifi.dts  | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 79a3f8363..3da4f6d0b 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -1748,3 +1748,18 @@ bluetooth: bluetooth {
+ 		};
+ 	};
+ };
++
++/*
++ * Not yet: the PSCI core power-down (C2) states. On the device (Duranium
++ * 26102210, NO_HZ_IDLE) the boot hung with PID 1 blocked in
++ * devtmpfs_create_node: a core that entered C2 was never woken again,
++ * so the work queued on it never ran. The cluster's PMU wake-up events
++ * still need setting up before C2 can be used.
++ */
++&little_cpu_sleep {
++	status = "disabled";
++};
++
++&big_cpu_sleep {
++	status = "disabled";
++};
+-- 
+2.56.0
+

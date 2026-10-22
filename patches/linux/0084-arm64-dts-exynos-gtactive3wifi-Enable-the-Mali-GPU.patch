@@ -1,7 +1,7 @@
 From db2cded7857a352848edd6d5589c23e6ce2618c0 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:06:33 +1100
-Subject: [PATCH 084/119] arm64: dts: exynos: gtactive3wifi: Enable the Mali
+Subject: [PATCH 084/152] arm64: dts: exynos: gtactive3wifi: Enable the Mali
  GPU
 
 Feed the GPU the 260 MHz that S-Boot leaves on PLL_G3D (read back on

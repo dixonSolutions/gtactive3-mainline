@@ -1,7 +1,7 @@
 From 6f852b7cc6251b1ea8b3cc935e24030fcd6a127b Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:21:33 +1100
-Subject: [PATCH 044/119] iio: proximity: Add ABOV A96T3x6 grip sensor driver
+Subject: [PATCH 044/152] iio: proximity: Add ABOV A96T3x6 grip sensor driver
 
 The A96T3x6 is an ABOV MCU with a factory-flashed capacitive sensing
 firmware, used by Samsung as a two-channel grip (SAR) sensor next to

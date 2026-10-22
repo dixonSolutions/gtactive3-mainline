@@ -1,7 +1,7 @@
 From cc8f42b763c8af74254dd9dccf5bc9aa15df8c37 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 17:16:19 +1100
-Subject: [PATCH 085/119] pmdomain: samsung: Don't register a keep-on domain
+Subject: [PATCH 085/152] pmdomain: samsung: Don't register a keep-on domain
  that is off (WIP)
 
 Not for upstream, fixup for the bring-up keep-on property. When the

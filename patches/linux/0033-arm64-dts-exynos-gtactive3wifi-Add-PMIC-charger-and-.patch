@@ -1,7 +1,7 @@
 From 1d40f24b3c891e67a5351b9a64f48b1ca098b73a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:11:18 +1100
-Subject: [PATCH 033/119] arm64: dts: exynos: gtactive3wifi: Add PMIC, charger
+Subject: [PATCH 033/152] arm64: dts: exynos: gtactive3wifi: Add PMIC, charger
  and battery nodes
 
 Describe the power devices from the stock DTBO (hw_rev 4):

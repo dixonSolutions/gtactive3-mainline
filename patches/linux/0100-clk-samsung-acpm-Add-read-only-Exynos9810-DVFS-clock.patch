@@ -1,7 +1,7 @@
 From 3a5632d250978cdb749edaece2b3326555c69726 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:36:53 +1100
-Subject: [PATCH 100/119] clk: samsung: acpm: Add read-only Exynos9810 DVFS
+Subject: [PATCH 100/152] clk: samsung: acpm: Add read-only Exynos9810 DVFS
  clocks
 
 The Exynos9810 APM firmware runs its DVFS plugin behind ACPM channel 5

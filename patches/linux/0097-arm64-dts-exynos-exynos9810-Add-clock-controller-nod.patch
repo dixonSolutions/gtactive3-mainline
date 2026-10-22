@@ -1,7 +1,7 @@
 From 2b52abbdae2c1b3f49659e9b4323cc4e5c917586 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:21:57 +1100
-Subject: [PATCH 097/119] arm64: dts: exynos: exynos9810: Add clock controller
+Subject: [PATCH 097/152] arm64: dts: exynos: exynos9810: Add clock controller
  nodes
 
 Add the CMU_TOP, CMU_APM, CMU_CMGP, CMU_PERIC0, CMU_PERIC1, CMU_PERIS,

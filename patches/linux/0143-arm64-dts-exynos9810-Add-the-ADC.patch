@@ -1,0 +1,38 @@
+From b0379ce03f895213b93598066a96bd38e5d675f7 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:58:13 +1100
+Subject: [PATCH 143/152] arm64: dts: exynos9810: Add the ADC
+
+At 0x14230000 in CMGP, SPI 8, clocked by the two ADC_CMGP bus clocks
+(stock node: exynos_adc, samsung,exynos-adc-v3).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 5fabb34d8..06d52e2c6 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -614,6 +614,17 @@ wakeup-interrupt-controller {
+ 			};
+ 		};
+ 
++		adc: adc@14230000 {
++			compatible = "samsung,exynos9810-adc";
++			reg = <0x14230000 0x100>;
++			interrupts = <GIC_SPI 8 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&cmu_cmgp CLK_GOUT_CMGP_ADC_CMGP_PCLK_S0>,
++				 <&cmu_cmgp CLK_GOUT_CMGP_ADC_CMGP_PCLK_S1>;
++			clock-names = "adc", "sclk";
++			#io-channel-cells = <1>;
++			status = "disabled";
++		};
++
+ 		/* USI_CMGP00 */
+ 		usi_cmgp00: usi@143000c0 {
+ 			compatible = "samsung,exynos9810-usi", "samsung,exynos850-usi";
+-- 
+2.56.0
+

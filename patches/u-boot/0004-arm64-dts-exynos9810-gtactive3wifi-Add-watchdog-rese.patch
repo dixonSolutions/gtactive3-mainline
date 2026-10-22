@@ -1,7 +1,7 @@
 From d778de34e7fdc21c17365e22da49fb343c747783 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:28:33 +1100
-Subject: [PATCH 04/13] arm64: dts: exynos9810-gtactive3wifi: Add watchdog,
+Subject: [PATCH 04/18] arm64: dts: exynos9810-gtactive3wifi: Add watchdog,
  reserve the RAM log
 
 Cluster 0 watchdog at 0x10050000 (stock DT watchdog_cl0, SPI 464) for

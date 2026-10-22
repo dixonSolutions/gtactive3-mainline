@@ -1,7 +1,7 @@
 From 88cd8b8b32e31d57e00ebaa4c66ea48176ee5ccd Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:22:36 +1100
-Subject: [PATCH 077/119] wifi: brcmfmac: pcie: Select the BCM4375 nvram by OTP
+Subject: [PATCH 077/152] wifi: brcmfmac: pcie: Select the BCM4375 nvram by OTP
  module ID
 
 BCM4375 boards ship with modules from different makers (Samsung's

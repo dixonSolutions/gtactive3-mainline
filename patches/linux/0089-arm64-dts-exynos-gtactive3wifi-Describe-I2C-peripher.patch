@@ -1,7 +1,7 @@
 From 0ad0a71a50368b7c36ff11fb2d19cdab1b0e0b4e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:22:28 +1100
-Subject: [PATCH 089/119] arm64: dts: exynos: gtactive3wifi: Describe I2C
+Subject: [PATCH 089/152] arm64: dts: exynos: gtactive3wifi: Describe I2C
  peripherals
 
 Add the clients of the remaining HSI2C buses, with addresses, interrupts

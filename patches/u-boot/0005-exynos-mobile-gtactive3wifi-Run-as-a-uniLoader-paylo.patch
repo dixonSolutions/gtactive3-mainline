@@ -1,7 +1,7 @@
 From e3627a652b17bb5b532cc224199867465977377f Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:28:33 +1100
-Subject: [PATCH 05/13] exynos-mobile: gtactive3wifi: Run as a uniLoader
+Subject: [PATCH 05/18] exynos-mobile: gtactive3wifi: Run as a uniLoader
  payload
 
 - Board match: when the FDT in x0 does not identify the board (uniLoader

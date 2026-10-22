@@ -1,7 +1,7 @@
 From 4c78b461681a9ce87610b4f5d6e614fcae59a31a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:36:54 +1100
-Subject: [PATCH 102/119] arm64: dts: exynos: exynos9810: Make ACPM a clock
+Subject: [PATCH 102/152] arm64: dts: exynos: exynos9810: Make ACPM a clock
  provider
 
 The ACPM clock driver registers the DVFS domains of the APM firmware as

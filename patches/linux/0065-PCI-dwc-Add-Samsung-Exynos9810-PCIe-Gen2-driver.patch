@@ -1,7 +1,7 @@
 From c4a51ad971dda022261fbd3599e86403a322e6a2 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:06 +1100
-Subject: [PATCH 065/119] PCI: dwc: Add Samsung Exynos9810 PCIe Gen2 driver
+Subject: [PATCH 065/152] PCI: dwc: Add Samsung Exynos9810 PCIe Gen2 driver
 
 Add a root complex driver for PCIe channel 0 of Exynos9810, which
 connects the Broadcom Wi-Fi chip on Galaxy S9 / Tab Active3 class

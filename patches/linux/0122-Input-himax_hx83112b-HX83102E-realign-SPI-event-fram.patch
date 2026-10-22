@@ -1,0 +1,130 @@
+From 00e84a4d4a245b29dfb91873d98d98c5e2ddad59 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:06:24 +1100
+Subject: [PATCH 122/152] Input: himax_hx83112b - HX83102E: realign SPI event
+ frames; run touch SPI at 10 MHz
+
+The HX83102E sometimes starts shifting the event frame out during the
+dummy byte that follows the read command, so ~5% of frames lost their
+first byte and failed the checksum (and those that slipped through gave
+jumpy coordinates). Read the dummy byte too, in one full duplex
+transfer, and take the alignment with a valid checksum: 0 failures in
+1400 frames of two-finger drags.
+
+At the stock 7 MHz the controller also samples MISO one bit late after
+a re-probe (IC ID 0x06215c = 0x83102e << 1); 10 MHz reads it correctly.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   |  2 +-
+ drivers/input/touchscreen/himax_hx83112b.c    | 54 +++++++++++++++++--
+ 2 files changed, 51 insertions(+), 5 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 49a95d5c5..2882b2628 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -1102,7 +1102,7 @@ &spi_21 {
+ 	touchscreen@0 {
+ 		compatible = "himax,hx83102e";
+ 		reg = <0>;
+-		spi-max-frequency = <7000000>;
++		spi-max-frequency = <10000000>; /* stock 7 MHz samples MISO a bit late here */
+ 		spi-cpha;
+ 		spi-cpol;
+ 		interrupt-parent = <&gpa1>;
+diff --git a/drivers/input/touchscreen/himax_hx83112b.c b/drivers/input/touchscreen/himax_hx83112b.c
+index 0d799dd89..885725c46 100644
+--- a/drivers/input/touchscreen/himax_hx83112b.c
++++ b/drivers/input/touchscreen/himax_hx83112b.c
+@@ -96,6 +96,8 @@ struct himax_ts_data {
+ 	struct regmap *regmap;
+ 	/* byte wide access to the bus registers, SPI only */
+ 	struct regmap *regmap8;
++	/* DMA safe buffers for the raw SPI event read */
++	u8 *spi_tx, *spi_rx;
+ 	int irq;
+ 	u8 *event_buf;
+ 	struct touchscreen_properties props;
+@@ -448,23 +450,60 @@ static int himax_read_events(struct himax_ts_data *ts,
+  */
+ #define HIMAX_AHB_ADDR_AHB		0x11
+ 
++static bool himax_sum_ok(const u8 *data, size_t length)
++{
++	u8 sum = 0;
++	size_t i;
++
++	for (i = 0; i < length; i++)
++		sum += data[i];
++	return !sum;
++}
++
++/*
++ * HX83102E over SPI: Samsung's driver turns AHB burst off (0x11 = 0) for
++ * the event stack read and back on afterwards. The chip sometimes starts
++ * shifting the frame out one byte early, during the dummy byte after the
++ * read command (seen as ~5% of frames missing their first byte). Clock the
++ * dummy byte in as well, in one full duplex transfer, and take the
++ * alignment whose checksum is right.
++ */
++#define HIMAX_AHB_ADDR_AHB		0x11
++
+ static int hx83102e_read_events(struct himax_ts_data *ts,
+ 				void *event, size_t length)
+ {
++	struct spi_transfer xfer = { };
+ 	u8 v = 0;
+ 	int error, error2;
+ 
+-	if (!ts->regmap8)
++	if (!ts->regmap8 || !ts->spi_tx)
+ 		return himax_read_events(ts, event, length);
+ 
+ 	error = regmap_raw_write(ts->regmap8, HIMAX_AHB_ADDR_AHB, &v, 1);
+ 	if (error)
+ 		return error;
+-	error = regmap_raw_read(ts->regmap, HIMAX_AHB_ADDR_EVENT_STACK, event,
+-				length);
++
++	memset(ts->spi_tx, 0, 3 + length);
++	ts->spi_tx[0] = HIMAX_SPI_CMD_READ;
++	ts->spi_tx[1] = HIMAX_AHB_ADDR_EVENT_STACK;
++	xfer.tx_buf = ts->spi_tx;
++	xfer.rx_buf = ts->spi_rx;
++	xfer.len = 3 + length;
++	error = spi_sync_transfer(to_spi_device(ts->dev), &xfer, 1);
++
+ 	v = 1;
+ 	error2 = regmap_raw_write(ts->regmap8, HIMAX_AHB_ADDR_AHB, &v, 1);
+-	return error ?: error2;
++	if (error || error2)
++		return error ?: error2;
++
++	/* normal: frame after the dummy byte; early: frame in the dummy byte */
++	if (!himax_sum_ok(ts->spi_rx + 3, length) &&
++	    himax_sum_ok(ts->spi_rx + 2, length))
++		memcpy(event, ts->spi_rx + 2, length);
++	else
++		memcpy(event, ts->spi_rx + 3, length);
++	return 0;
+ }
+ 
+ static int hx83100a_read_events(struct himax_ts_data *ts,
+@@ -540,6 +579,13 @@ static int himax_probe_common(struct device *dev, struct regmap *regmap,
+ 	if (!ts->event_buf)
+ 		return -ENOMEM;
+ 
++	if (regmap8) {
++		ts->spi_tx = devm_kzalloc(dev, HIMAX_MAX_EVENT_SIZE + 3, GFP_KERNEL);
++		ts->spi_rx = devm_kzalloc(dev, HIMAX_MAX_EVENT_SIZE + 3, GFP_KERNEL);
++		if (!ts->spi_tx || !ts->spi_rx)
++			return -ENOMEM;
++	}
++
+ 	ts->gpiod_rst = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+ 	error = PTR_ERR_OR_ZERO(ts->gpiod_rst);
+ 	if (error) {
+-- 
+2.56.0
+

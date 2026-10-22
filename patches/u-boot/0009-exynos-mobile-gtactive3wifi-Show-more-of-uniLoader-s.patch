@@ -1,7 +1,7 @@
 From df7a82082c7607575cba3af5e1c78218d9cab68a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:34:37 +1100
-Subject: [PATCH 09/13] exynos-mobile: gtactive3wifi: Show more of uniLoader's
+Subject: [PATCH 09/18] exynos-mobile: gtactive3wifi: Show more of uniLoader's
  boot record
 
 Print the stage, watchdog control, FDT addresses, bootloader version and

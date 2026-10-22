@@ -1,7 +1,7 @@
 From e8c63f61b7fed08603f026eb9a115e00bfad75aa Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:21:32 +1100
-Subject: [PATCH 041/119] Input: wacom_w9000 - Add W9019 support
+Subject: [PATCH 041/152] Input: wacom_w9000 - Add W9019 support
 
 The W9019 firmware on the Galaxy Tab Active3 does not answer the 0x2a
 query command. A plain 29-byte read returns one coordinate packet, a

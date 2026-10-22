@@ -1,0 +1,279 @@
+From 4641eaf52d10fd86cffb1a8eefdc2f27c8a93a4e Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:09:40 +1100
+Subject: [PATCH 134/152] drm: exynos9810: gamma LUT through the VGRF gamut
+ matrix (Night Light)
+
+The graphics channel S-Boot scans out from (IDMA_G0) has no colour
+hardware, so GNOME reports Night Light as unavailable. VGRF's DPP has an
+HDR block with a 3x3 gamut matrix: move the window to IDMA_VGRF at probe
+(same geometry and buffer, ARGB8888, 1:1, no CSC; DECON channel 2) and
+expose a 256-entry CRTC gamma LUT that sets the matrix diagonal from each
+channel's top entry. GNOME's Night Light ramps are linear per channel, so
+the diagonal reproduces them.
+
+Measured on the device with the registers poked by hand: the window
+scanned out from VGRF (IDMA and DPP busy, no DECON errors) and the HDR
+block accepted the matrix.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   |   6 +-
+ drivers/gpu/drm/exynos9810/exynos9810_dpu.c   | 137 +++++++++++++++++-
+ 2 files changed, 139 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index cc2834db0..8e7615c47 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -1285,8 +1285,12 @@ &soc {
+ 	 */
+ 	dpu: display-controller@16030000 {
+ 		compatible = "samsung,exynos9810-decon-takeover";
++		/* DECON, IDMA_G0 (boot scanout), IDMA_VGRF + DPP_VGRF (scanout
++		 * with the HDR block's gamut matrix, for Night Light) */
+ 		reg = <0x16030000 0x10000>,
+-		      <0x16071000 0x1000>;
++		      <0x16071000 0x1000>,
++		      <0x16076000 0x1000>,
++		      <0x16026000 0x1000>;
+ 		interrupts = <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,
+ 			     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
+ 			     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;
+diff --git a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+index 37c547b76..c71b801da 100644
+--- a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
++++ b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+@@ -11,7 +11,12 @@
+  *
+  * Register layout from Samsung's GPL dpu_9810 driver (regs-decon.h,
+  * regs-dpp.h): DECON at 0x16030000, IDMA channel n at 0x16071000 +
+- * n * 0x1000.
++ * n * 0x1000, DPP n at 0x16021000 + n * 0x1000.
++ *
++ * With the VGRF channel given in the device tree the driver moves the window
++ * from the boot channel (IDMA_G0) to VGRF at probe: VGRF's DPP has an HDR
++ * block whose 3x3 gamut matrix implements the CRTC gamma LUT (GNOME's Night
++ * Light is a per-channel linear ramp, i.e. a diagonal matrix).
+  *
+  * The DRM driver is called "exynos" so that Mesa's kmsro loader pairs it
+  * with the Mali (panfrost) render node: GNOME then renders on the GPU and
+@@ -31,6 +36,7 @@
+ 
+ #include <drm/clients/drm_client_setup.h>
+ #include <drm/drm_atomic_helper.h>
++#include <drm/drm_color_mgmt.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_fb_dma_helper.h>
+ #include <drm/drm_fbdev_dma.h>
+@@ -55,12 +61,41 @@
+ #define DPU_EXTRA_INT_PEND		BIT(4)
+ #define DECON_EXTRA_INTERRUPT_PENDING	0x0050
+ #define DECON_SHADOW_REG_UPDATE_REQ	0x0060
++#define DECON_DATA_PATH_CONTROL_1	0x0218
++#define WIN_CHMAP_MASK(w)		(0x7 << (4 * (w)))
++#define WIN_CHMAP(w, ch)		((ch) << (4 * (w)))
++/* DECON channel numbers (helper.c dpu_dma_type_to_channel) */
++#define DECON_CH_G0			5
++#define DECON_CH_VGRF			2
+ #define SHADOW_REG_UPDATE_REQ_GLOBAL	BIT(31)
+ #define SHADOW_REG_UPDATE_REQ_WIN(w)	BIT(w)
+ 
+ /* IDMA channel */
++#define IDMA_ENABLE			0x0000
++#define IDMA_SFR_UPDATE_FORCE		BIT(4)
++#define IDMA_IN_CON			0x0008
++#define IDMA_OUT_CON			0x000c
+ #define IDMA_SRC_SIZE			0x0010
++#define IDMA_SRC_OFFSET			0x0014
++#define IDMA_IMG_SIZE			0x0018
+ #define IDMA_IN_BASE_ADDR_Y		0x0040
++#define IDMA_DYNAMIC_GATING_EN		0x0058
++
++/* DPP (VGRF) */
++#define DPP_ENABLE			0x0000
++#define DPP_SFR_UPDATE_FORCE		BIT(4)
++#define DPP_IN_CON			0x0008	/* 0: ARGB8888, no CSC */
++#define DPP_IMG_SIZE			0x0018
++#define DPP_SCALED_IMG_SIZE		0x002c
++#define DPP_MAIN_H_RATIO		0x0044
++#define DPP_MAIN_V_RATIO		0x0048
++#define DPP_RATIO_1_1			0x00100000
++#define DPP_HDR_CON			0x0600
++#define DPP_HDR_GM_ON			BIT(2)
++#define DPP_HDR_ON			BIT(0)
++#define DPP_HDR_GM_COEF(n)		(0x0720 + 4 * (n))
++#define DPP_GM_ONE			16384	/* S2.14, rows of identity */
++#define DPP_GAMMA_SIZE			256
+ 
+ struct e9810_dpu {
+ 	struct drm_device drm;
+@@ -68,7 +103,8 @@ struct e9810_dpu {
+ 	struct drm_connector conn;
+ 
+ 	void __iomem *decon;
+-	void __iomem *idma;
++	void __iomem *idma;	/* the scanout channel: G0, or VGRF once moved */
++	void __iomem *dpp;	/* VGRF DPP, NULL when the window stays on G0 */
+ 	u32 win;
+ 
+ 	u32 width, height, width_mm, height_mm, refresh;
+@@ -138,6 +174,38 @@ static void e9810_flip(struct e9810_dpu *dpu, dma_addr_t addr)
+ 	       dpu->decon + DECON_SHADOW_REG_UPDATE_REQ);
+ }
+ 
++/*
++ * The gamma LUT as the VGRF gamut matrix: the diagonal is each channel's
++ * top LUT entry (GNOME's Night Light ramps are linear, so this reproduces
++ * them exactly); an identity or absent LUT turns the HDR block off.
++ */
++static void e9810_set_gamma(struct e9810_dpu *dpu, struct drm_property_blob *blob)
++{
++	const struct drm_color_lut *lut;
++	u32 c[3] = { DPP_GM_ONE, DPP_GM_ONE, DPP_GM_ONE };
++	unsigned int n, i;
++
++	if (!dpu->dpp)
++		return;
++	if (blob) {
++		lut = blob->data;
++		n = drm_color_lut_size(blob);
++		if (n) {
++			c[0] = (u32)lut[n - 1].red * DPP_GM_ONE / 0xffff;
++			c[1] = (u32)lut[n - 1].green * DPP_GM_ONE / 0xffff;
++			c[2] = (u32)lut[n - 1].blue * DPP_GM_ONE / 0xffff;
++		}
++	}
++	for (i = 0; i < 9; i++)
++		writel(i % 4 ? 0 : c[i / 4], dpu->dpp + DPP_HDR_GM_COEF(i));
++	if (c[0] == DPP_GM_ONE && c[1] == DPP_GM_ONE && c[2] == DPP_GM_ONE)
++		writel(0, dpu->dpp + DPP_HDR_CON);
++	else
++		writel(DPP_HDR_ON | DPP_HDR_GM_ON, dpu->dpp + DPP_HDR_CON);
++	writel(readl(dpu->dpp + DPP_ENABLE) | DPP_SFR_UPDATE_FORCE,
++	       dpu->dpp + DPP_ENABLE);
++}
++
+ static int e9810_check(struct drm_simple_display_pipe *pipe,
+ 		       struct drm_plane_state *pstate,
+ 		       struct drm_crtc_state *cstate)
+@@ -176,8 +244,13 @@ static void e9810_update(struct drm_simple_display_pipe *pipe,
+ 	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
+ 	struct drm_plane_state *pstate = pipe->plane.state;
+ 
++	if (pipe->crtc.state->color_mgmt_changed)
++		e9810_set_gamma(dpu, pipe->crtc.state->gamma_lut);
+ 	if (pstate->fb && pstate->fb != old->fb)
+ 		e9810_flip(dpu, drm_fb_dma_get_gem_addr(pstate->fb, pstate, 0));
++	else if (pipe->crtc.state->color_mgmt_changed)
++		writel(SHADOW_REG_UPDATE_REQ_WIN(dpu->win) | SHADOW_REG_UPDATE_REQ_GLOBAL,
++		       dpu->decon + DECON_SHADOW_REG_UPDATE_REQ);
+ 
+ 	e9810_send_event(&pipe->crtc, dpu->irq_ok);
+ }
+@@ -188,6 +261,7 @@ static void e9810_enable(struct drm_simple_display_pipe *pipe,
+ {
+ 	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
+ 
++	e9810_set_gamma(dpu, cstate->gamma_lut);
+ 	if (pstate->fb)
+ 		e9810_flip(dpu, drm_fb_dma_get_gem_addr(pstate->fb, pstate, 0));
+ 	if (dpu->irq_ok)
+@@ -233,6 +307,41 @@ static const struct drm_simple_display_pipe_funcs e9810_pipe_funcs = {
+ 	.disable_vblank = e9810_disable_vblank,
+ };
+ 
++/*
++ * Move the window from the boot channel (IDMA_G0) to VGRF: same source
++ * geometry and buffer, an ARGB8888 DPP without scaling or CSC, then switch
++ * DECON's window-to-channel map at the next frame. The display SysMMUs are
++ * in bypass, as for G0.
++ */
++static void e9810_move_to_vgrf(struct e9810_dpu *dpu, void __iomem *g0)
++{
++	static const u32 copy[] = { IDMA_IN_CON, IDMA_OUT_CON, IDMA_SRC_SIZE,
++				    IDMA_SRC_OFFSET, IDMA_IMG_SIZE,
++				    IDMA_DYNAMIC_GATING_EN, IDMA_IN_BASE_ADDR_Y };
++	u32 size = (dpu->height << 16) | dpu->width, map;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(copy); i++)
++		writel(readl(g0 + copy[i]), dpu->idma + copy[i]);
++	writel(0, dpu->dpp + DPP_IN_CON);
++	writel(size, dpu->dpp + DPP_IMG_SIZE);
++	writel(size, dpu->dpp + DPP_SCALED_IMG_SIZE);
++	writel(DPP_RATIO_1_1, dpu->dpp + DPP_MAIN_H_RATIO);
++	writel(DPP_RATIO_1_1, dpu->dpp + DPP_MAIN_V_RATIO);
++	writel(0, dpu->dpp + DPP_HDR_CON);
++	writel(readl(dpu->idma + IDMA_ENABLE) | IDMA_SFR_UPDATE_FORCE,
++	       dpu->idma + IDMA_ENABLE);
++	writel(readl(dpu->dpp + DPP_ENABLE) | DPP_SFR_UPDATE_FORCE,
++	       dpu->dpp + DPP_ENABLE);
++
++	map = readl(dpu->decon + DECON_DATA_PATH_CONTROL_1);
++	map &= ~WIN_CHMAP_MASK(dpu->win);
++	map |= WIN_CHMAP(dpu->win, DECON_CH_VGRF);
++	writel(map, dpu->decon + DECON_DATA_PATH_CONTROL_1);
++	writel(SHADOW_REG_UPDATE_REQ_WIN(dpu->win) | SHADOW_REG_UPDATE_REQ_GLOBAL,
++	       dpu->decon + DECON_SHADOW_REG_UPDATE_REQ);
++}
++
+ static irqreturn_t e9810_irq(int irq, void *data)
+ {
+ 	struct e9810_dpu *dpu = data;
+@@ -322,8 +431,9 @@ static int e9810_probe(struct platform_device *pdev)
+ 	struct device *dev = &pdev->dev;
+ 	struct e9810_dpu *dpu;
+ 	struct drm_device *drm;
++	void __iomem *g0;
+ 	int ret, i, nirq;
+-	u32 cur;
++	u32 cur, map;
+ 
+ 	dpu = devm_drm_dev_alloc(dev, &e9810_drm_driver, struct e9810_dpu, drm);
+ 	if (IS_ERR(dpu))
+@@ -336,6 +446,7 @@ static int e9810_probe(struct platform_device *pdev)
+ 	dpu->idma = devm_platform_ioremap_resource(pdev, 1);
+ 	if (IS_ERR(dpu->idma))
+ 		return PTR_ERR(dpu->idma);
++	g0 = dpu->idma;
+ 
+ 	of_property_read_u32(dev->of_node, "samsung,window", &dpu->win);
+ 	if (of_property_read_u32(dev->of_node, "width", &dpu->width) ||
+@@ -355,6 +466,22 @@ static int e9810_probe(struct platform_device *pdev)
+ 		return dev_err_probe(dev, -ENODEV,
+ 				     "IDMA channel is not scanning out\n");
+ 
++	/* optional: VGRF IDMA + DPP for the gamma LUT */
++	map = readl(dpu->decon + DECON_DATA_PATH_CONTROL_1);
++	if (platform_get_resource(pdev, IORESOURCE_MEM, 3) &&
++	    (map & WIN_CHMAP_MASK(dpu->win)) == WIN_CHMAP(dpu->win, DECON_CH_G0)) {
++		void __iomem *idma = devm_platform_ioremap_resource(pdev, 2);
++		void __iomem *dpp = devm_platform_ioremap_resource(pdev, 3);
++
++		if (!IS_ERR(idma) && !IS_ERR(dpp)) {
++			dpu->idma = idma;
++			dpu->dpp = dpp;
++			e9810_move_to_vgrf(dpu, g0);
++			dev_info(dev, "window %u moved to IDMA_VGRF (gamma LUT)\n",
++				 dpu->win);
++		}
++	}
++
+ 	/* take the scanout over from simpledrm on the boot framebuffer */
+ 	ret = aperture_remove_conflicting_devices(cur, dpu->width * dpu->height * 4,
+ 						  e9810_drm_driver.name);
+@@ -396,6 +523,10 @@ static int e9810_probe(struct platform_device *pdev)
+ 					   NULL, &dpu->conn);
+ 	if (ret)
+ 		return ret;
++	if (dpu->dpp) {
++		drm_mode_crtc_set_gamma_size(&dpu->pipe.crtc, DPP_GAMMA_SIZE);
++		drm_crtc_enable_color_mgmt(&dpu->pipe.crtc, 0, false, DPP_GAMMA_SIZE);
++	}
+ 
+ 	/*
+ 	 * All DECON interrupts share one status register. Vblank is set up
+-- 
+2.56.0
+

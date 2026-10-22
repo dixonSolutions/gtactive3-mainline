@@ -1,7 +1,7 @@
 From 65373c7a66b56586916e908a47d0c67b06c8b8c8 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:19 +1100
-Subject: [PATCH 069/119] dt-bindings: net: bluetooth: brcm: Add BCM4375
+Subject: [PATCH 069/152] dt-bindings: net: bluetooth: brcm: Add BCM4375
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---

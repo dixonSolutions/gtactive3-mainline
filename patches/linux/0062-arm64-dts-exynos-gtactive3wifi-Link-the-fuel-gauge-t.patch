@@ -1,7 +1,7 @@
 From 76f0418e603d14cb550fb119f68b8cec45b0292f Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:16:38 +1100
-Subject: [PATCH 062/119] arm64: dts: exynos: gtactive3wifi: Link the fuel
+Subject: [PATCH 062/152] arm64: dts: exynos: gtactive3wifi: Link the fuel
  gauge to the battery
 
 Point the MAX77705 fuel gauge at the simple-battery node, so that the

@@ -1,7 +1,7 @@
 From 1a386ebf3bc27d2106bfcc0a43d9f20436729537 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 17:20:26 +1100
-Subject: [PATCH 039/119] power: supply: max77705: Stop AICL backoff at the
+Subject: [PATCH 039/152] power: supply: max77705: Stop AICL backoff at the
  minimum input current
 
 The AICL interrupt handler lowers CHGIN_LIM one step at a time until the

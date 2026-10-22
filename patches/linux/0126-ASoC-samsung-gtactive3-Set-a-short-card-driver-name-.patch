@@ -1,0 +1,27 @@
+From e87991ad57f704242f55d4bec2f998043fa67d67 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 01:54:44 +1100
+Subject: [PATCH 126/152] ASoC: samsung: gtactive3: Set a short card driver
+ name for UCM
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/soc/samsung/gtactive3_rt5665.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/sound/soc/samsung/gtactive3_rt5665.c b/sound/soc/samsung/gtactive3_rt5665.c
+index 5e9c1cf9e..46112e56b 100644
+--- a/sound/soc/samsung/gtactive3_rt5665.c
++++ b/sound/soc/samsung/gtactive3_rt5665.c
+@@ -165,6 +165,8 @@ static int gta3_probe(struct platform_device *pdev)
+ 		return ret;
+ 	if (!card->name)
+ 		card->name = "GalaxyTabActive3";
++	/* short, stable driver name: ALSA UCM matches ucm2/conf.d/<driver_name> */
++	card->driver_name = "gtactive3";
+ 
+ 	ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
+ 	if (ret)
+-- 
+2.56.0
+

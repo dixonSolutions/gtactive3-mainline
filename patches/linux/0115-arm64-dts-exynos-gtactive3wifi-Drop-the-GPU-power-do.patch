@@ -1,7 +1,7 @@
 From 22cde7bf834bdcacd63eb6d71681aecac70519ac Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:56:53 +1100
-Subject: [PATCH 115/119] arm64: dts: exynos: gtactive3wifi: Drop the GPU power
+Subject: [PATCH 115/152] arm64: dts: exynos: gtactive3wifi: Drop the GPU power
  domain link for now
 
 With CONFIG_PM=n there is no driver for pd_g3d and fw_devlink defers

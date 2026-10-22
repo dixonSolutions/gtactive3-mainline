@@ -1,7 +1,7 @@
 From 17fde0d240d0124104ac8eb5326e9e3d0da62455 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:05 +1100
-Subject: [PATCH 063/119] dt-bindings: soc: samsung: exynos-sysreg: Add
+Subject: [PATCH 063/152] dt-bindings: soc: samsung: exynos-sysreg: Add
  Exynos9810 FSYS1 sysreg
 
 The FSYS1 system registers hold the PCIe PHY lane configuration

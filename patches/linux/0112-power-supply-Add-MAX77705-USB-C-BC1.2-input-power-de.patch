@@ -1,7 +1,7 @@
 From b060cbc886d9aab8398fcaf2f8feadde00fed356 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:43:25 +1100
-Subject: [PATCH 112/119] power: supply: Add MAX77705 USB-C/BC1.2 input power
+Subject: [PATCH 112/152] power: supply: Add MAX77705 USB-C/BC1.2 input power
  detection
 
 The firmware in the MAX77705 USB-C block (I2C 0x25) does BC1.2 and

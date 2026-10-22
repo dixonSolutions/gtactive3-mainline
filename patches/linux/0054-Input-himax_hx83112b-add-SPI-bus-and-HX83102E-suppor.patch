@@ -1,7 +1,7 @@
 From 8fae428e5ede2bdb58f159fecd036050088945d7 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:41:13 +1100
-Subject: [PATCH 054/119] Input: himax_hx83112b - add SPI bus and HX83102E
+Subject: [PATCH 054/152] Input: himax_hx83112b - add SPI bus and HX83102E
  support
 
 The Himax HX83102E is a TDDI chip found e.g. in the Samsung Galaxy Tab

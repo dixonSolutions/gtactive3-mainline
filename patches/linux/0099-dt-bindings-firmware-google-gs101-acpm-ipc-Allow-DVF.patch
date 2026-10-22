@@ -1,7 +1,7 @@
 From fc8961402b1a8120cacce86640244d95bac39bca Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:36:53 +1100
-Subject: [PATCH 099/119] dt-bindings: firmware: google,gs101-acpm-ipc: Allow
+Subject: [PATCH 099/152] dt-bindings: firmware: google,gs101-acpm-ipc: Allow
  DVFS clocks on Exynos9810
 
 The APM firmware of the Exynos9810 has a DVFS plugin that takes the same

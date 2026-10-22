@@ -1,7 +1,7 @@
 From 4fb1aa38465e484caf9e057af4b36f00c2839b4c Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:54:50 +1100
-Subject: [PATCH 049/119] clk: samsung: exynos9810: Add CMU_CHUB clock support
+Subject: [PATCH 049/152] clk: samsung: exynos9810: Add CMU_CHUB clock support
 
 Add a clock driver for the CHUB CMU of the Exynos9810 SoC, covering the
 bus, I2C and USI muxes, dividers and gates. CMU_CHUB is fed by CMU_TOP,

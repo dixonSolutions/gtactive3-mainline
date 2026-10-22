@@ -1,0 +1,48 @@
+From 11535fe7b6ef2d92d9cfceb26dbbf22f7e000509 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:31:15 +1100
+Subject: [PATCH 150/152] drm/panfrost: Unmask the MMU interrupts at init
+
+panfrost_jm_init() enables the job interrupts, but the MMU interrupts are
+only unmasked by panfrost_mmu_reset(), which first runs from
+panfrost_device_reset() on runtime resume. Without CONFIG_PM there is no
+runtime resume, so MMU_INT_MASK stays 0 after probe: the first GPU page
+fault, the tiler heap growing for the first frame, is never serviced and
+the job hangs until the scheduler timeout resets the GPU (which unmasks
+the interrupts, so everything works afterwards).
+
+Seen on the Exynos9810 (CONFIG_PM=n): "gpu sched timeout, js=1,
+status=0x8" on the first job of every boot (GDM's first frame) and of
+every module load, panfrost-mmu interrupt count 0. With the interrupts
+unmasked at init the first job completes and the heap faults are
+handled.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/panfrost/panfrost_mmu.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/gpu/drm/panfrost/panfrost_mmu.c b/drivers/gpu/drm/panfrost/panfrost_mmu.c
+index 4a3162c3b..2414e2811 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_mmu.c
++++ b/drivers/gpu/drm/panfrost/panfrost_mmu.c
+@@ -970,6 +970,16 @@ int panfrost_mmu_init(struct panfrost_device *pfdev)
+ 		return err;
+ 	}
+ 
++	/*
++	 * Unmask the MMU interrupts here, as panfrost_jm_init() does for the
++	 * job interrupts. Otherwise only panfrost_mmu_reset() unmasks them,
++	 * which first runs on runtime resume: without CONFIG_PM there is
++	 * none, so the first page fault (tiler heap growth) went unhandled
++	 * and the job hung until the scheduler timeout reset the GPU.
++	 */
++	mmu_write(pfdev, MMU_INT_CLEAR, ~0);
++	mmu_write(pfdev, MMU_INT_MASK, ~0);
++
+ 	return 0;
+ }
+ 
+-- 
+2.56.0
+

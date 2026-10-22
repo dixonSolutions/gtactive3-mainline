@@ -1,7 +1,7 @@
 From 55193ec6edcaacf374dca15cf2a7657aa848e15d Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:30:53 +1100
-Subject: [PATCH 088/119] power: supply: max77705: Cap the fast-charge current
+Subject: [PATCH 088/152] power: supply: max77705: Cap the fast-charge current
  without thermal supervision
 
 On the Galaxy Tab Active3 the battery NTC is read by the AP ADC (stock

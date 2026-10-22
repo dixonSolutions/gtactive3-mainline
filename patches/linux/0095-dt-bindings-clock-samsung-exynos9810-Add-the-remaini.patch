@@ -1,7 +1,7 @@
 From bf565a758ad5a6a859dc5a45b0371cd481985286 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:21:57 +1100
-Subject: [PATCH 095/119] dt-bindings: clock: samsung: exynos9810: Add the
+Subject: [PATCH 095/152] dt-bindings: clock: samsung: exynos9810: Add the
  remaining bring-up CMUs
 
 Add the bindings and clock IDs for the Exynos9810 CMU blocks needed for

@@ -1,0 +1,59 @@
+From 26c8e8dd065c4417a2fcc575159851bf51136415 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:31:15 +1100
+Subject: [PATCH 151/152] drm/panfrost: Use AArch64 page tables on the
+ Exynos9810
+
+With the legacy Mali LPAE page table format, Mali-G72 r0p1 on the
+Exynos9810 (not dma-coherent) reads stale data: in a GL test that copies
+random textures on the GPU and compares the readback, 5-6 of 10 runs
+fail with DATA_INVALID_FAULT, JOB_BUS_FAULT, unhandled page faults at
+garbage addresses, or rows read back as zeros, almost always in the
+first job chains of a new context (freshly written descriptors). Under
+GNOME this showed up as INSTR_INVALID_ENC / IMPRECISE_FAULT job faults
+and wrongly drawn (AFBC) icons. Writing COHERENCY_ENABLE = NONE or
+disabling flush reduction made no difference.
+
+With the AArch64 format, which Samsung's kbase uses on this GPU, the
+same test passes 230 of 230 runs (AFBC enabled), so add an
+exynos9810-mali compatible with GPU_QUIRK_FORCE_AARCH64_PGTABLE.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/panfrost/panfrost_drv.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/gpu/drm/panfrost/panfrost_drv.c b/drivers/gpu/drm/panfrost/panfrost_drv.c
+index 36cc2e67a..de32ceae5 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_drv.c
++++ b/drivers/gpu/drm/panfrost/panfrost_drv.c
+@@ -1092,6 +1092,18 @@ static const struct panfrost_compatible amlogic_data = {
+ 	.vendor_quirk = panfrost_gpu_amlogic_quirk,
+ };
+ 
++/*
++ * Exynos9810 (Mali-G72 r0p1, not coherent): GPU reads through the legacy
++ * Mali LPAE tables return stale data (job faults, corrupted textures);
++ * use the AArch64 format, as Samsung's kbase does on this GPU.
++ */
++static const struct panfrost_compatible exynos9810_data = {
++	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
++	.supply_names = default_supplies,
++	.num_pm_domains = 1, /* optional */
++	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
++};
++
+ static const char * const mediatek_pm_domains[] = { "core0", "core1", "core2",
+ 						    "core3", "core4" };
+ /*
+@@ -1160,6 +1172,7 @@ static const struct of_device_id dt_match[] = {
+ 	{ .compatible = "amlogic,meson-g12a-mali",
+ 	  .data = &amlogic_data, },
+ 	{ .compatible = "renesas,r9a08g046-mali", .data = &default_pm_rt_data },
++	{ .compatible = "samsung,exynos9810-mali", .data = &exynos9810_data },
+ 	{ .compatible = "renesas,r9a09g047-mali", .data = &default_pm_rt_data },
+ 	{ .compatible = "arm,mali-t604", .data = &default_data, },
+ 	{ .compatible = "arm,mali-t624", .data = &default_data, },
+-- 
+2.56.0
+

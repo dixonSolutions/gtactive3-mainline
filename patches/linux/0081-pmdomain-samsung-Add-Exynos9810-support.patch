@@ -1,7 +1,7 @@
 From abeb1f1340213bd7c80f69c867a3d85ddbca2a10 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:05:52 +1100
-Subject: [PATCH 081/119] pmdomain: samsung: Add Exynos9810 support
+Subject: [PATCH 081/152] pmdomain: samsung: Add Exynos9810 support
 
 Exynos9810 power domains use a 4-bit LOCAL_PWR_CFG like Exynos5433, but
 need two more things that Samsung's PMUCAL does on every transition:

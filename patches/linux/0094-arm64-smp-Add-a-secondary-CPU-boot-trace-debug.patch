@@ -1,7 +1,7 @@
 From b99578035e043faebbac7fa7aabca3bb8f423761 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:16:14 +1100
-Subject: [PATCH 094/119] arm64: smp: Add a secondary CPU boot trace (debug)
+Subject: [PATCH 094/152] arm64: smp: Add a secondary CPU boot trace (debug)
 
 On the Exynos9810 the Mongoose M3 cores never come up: PSCI CPU_ON
 succeeds, but the kernel only reports "failed in unknown state : 0x0",

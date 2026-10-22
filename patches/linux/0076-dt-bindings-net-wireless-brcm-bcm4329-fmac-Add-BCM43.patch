@@ -1,7 +1,7 @@
 From ad33f60a98923a5aa5482c254b1b04e2468c1858 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:22:35 +1100
-Subject: [PATCH 076/119] dt-bindings: net: wireless: brcm,bcm4329-fmac: Add
+Subject: [PATCH 076/152] dt-bindings: net: wireless: brcm,bcm4329-fmac: Add
  BCM4375 PCIe ID
 
 Add the PCI ID of the BCM4375 dual-band 802.11ax function (0x4475), used

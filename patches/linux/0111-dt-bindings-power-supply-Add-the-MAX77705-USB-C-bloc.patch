@@ -1,7 +1,7 @@
 From 6dc84cf2d17a9164cb745efdb6dfd7ac571c5df1 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:43:25 +1100
-Subject: [PATCH 111/119] dt-bindings: power: supply: Add the MAX77705 USB-C
+Subject: [PATCH 111/152] dt-bindings: power: supply: Add the MAX77705 USB-C
  block
 
 Describe the USB-C block of the Maxim MAX77705 (I2C address 0x25) as a

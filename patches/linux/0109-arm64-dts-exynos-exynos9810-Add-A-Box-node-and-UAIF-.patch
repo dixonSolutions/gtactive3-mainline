@@ -1,7 +1,7 @@
 From 381644052712133e7c3ba0c9e3766eebdf1ba5d3 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:32:06 +1100
-Subject: [PATCH 109/119] arm64: dts: exynos: exynos9810: Add A-Box node and
+Subject: [PATCH 109/152] arm64: dts: exynos: exynos9810: Add A-Box node and
  UAIF pins
 
 A-Box SFR, SYSREG_AUD and CMU_AUD ranges from the stock DT

@@ -1,7 +1,7 @@
 From 6b5c7b001daa00c41559fab51bbfc9e8d8227f10 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:21:33 +1100
-Subject: [PATCH 043/119] dt-bindings: iio: proximity: Add ABOV A96T3x6 grip
+Subject: [PATCH 043/152] dt-bindings: iio: proximity: Add ABOV A96T3x6 grip
  sensor
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

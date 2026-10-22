@@ -1,7 +1,7 @@
 From 227c6643a4f1e293b0b1c1a80182d7803243f777 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:43:47 +1100
-Subject: [PATCH 113/119] power: supply: max77705: Follow the supplier's input
+Subject: [PATCH 113/152] power: supply: max77705: Follow the supplier's input
  current limit
 
 The charger has no way to know what the attached source can deliver.

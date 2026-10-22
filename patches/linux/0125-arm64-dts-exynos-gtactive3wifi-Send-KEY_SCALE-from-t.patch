@@ -1,0 +1,31 @@
+From e123ff747868688cb70f0792ac2553a57787a914 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 01:54:05 +1100
+Subject: [PATCH 125/152] arm64: dts: exynos: gtactive3wifi: Send KEY_SCALE
+ from the recent apps key
+
+KEY_APPSELECT (580) is above the 255 keycodes an XKB keymap can name, so
+compositors never see it; KEY_SCALE is the expose key (XF86LaunchA).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 50c0e1cc2..4f1ea3db3 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -128,7 +128,8 @@ back-key {
+ 
+ 		recent-key {
+ 			label = "Recent apps";
+-			linux,code = <KEY_APPSELECT>;
++			/* KEY_APPSELECT (580) is beyond XKB keymaps: use the "expose" key */
++			linux,code = <KEY_SCALE>;
+ 			gpios = <&gpg3 1 GPIO_ACTIVE_LOW>;
+ 		};
+ 
+-- 
+2.56.0
+

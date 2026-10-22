@@ -1,7 +1,7 @@
 From da73ba67ccf3ec776260c5f7af51bc4db7d8a207 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:06 +1100
-Subject: [PATCH 066/119] wifi: brcmfmac: Add BCM4375 PCIe support
+Subject: [PATCH 066/152] wifi: brcmfmac: Add BCM4375 PCIe support
 
 BCM4375 is the 802.11ax combo chip of Samsung's 2019-2020 devices (e.g.
 Galaxy Tab Active3, stock CONFIG_BCM4375=y). Values from Samsung's

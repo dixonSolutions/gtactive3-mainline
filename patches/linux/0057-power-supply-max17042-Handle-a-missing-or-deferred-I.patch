@@ -1,7 +1,7 @@
 From 1708bbd554a08c47c6726346450988b6dffee4d0 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:13:05 +1100
-Subject: [PATCH 057/119] power: supply: max17042: Handle a missing or deferred
+Subject: [PATCH 057/152] power: supply: max17042: Handle a missing or deferred
  IRQ on platform probe
 
 When the fuel gauge is instantiated as an MFD cell (MAX77705 through

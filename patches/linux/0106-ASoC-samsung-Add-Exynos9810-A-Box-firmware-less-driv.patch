@@ -1,7 +1,7 @@
 From c9cb74725c887d91a3107a02cccfec737eb897b2 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:31:39 +1100
-Subject: [PATCH 106/119] ASoC: samsung: Add Exynos9810 A-Box firmware-less
+Subject: [PATCH 106/152] ASoC: samsung: Add Exynos9810 A-Box firmware-less
  driver
 
 Samsung's A-Box driver loads the Calliope DSP firmware and lets it

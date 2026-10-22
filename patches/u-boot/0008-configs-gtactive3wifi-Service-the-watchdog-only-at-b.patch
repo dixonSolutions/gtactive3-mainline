@@ -1,7 +1,7 @@
 From 3c3bb468228384b3e51c5b7450a4a991035635b5 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:34:37 +1100
-Subject: [PATCH 08/13] configs: gtactive3wifi: Service the watchdog only at
+Subject: [PATCH 08/18] configs: gtactive3wifi: Service the watchdog only at
  boot steps
 
 With WATCHDOG_AUTOSTART the watchdog is serviced from schedule(), which

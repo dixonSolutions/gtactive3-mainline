@@ -1,7 +1,7 @@
 From 7a425b0372721daee819763c3acd05c0097a6042 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:21:32 +1100
-Subject: [PATCH 042/119] dt-bindings: vendor-prefixes: Add ABOV Semiconductor
+Subject: [PATCH 042/152] dt-bindings: vendor-prefixes: Add ABOV Semiconductor
 
 ABOV Semiconductor makes the A96T3x6 microcontrollers that Samsung uses
 as capacitive grip sensors.

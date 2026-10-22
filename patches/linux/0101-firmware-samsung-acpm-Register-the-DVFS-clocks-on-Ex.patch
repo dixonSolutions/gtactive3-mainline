@@ -1,7 +1,7 @@
 From 4e92e69844cd283dbdcfca068b558381764e0afe Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:36:53 +1100
-Subject: [PATCH 101/119] firmware: samsung: acpm: Register the DVFS clocks on
+Subject: [PATCH 101/152] firmware: samsung: acpm: Register the DVFS clocks on
  Exynos9810
 
 Create the ACPM clock device on Exynos9810 as well, now that the clock

@@ -1,7 +1,7 @@
 From 23651a37c45c93ba808d8d74d16709c6450c6a6a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:43:58 +1100
-Subject: [PATCH 114/119] arm64: dts: exynos: gtactive3wifi: Add the MAX77705
+Subject: [PATCH 114/152] arm64: dts: exynos: gtactive3wifi: Add the MAX77705
  USB-C block
 
 Describe the MAX77705 USB-C block at 0x25 (USB-C interrupt = MAX77705

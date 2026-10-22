@@ -1,7 +1,7 @@
 From e38a75c83a7be9b5ad22b1e093814f59c4cf021e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:32:13 +1100
-Subject: [PATCH 090/119] dt-bindings: extcon: sm5502: Add USB switch GPIO and
+Subject: [PATCH 090/152] dt-bindings: extcon: sm5502: Add USB switch GPIO and
  role switch port
 
 On Samsung tablets the SM5504 serves the pogo connector only. A dock is

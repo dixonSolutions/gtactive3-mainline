@@ -1,7 +1,7 @@
 From 2f8569b0b40cbb5d30658869a4a44a76cdd60846 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 21:01:41 +1100
-Subject: [PATCH 119/119] scsi: ufs: exynos: Use a 32-bit DMA mask on
+Subject: [PATCH 119/152] scsi: ufs: exynos: Use a 32-bit DMA mask on
  Exynos9810
 
 The Exynos9810 UFS controller reports 64-bit addressing, but with

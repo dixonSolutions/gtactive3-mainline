@@ -1,7 +1,7 @@
 From d7f8e290827ed369789a085adfac7e03eb574086 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:54:49 +1100
-Subject: [PATCH 048/119] dt-bindings: clock: samsung: Add Exynos9810 CMU_CHUB
+Subject: [PATCH 048/152] dt-bindings: clock: samsung: Add Exynos9810 CMU_CHUB
 
 Add a binding for the Exynos9810 clock management unit of the CHUB
 (context hub) block. Besides the Cortex-M4 sensor hub, CMU_CHUB clocks the

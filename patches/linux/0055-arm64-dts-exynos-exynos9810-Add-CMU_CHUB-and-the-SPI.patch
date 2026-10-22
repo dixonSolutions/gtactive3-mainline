@@ -1,7 +1,7 @@
 From 2b7efebe6879fb2a59fd846e4da69dc05fb43ed2 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:41:13 +1100
-Subject: [PATCH 055/119] arm64: dts: exynos: exynos9810: Add CMU_CHUB and the
+Subject: [PATCH 055/152] arm64: dts: exynos: exynos9810: Add CMU_CHUB and the
  SPI21 USI
 
 Add the CHUB clock controller, the CHUB system registers and the USI01

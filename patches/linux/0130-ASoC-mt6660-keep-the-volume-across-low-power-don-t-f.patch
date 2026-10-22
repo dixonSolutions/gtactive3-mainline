@@ -1,0 +1,152 @@
+From bf17323ab242a56440f08fced07a7e0a30fc536c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 03:20:10 +1100
+Subject: [PATCH 130/152] ASoC: mt6660: keep the volume across low power, don't
+ free the regmap twice
+
+The chip drops register writes while it is in low power mode, which is
+whenever no stream is open. PulseAudio sets 'Digital Volume', reads back
+the unchanged register and walks the volume back up: on the Galaxy Tab
+Active3 (RT5510) the volume returned to 95% seconds after every Volume
+Down press. Keep the value in the driver, write it through while the chip
+is awake and restore it on runtime resume.
+
+The component remove callback called snd_soc_component_exit_regmap() on
+the devm-managed regmap: rebinding the sound card then used the freed
+regmap (oops in regmap_update_bits_base on the next volume change, seen
+on the device), and unbinding the I2C device freed it a second time.
+
+Without CONFIG_PM the runtime PM callbacks never run, so the chip stayed
+in the low power mode the component probe left it in: register writes,
+including the class-D enable, were dropped and the speaker stayed silent.
+Leave it powered in that case.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/soc/codecs/mt6660.c | 63 +++++++++++++++++++++++++++++++++------
+ sound/soc/codecs/mt6660.h |  1 +
+ 2 files changed, 55 insertions(+), 9 deletions(-)
+
+diff --git a/sound/soc/codecs/mt6660.c b/sound/soc/codecs/mt6660.c
+index a0b6cda76..669a0f318 100644
+--- a/sound/soc/codecs/mt6660.c
++++ b/sound/soc/codecs/mt6660.c
+@@ -215,9 +215,47 @@ static int mt6660_component_get_volsw(struct snd_kcontrol *kcontrol,
+ 
+ static const DECLARE_TLV_DB_SCALE(vol_ctl_tlv, -1155, 5, 0);
+ 
++/*
++ * The chip ignores register writes while it is in low power mode, which is
++ * whenever no stream is open: keep the volume here, write it through while
++ * the chip is awake and restore it on runtime resume. The register is
++ * inverted (0 = loudest), the control is not.
++ */
++static int mt6660_vol_get(struct snd_kcontrol *kcontrol,
++			  struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct mt6660_chip *chip = snd_soc_component_get_drvdata(component);
++
++	ucontrol->value.integer.value[0] = chip->vol;
++	return 0;
++}
++
++static int mt6660_vol_put(struct snd_kcontrol *kcontrol,
++			  struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	struct mt6660_chip *chip = snd_soc_component_get_drvdata(component);
++	unsigned int val = ucontrol->value.integer.value[0];
++	int ret = 0;
++
++	if (val > 255)
++		return -EINVAL;
++	if (val == chip->vol)
++		return 0;
++	chip->vol = val;
++	if (!IS_ENABLED(CONFIG_PM)) {
++		ret = regmap_write(chip->regmap, MT6660_REG_VOL_CTRL, 255 - val);
++	} else if (pm_runtime_get_if_active(chip->dev) > 0) {
++		ret = regmap_write(chip->regmap, MT6660_REG_VOL_CTRL, 255 - val);
++		pm_runtime_put(chip->dev);
++	}
++	return ret < 0 ? ret : 1;
++}
++
+ static const struct snd_kcontrol_new mt6660_component_snd_controls[] = {
+-	SOC_SINGLE_TLV("Digital Volume", MT6660_REG_VOL_CTRL, 0, 255,
+-			   1, vol_ctl_tlv),
++	SOC_SINGLE_EXT_TLV("Digital Volume", SND_SOC_NOPM, 0, 255, 0,
++			   mt6660_vol_get, mt6660_vol_put, vol_ctl_tlv),
+ 	SOC_SINGLE("Hard Clip Switch", MT6660_REG_HCLIP_CTRL, 8, 1, 0),
+ 	SOC_SINGLE("Clip Switch", MT6660_REG_SPS_CTRL, 0, 1, 0),
+ 	SOC_SINGLE("Boost Mode", MT6660_REG_BST_CTRL, 0, 3, 0),
+@@ -344,6 +382,10 @@ static int mt6660_component_setting(struct snd_soc_component *component)
+ 		}
+ 	}
+ 
++	/* without runtime PM nothing would take the chip out of low power */
++	if (!IS_ENABLED(CONFIG_PM))
++		return 0;
++
+ 	ret = _mt6660_chip_power_on(chip, 0);
+ 	if (ret < 0) {
+ 		dev_err(component->dev, "%s chip power off failed\n", __func__);
+@@ -368,15 +410,9 @@ static int mt6660_component_probe(struct snd_soc_component *component)
+ 	return ret;
+ }
+ 
+-static void mt6660_component_remove(struct snd_soc_component *component)
+-{
+-	dev_dbg(component->dev, "%s\n", __func__);
+-	snd_soc_component_exit_regmap(component);
+-}
+ 
+ static const struct snd_soc_component_driver mt6660_component_driver = {
+ 	.probe = mt6660_component_probe,
+-	.remove = mt6660_component_remove,
+ 
+ 	.controls = mt6660_component_snd_controls,
+ 	.num_controls = ARRAY_SIZE(mt6660_component_snd_controls),
+@@ -569,6 +605,10 @@ static int mt6660_i2c_probe(struct i2c_client *client)
+ 		dev_err(chip->dev, "read chip revision fail\n");
+ 		goto probe_fail;
+ 	}
++	ret = regmap_read(chip->regmap, MT6660_REG_VOL_CTRL, &chip->vol);
++	if (ret < 0)
++		goto probe_fail;
++	chip->vol = 255 - (chip->vol & 0xff);
+ 	pm_runtime_set_active(chip->dev);
+ 	pm_runtime_enable(chip->dev);
+ 
+@@ -608,9 +648,14 @@ static int mt6660_i2c_runtime_resume(struct device *dev)
+ {
+ 	struct mt6660_chip *chip = dev_get_drvdata(dev);
+ 
++	int ret;
++
+ 	dev_dbg(dev, "exit low power mode\n");
+-	return regmap_update_bits(chip->regmap,
++	ret = regmap_update_bits(chip->regmap,
+ 		MT6660_REG_SYSTEM_CTRL, 0x01, 0x00);
++	if (ret < 0)
++		return ret;
++	return regmap_write(chip->regmap, MT6660_REG_VOL_CTRL, 255 - chip->vol);
+ }
+ 
+ static const struct dev_pm_ops mt6660_dev_pm_ops = {
+diff --git a/sound/soc/codecs/mt6660.h b/sound/soc/codecs/mt6660.h
+index 60ee2e8bf..39c1c8c97 100644
+--- a/sound/soc/codecs/mt6660.h
++++ b/sound/soc/codecs/mt6660.h
+@@ -34,6 +34,7 @@ struct mt6660_chip {
+ 	struct regmap *regmap;
+ 	const struct mt6660_variant *variant;
+ 	u16 chip_rev;
++	unsigned int vol;
+ };
+ #pragma pack(pop)
+ 
+-- 
+2.56.0
+

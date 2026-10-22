@@ -1,0 +1,131 @@
+From 3eeaa450c0ff512e97a82f3db07e585dc0b4b277 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:47:57 +1100
+Subject: [PATCH 140/152] arm64: dts: exynos9810: throttle the LITTLE cluster
+ through cpufreq
+
+Make the CPUs cooling devices and add a passive trip at 86 C to the
+LITTLE thermal zone (stock LITTLE alert trips: 76-101 C).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810.dtsi | 27 ++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+index 554e57997..8e8cc13d9 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
+@@ -9,6 +9,7 @@
+ #include <dt-bindings/clock/samsung,exynos9810.h>
+ #include <dt-bindings/interrupt-controller/arm-gic.h>
+ #include <dt-bindings/soc/samsung,exynos-usi.h>
++#include <dt-bindings/thermal/thermal.h>
+ 
+ / {
+ 	compatible = "samsung,exynos9810";
+@@ -85,6 +86,7 @@ cpu0: cpu@0 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
+ 			cpu-idle-states = <&little_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu1: cpu@1 {
+@@ -94,6 +96,7 @@ cpu1: cpu@1 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
+ 			cpu-idle-states = <&little_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu2: cpu@2 {
+@@ -103,6 +106,7 @@ cpu2: cpu@2 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
+ 			cpu-idle-states = <&little_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu3: cpu@3 {
+@@ -112,6 +116,7 @@ cpu3: cpu@3 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <293>;
+ 			cpu-idle-states = <&little_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu4: cpu@100 {
+@@ -121,6 +126,7 @@ cpu4: cpu@100 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
+ 			cpu-idle-states = <&big_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu5: cpu@101 {
+@@ -130,6 +136,7 @@ cpu5: cpu@101 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
+ 			cpu-idle-states = <&big_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu6: cpu@102 {
+@@ -139,6 +146,7 @@ cpu6: cpu@102 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
+ 			cpu-idle-states = <&big_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu7: cpu@103 {
+@@ -148,6 +156,7 @@ cpu7: cpu@103 {
+ 			enable-method = "psci";
+ 			capacity-dmips-mhz = <1024>;
+ 			cpu-idle-states = <&big_cpu_sleep>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		/*
+@@ -768,6 +777,8 @@ cmu_top: clock-controller@1a240000 {
+ 	 * LITTLE = TMU_TOP probe 5, G3D = TMU_SUB probe 1, ISP = TMU_SUB
+ 	 * probe 2. The 115 C "hot" trip is the last stock trip. The hardware
+ 	 * thermal trip set up by the firmware stays the critical protection.
++	 * The LITTLE cluster is throttled through cpufreq from 86 C (stock
++	 * LITTLE alert trips: 76-101 C in 5 C steps).
+ 	 */
+ 	thermal-zones {
+ 		cpu_big0_thermal: cpu-big0-thermal {
+@@ -846,12 +857,28 @@ cpu_little_thermal: cpu-little-thermal {
+ 			thermal-sensors = <&tmu_top 5>;
+ 
+ 			trips {
++				cpu_little_alert: cpu-little-alert {
++					temperature = <86000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++
+ 				cpu_little_hot: cpu-little-hot {
+ 					temperature = <115000>;
+ 					hysteresis = <5000>;
+ 					type = "hot";
+ 				};
+ 			};
++
++			cooling-maps {
++				map0 {
++					trip = <&cpu_little_alert>;
++					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
++				};
++			};
+ 		};
+ 
+ 		gpu_thermal: gpu-thermal {
+-- 
+2.56.0
+

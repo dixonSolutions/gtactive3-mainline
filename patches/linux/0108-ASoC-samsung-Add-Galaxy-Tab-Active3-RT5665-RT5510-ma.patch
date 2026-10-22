@@ -1,7 +1,7 @@
 From 2846e3b0efa773241fdcf2812a15e400c4e19e80 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:32:06 +1100
-Subject: [PATCH 108/119] ASoC: samsung: Add Galaxy Tab Active3 RT5665/RT5510
+Subject: [PATCH 108/152] ASoC: samsung: Add Galaxy Tab Active3 RT5665/RT5510
  machine driver
 
 Two links: Headset (A-Box UAIF0 <-> RT5665 AIF1_1) and Speaker (A-Box

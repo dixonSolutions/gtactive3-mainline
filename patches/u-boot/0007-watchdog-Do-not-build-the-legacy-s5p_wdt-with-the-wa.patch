@@ -1,7 +1,7 @@
 From 509108624190f890126501aea964354240d46846 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 17:22:28 +1100
-Subject: [PATCH 07/13] watchdog: Do not build the legacy s5p_wdt with the
+Subject: [PATCH 07/18] watchdog: Do not build the legacy s5p_wdt with the
  watchdog uclass
 
 ARCH_EXYNOS selects S5P, which always built the non-DM s5p_wdt.c. Its

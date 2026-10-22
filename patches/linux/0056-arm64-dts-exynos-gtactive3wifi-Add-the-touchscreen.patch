@@ -1,7 +1,7 @@
 From 15fedf5d8a0c6055eb1b9c59559dc22d78120c7c Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:41:14 +1100
-Subject: [PATCH 056/119] arm64: dts: exynos: gtactive3wifi: Add the
+Subject: [PATCH 056/152] arm64: dts: exynos: gtactive3wifi: Add the
  touchscreen
 
 The touch part of the Himax HX83102E TDDI panel controller is connected

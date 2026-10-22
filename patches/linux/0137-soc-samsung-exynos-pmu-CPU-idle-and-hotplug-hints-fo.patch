@@ -1,0 +1,185 @@
+From c4bebb015922b725cd755a52327e1addb8846ad0 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:41:08 +1100
+Subject: [PATCH 137/152] soc: samsung: exynos-pmu: CPU idle and hotplug hints
+ for Exynos9810
+
+Exynos9810's flexpmu needs the same CPU_INFORM hint and pmu-intr-gen
+handshake as gs101 around PSCI CPU_SUSPEND/CPU_OFF (Samsung's pmucal
+core on/off sequences), with two differences: the A55 cores (CPUs 0-3)
+use pmu-intr-gen bits 4-7 and the Mongoose cores bits 0-3, and
+PMU_EVENT_INTERRUPT_ENABLE_GRP2 (PMU + 0x7f08) mirrors GRP2_INTR_BID_ENABLE.
+Also accept a samsung,pmu-intr-gen-syscon phandle.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/soc/samsung/exynos-pmu.c            | 51 +++++++++++++++++++--
+ drivers/soc/samsung/exynos-pmu.h            |  7 +++
+ include/linux/soc/samsung/exynos-regs-pmu.h |  3 ++
+ 3 files changed, 57 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/soc/samsung/exynos-pmu.c b/drivers/soc/samsung/exynos-pmu.c
+index efccdd63e..58cdcc69b 100644
+--- a/drivers/soc/samsung/exynos-pmu.c
++++ b/drivers/soc/samsung/exynos-pmu.c
+@@ -116,6 +116,24 @@ static const struct regmap_config regmap_pmu_intr = {
+ 	.use_raw_spinlock = true,
+ };
+ 
++/*
++ * Exynos9810 (flexpmu): the hint and handshake are the same as on gs101, as
++ * in Samsung's pmucal core on/off sequences. The pmu-intr-gen bits are 0-3
++ * for the Mongoose cores (cluster 1, CPUs 4-7) and 4-7 for the Cortex-A55
++ * cores (cluster 0, CPUs 0-3), and PMU_EVENT_INTERRUPT_ENABLE_GRP2 mirrors
++ * GRP2_INTR_BID_ENABLE.
++ */
++static unsigned int exynos9810_cpupm_intr_bit(unsigned int cpu)
++{
++	return (cpu & 7) ^ 4;
++}
++
++static const struct exynos_pmu_data exynos9810_pmu_data = {
++	.pmu_cpuhp = true,
++	.cpupm_intr_bit = exynos9810_cpupm_intr_bit,
++	.cpupm_event_en = EXYNOS9810_PMU_EVENT_INTERRUPT_ENABLE_GRP2,
++};
++
+ /*
+  * PMU platform driver and devicetree bindings.
+  */
+@@ -149,6 +167,9 @@ static const struct of_device_id exynos_pmu_of_device_ids[] = {
+ 		.compatible = "samsung,exynos7-pmu",
+ 	}, {
+ 		.compatible = "samsung,exynos850-pmu",
++	}, {
++		.compatible = "samsung,exynos9810-pmu",
++		.data = &exynos9810_pmu_data,
+ 	},
+ 	{ /*sentinel*/ },
+ };
+@@ -227,6 +248,13 @@ EXPORT_SYMBOL_GPL(exynos_get_pmu_regmap_by_phandle);
+ #define CPU_INFORM_CLEAR	0
+ #define CPU_INFORM_C2		1
+ 
++static unsigned int cpupm_intr_bit(unsigned int cpu)
++{
++	const struct exynos_pmu_data *data = pmu_context->pmu_data;
++
++	return data->cpupm_intr_bit ? data->cpupm_intr_bit(cpu) : cpu;
++}
++
+ /*
+  * __gs101_cpu_pmu_ prefix functions are common code shared by CPU PM notifiers
+  * (CPUIdle) and CPU hotplug callbacks. Functions should be called with IRQs
+@@ -235,6 +263,7 @@ EXPORT_SYMBOL_GPL(exynos_get_pmu_regmap_by_phandle);
+ static int __gs101_cpu_pmu_online(unsigned int cpu)
+ 	__must_hold(&pmu_context->cpupm_lock)
+ {
++	const struct exynos_pmu_data *data = pmu_context->pmu_data;
+ 	unsigned int cpuhint = smp_processor_id();
+ 	u32 reg, mask;
+ 
+@@ -242,16 +271,20 @@ static int __gs101_cpu_pmu_online(unsigned int cpu)
+ 	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(cpuhint),
+ 		     CPU_INFORM_CLEAR);
+ 
+-	mask = BIT(cpu);
++	mask = BIT(cpupm_intr_bit(cpu));
+ 
+ 	regmap_update_bits(pmu_context->pmuintrgen, GS101_GRP2_INTR_BID_ENABLE,
+-			   mask, (0 << cpu));
++			   mask, 0);
+ 
+ 	regmap_read(pmu_context->pmuintrgen, GS101_GRP2_INTR_BID_UPEND, &reg);
+ 
+ 	regmap_write(pmu_context->pmuintrgen, GS101_GRP2_INTR_BID_CLEAR,
+ 		     reg & mask);
+ 
++	if (data->cpupm_event_en)
++		regmap_update_bits(pmu_context->pmureg, data->cpupm_event_en,
++				   mask, 0);
++
+ 	return 0;
+ }
+ 
+@@ -296,6 +329,7 @@ static int gs101_cpuhp_pmu_online(unsigned int cpu)
+ static int __gs101_cpu_pmu_offline(unsigned int cpu)
+ 	__must_hold(&pmu_context->cpupm_lock)
+ {
++	const struct exynos_pmu_data *data = pmu_context->pmu_data;
+ 	unsigned int cpuhint = smp_processor_id();
+ 	u32 reg, mask;
+ 
+@@ -303,14 +337,20 @@ static int __gs101_cpu_pmu_offline(unsigned int cpu)
+ 	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(cpuhint),
+ 		     CPU_INFORM_C2);
+ 
+-	mask = BIT(cpu);
++	mask = BIT(cpupm_intr_bit(cpu));
+ 	regmap_update_bits(pmu_context->pmuintrgen, GS101_GRP2_INTR_BID_ENABLE,
+-			   mask, BIT(cpu));
++			   mask, mask);
+ 
+ 	regmap_read(pmu_context->pmuintrgen, GS101_GRP1_INTR_BID_UPEND, &reg);
+ 	regmap_write(pmu_context->pmuintrgen, GS101_GRP1_INTR_BID_CLEAR,
+ 		     reg & mask);
+ 
++	if (data->cpupm_event_en) {
++		regmap_update_bits(pmu_context->pmureg, data->cpupm_event_en,
++				   mask, mask);
++		return 0;
++	}
++
+ 	mask = (BIT(cpu + 8));
+ 	regmap_read(pmu_context->pmuintrgen, GS101_GRP1_INTR_BID_UPEND, &reg);
+ 	regmap_write(pmu_context->pmuintrgen, GS101_GRP1_INTR_BID_CLEAR,
+@@ -415,6 +455,9 @@ static int setup_cpuhp_and_cpuidle(struct device *dev)
+ 	void __iomem *virt_addr;
+ 	int ret, cpu;
+ 
++	if (!intr_gen_node)
++		intr_gen_node = of_parse_phandle(dev->of_node,
++						 "samsung,pmu-intr-gen-syscon", 0);
+ 	if (!intr_gen_node) {
+ 		/*
+ 		 * To maintain support for older DTs that didn't specify syscon
+diff --git a/drivers/soc/samsung/exynos-pmu.h b/drivers/soc/samsung/exynos-pmu.h
+index fbe381e2a..d5b471cf9 100644
+--- a/drivers/soc/samsung/exynos-pmu.h
++++ b/drivers/soc/samsung/exynos-pmu.h
+@@ -32,6 +32,11 @@ struct exynos_pmu_conf {
+  * @pmu_cpuhp: Whether or not extra handling is required for CPU hotplug and
+  *             CPUidle outside of standard PSCI calls, due to non-compliant
+  *             firmware.
++ * @cpupm_intr_bit: Optional mapping from a logical CPU to its bit in the
++ *                  pmu-intr-gen GRP1/GRP2 registers (default: the CPU number).
++ * @cpupm_event_en: Offset of a PMU register whose per-CPU bits (same layout
++ *                  as pmu-intr-gen) must also be set while the CPU is down,
++ *                  or 0. SoCs that have one don't use the second GRP1 bit.
+  * @pmu_init: Optional init function.
+  * @powerdown_conf: Optional callback before entering target system states:
+  *                  SYS_AFTR, SYS_LPA, SYS_SLEEP. This will be invoked before
+@@ -50,6 +55,8 @@ struct exynos_pmu_data {
+ 	const struct exynos_pmu_conf *pmu_config_extra;
+ 	bool pmu_secure;
+ 	bool pmu_cpuhp;
++	unsigned int (*cpupm_intr_bit)(unsigned int cpu);
++	unsigned int cpupm_event_en;
+ 
+ 	void (*pmu_init)(void);
+ 	void (*powerdown_conf)(enum sys_powerdown);
+diff --git a/include/linux/soc/samsung/exynos-regs-pmu.h b/include/linux/soc/samsung/exynos-regs-pmu.h
+index db8a7ca81..34271c959 100644
+--- a/include/linux/soc/samsung/exynos-regs-pmu.h
++++ b/include/linux/soc/samsung/exynos-regs-pmu.h
+@@ -1018,4 +1018,7 @@
+ /* exynosautov920 */
+ #define EXYNOSAUTOV920_PHY_CTRL_USB20				(0x0710)
+ #define EXYNOSAUTOV920_PHY_CTRL_USB31				(0x0714)
++/* Exynos9810 */
++#define EXYNOS9810_PMU_EVENT_INTERRUPT_ENABLE_GRP2		(0x7f08)
++
+ #endif /* __LINUX_SOC_EXYNOS_REGS_PMU_H */
+-- 
+2.56.0
+

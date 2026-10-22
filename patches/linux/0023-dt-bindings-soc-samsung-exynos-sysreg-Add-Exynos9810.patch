@@ -1,7 +1,7 @@
 From ea7e4c1a172fb7296b634281d83d1a4ecd2d1b10 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:53:20 +1100
-Subject: [PATCH 023/119] dt-bindings: soc: samsung: exynos-sysreg: Add
+Subject: [PATCH 023/152] dt-bindings: soc: samsung: exynos-sysreg: Add
  Exynos9810 CMGP and PERIC sysregs
 
 Document the system registers of the CMGP, PERIC0 and PERIC1 blocks of

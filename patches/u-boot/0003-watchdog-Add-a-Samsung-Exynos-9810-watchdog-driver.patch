@@ -1,7 +1,7 @@
 From 9677e01d981f0f59c8344a59696a0baf5f0eb443 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:28:33 +1100
-Subject: [PATCH 03/13] watchdog: Add a Samsung Exynos (9810) watchdog driver
+Subject: [PATCH 03/18] watchdog: Add a Samsung Exynos (9810) watchdog driver
 
 DM driver for the S3C2410-type watchdog with the Exynos 9810 PMU reset
 gate: per cluster one bit in DISABLE_WDT (0x408) and MASK_WDT_RESET

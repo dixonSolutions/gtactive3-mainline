@@ -1,7 +1,7 @@
 From 76f5fe1ffc722a91cbbb2a7dc9e8903fcd3fd9fa Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:16:12 +1100
-Subject: [PATCH 061/119] power: supply: max17042: Report cycle_count in full
+Subject: [PATCH 061/152] power: supply: max17042: Report cycle_count in full
  cycles
 
 The Cycles register of the MAX17042, MAX17047, MAX17050 and MAX17055

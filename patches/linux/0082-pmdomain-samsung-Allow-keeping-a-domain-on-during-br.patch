@@ -1,7 +1,7 @@
 From c61b9fe45fd44a1698c4789a0bfa125e94633b64 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:06:05 +1100
-Subject: [PATCH 082/119] pmdomain: samsung: Allow keeping a domain on during
+Subject: [PATCH 082/152] pmdomain: samsung: Allow keeping a domain on during
  bring-up (WIP)
 
 Not for upstream. A "samsung,bringup-keep-on" property marks a domain

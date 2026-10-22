@@ -1,0 +1,40 @@
+From b4d6d4c7a1db3976621916c145d40e95d0997620 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:43:31 +1100
+Subject: [PATCH 135/152] arm64: dts: exynos9810-gtactive3wifi: keep the window
+ on IDMA_G0 for now
+
+Night Light through the VGRF gamut matrix turned the screen green and
+faulted the panel side of the TDDI until reboot. Leave the VGRF entries
+out (the driver then stays on G0 and offers no gamma LUT) until the HDR
+block is programmed safely.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 8e7615c47..791ef2a07 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -1285,12 +1285,11 @@ &soc {
+ 	 */
+ 	dpu: display-controller@16030000 {
+ 		compatible = "samsung,exynos9810-decon-takeover";
+-		/* DECON, IDMA_G0 (boot scanout), IDMA_VGRF + DPP_VGRF (scanout
+-		 * with the HDR block's gamut matrix, for Night Light) */
++		/* DECON, IDMA_G0 (boot scanout). Not yet: IDMA_VGRF 0x16076000 +
++		 * DPP_VGRF 0x16026000 for the gamma LUT; writing the HDR gamut
++		 * matrix while scanning out broke the panel stream (STATUS.md). */
+ 		reg = <0x16030000 0x10000>,
+-		      <0x16071000 0x1000>,
+-		      <0x16076000 0x1000>,
+-		      <0x16026000 0x1000>;
++		      <0x16071000 0x1000>;
+ 		interrupts = <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,
+ 			     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
+ 			     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;
+-- 
+2.56.0
+

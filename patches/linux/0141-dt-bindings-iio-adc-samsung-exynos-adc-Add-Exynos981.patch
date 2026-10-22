@@ -1,0 +1,47 @@
+From df1f31e6835440833bdd0e4174dac5147e73e492 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:58:12 +1100
+Subject: [PATCH 141/152] dt-bindings: iio: adc: samsung,exynos-adc: Add
+ Exynos9810
+
+The Exynos9810 ADC (CMGP block) is fed by two bus clocks, like the
+Exynos3250 one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/iio/adc/samsung,exynos-adc.yaml      | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/iio/adc/samsung,exynos-adc.yaml b/Documentation/devicetree/bindings/iio/adc/samsung,exynos-adc.yaml
+index def879f6e..6495ad719 100644
+--- a/Documentation/devicetree/bindings/iio/adc/samsung,exynos-adc.yaml
++++ b/Documentation/devicetree/bindings/iio/adc/samsung,exynos-adc.yaml
+@@ -18,6 +18,7 @@ properties:
+           - samsung,exynos3250-adc
+           - samsung,exynos4212-adc                # Exynos4212 and Exynos4412
+           - samsung,exynos7-adc
++          - samsung,exynos9810-adc
+           - samsung,s3c6410-adc
+           - samsung,s5pv210-adc
+       - items:
+@@ -30,7 +31,8 @@ properties:
+ 
+   clocks:
+     description:
+-      Phandle to ADC bus clock. For Exynos3250 additional clock is needed.
++      Phandle to ADC bus clock. For Exynos3250 and Exynos9810 additional
++      clock is needed.
+     minItems: 1
+     maxItems: 2
+ 
+@@ -88,6 +90,7 @@ allOf:
+           contains:
+             enum:
+               - samsung,exynos3250-adc
++              - samsung,exynos9810-adc
+     then:
+       properties:
+         clocks:
+-- 
+2.56.0
+

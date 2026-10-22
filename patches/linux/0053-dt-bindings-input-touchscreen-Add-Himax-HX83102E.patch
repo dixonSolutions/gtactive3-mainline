@@ -1,7 +1,7 @@
 From eb451f757508b5e3700ca4c47b3c6f4131b5810e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:09:19 +1100
-Subject: [PATCH 053/119] dt-bindings: input: touchscreen: Add Himax HX83102E
+Subject: [PATCH 053/152] dt-bindings: input: touchscreen: Add Himax HX83102E
 
 The Himax HX83102E is a TDDI chip whose touch controller is connected
 over SPI (mode 3) and exposes the same AHB register interface as the I2C

@@ -1,7 +1,7 @@
 From 2e07bd6ea0e279c81cd34bdcec7257036530eedb Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:22:27 +1100
-Subject: [PATCH 047/119] arm64: dts: exynos: gtactive3wifi: Add hall sensor,
+Subject: [PATCH 047/152] arm64: dts: exynos: gtactive3wifi: Add hall sensor,
  vibrator and flash LED
 
 All three hang off plain GPIOs (stock T570XXSFEYI1 dtbo-4):

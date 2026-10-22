@@ -1,7 +1,7 @@
 From 9d37efe615b52e9dca6709d45500526184e4d527 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:22:36 +1100
-Subject: [PATCH 078/119] arm64: dts: exynos: gtactive3wifi: Add Wi-Fi and BT
+Subject: [PATCH 078/152] arm64: dts: exynos: gtactive3wifi: Add Wi-Fi and BT
  address placeholders
 
 Add zeroed local-mac-address and local-bd-address properties and

@@ -1,0 +1,43 @@
+From f50e131a67bb3bc61ad30a73e5e76068f3269198 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 11:21:37 +1100
+Subject: [PATCH 145/152] fixup! soc: samsung: exynos-pmu: CPU idle and hotplug
+ hints for Exynos9810
+
+---
+ drivers/soc/samsung/exynos-pmu.c | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/soc/samsung/exynos-pmu.c b/drivers/soc/samsung/exynos-pmu.c
+index 58cdcc69b..05a172dee 100644
+--- a/drivers/soc/samsung/exynos-pmu.c
++++ b/drivers/soc/samsung/exynos-pmu.c
+@@ -264,11 +264,10 @@ static int __gs101_cpu_pmu_online(unsigned int cpu)
+ 	__must_hold(&pmu_context->cpupm_lock)
+ {
+ 	const struct exynos_pmu_data *data = pmu_context->pmu_data;
+-	unsigned int cpuhint = smp_processor_id();
+ 	u32 reg, mask;
+ 
+ 	/* clear cpu inform hint */
+-	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(cpuhint),
++	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(cpu),
+ 		     CPU_INFORM_CLEAR);
+ 
+ 	mask = BIT(cpupm_intr_bit(cpu));
+@@ -330,11 +329,10 @@ static int __gs101_cpu_pmu_offline(unsigned int cpu)
+ 	__must_hold(&pmu_context->cpupm_lock)
+ {
+ 	const struct exynos_pmu_data *data = pmu_context->pmu_data;
+-	unsigned int cpuhint = smp_processor_id();
+ 	u32 reg, mask;
+ 
+ 	/* set cpu inform hint */
+-	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(cpuhint),
++	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(cpu),
+ 		     CPU_INFORM_C2);
+ 
+ 	mask = BIT(cpupm_intr_bit(cpu));
+-- 
+2.56.0
+

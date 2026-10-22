@@ -1,7 +1,7 @@
 From d5eb6742ce526211ef6d7a7c7dead2d0dc2934fb Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 20:45:28 +1100
-Subject: [PATCH 117/119] arm64: dts: exynos: gtactive3wifi: Enable the NFC, S
+Subject: [PATCH 117/152] arm64: dts: exynos: gtactive3wifi: Enable the NFC, S
  Pen and grip I2C buses
 
 HSI2C now works (MAX77705 and the USB-C block on HSI2C_40), so turn on

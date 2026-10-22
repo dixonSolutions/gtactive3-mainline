@@ -1,7 +1,7 @@
 From a11bc5219f568ce3d136ebec3bd8b6a24cae156f Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:21:57 +1100
-Subject: [PATCH 098/119] arm64: dts: exynos: exynos9810: Feed CMU_CHUB from
+Subject: [PATCH 098/152] arm64: dts: exynos: exynos9810: Feed CMU_CHUB from
  CMU_TOP
 
 CMU_TOP is described now, so take the CHUB bus clock from it instead of

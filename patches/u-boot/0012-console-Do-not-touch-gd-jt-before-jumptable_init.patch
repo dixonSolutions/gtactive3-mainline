@@ -1,7 +1,7 @@
 From 382fdf18e1934c72e0cfcc0b0e578c58d80dd2f6 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 19:47:43 +1100
-Subject: [PATCH 12/13] console: Do not touch gd->jt before jumptable_init()
+Subject: [PATCH 12/18] console: Do not touch gd->jt before jumptable_init()
 
 input_stdio_register() reassigns stdin when the registered device matches
 the "stdin" variable. With stdin=button-kbd that happens in

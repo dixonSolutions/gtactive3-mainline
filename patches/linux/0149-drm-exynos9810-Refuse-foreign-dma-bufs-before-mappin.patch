@@ -1,0 +1,71 @@
+From 4b0e208ab204109fe51a59e7f60d7ca247931291 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:06:10 +1100
+Subject: [PATCH 149/152] drm: exynos9810: Refuse foreign dma-bufs before
+ mapping them
+
+The IDMA takes a single 32-bit address and the DPU has no IOMMU, so it
+can only scan out physically contiguous buffers below 4 GiB, i.e. its own
+CMA dumb buffers (Mesa's kmsro allocates the compositor's buffers here).
+Mutter still offers client buffers (panfrost shmem, mostly above 4 GiB
+and scattered) for direct scanout. Mapping those for a device with a
+32-bit DMA mask bounces them through swiotlb ("swiotlb buffer is full",
+megabyte copies, slots taken away from UFS, which has a 32-bit mask too)
+only for the contiguity check to reject them afterwards.
+
+Import only buffers this device exported itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/exynos9810/exynos9810_dpu.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+index 7509734c3..1d9504170 100644
+--- a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
++++ b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+@@ -48,6 +48,7 @@
+ #include <drm/drm_gem_framebuffer_helper.h>
+ #include <drm/drm_modes.h>
+ #include <drm/drm_modeset_lock.h>
++#include <drm/drm_prime.h>
+ #include <drm/drm_probe_helper.h>
+ #include <drm/drm_simple_kms_helper.h>
+ #include <drm/drm_vblank.h>
+@@ -368,6 +369,25 @@ static const struct drm_mode_config_funcs e9810_mode_config_funcs = {
+ 
+ DEFINE_DRM_GEM_DMA_FOPS(e9810_fops);
+ 
++/*
++ * The IDMA takes one 32-bit address and the DPU has no IOMMU (SysMMU in
++ * bypass), so only physically contiguous buffers below 4 GiB can be
++ * scanned out: our own CMA dumb buffers (Mesa's kmsro allocates the
++ * compositor's buffers here). Mutter still offers client buffers
++ * (panfrost shmem, mostly above 4 GiB and scattered) for direct scanout;
++ * mapping those for a device with a 32-bit DMA mask bounces them through
++ * swiotlb ("swiotlb buffer is full", CPU copies of megabytes, slots taken
++ * from UFS, which also has a 32-bit mask) only for the import to fail on
++ * contiguity afterwards. Refuse foreign buffers before anything is mapped.
++ */
++static struct drm_gem_object *e9810_gem_prime_import(struct drm_device *drm,
++						     struct dma_buf *dma_buf)
++{
++	if (!drm_gem_is_prime_exported_dma_buf(drm, dma_buf))
++		return ERR_PTR(-EOPNOTSUPP);
++	return drm_gem_prime_import(drm, dma_buf);
++}
++
+ static const struct drm_driver e9810_drm_driver = {
+ 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
+ 	/* "exynos": Mesa's kmsro pairs it with the panfrost render node */
+@@ -377,6 +397,7 @@ static const struct drm_driver e9810_drm_driver = {
+ 	.minor = 0,
+ 	.fops = &e9810_fops,
+ 	DRM_GEM_DMA_DRIVER_OPS,
++	.gem_prime_import = e9810_gem_prime_import,
+ 	DRM_FBDEV_DMA_DRIVER_OPS,
+ 	.debugfs_init = e9810_debugfs_init,
+ };
+-- 
+2.56.0
+

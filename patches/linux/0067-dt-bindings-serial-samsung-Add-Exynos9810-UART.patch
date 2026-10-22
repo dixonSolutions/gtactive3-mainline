@@ -1,7 +1,7 @@
 From 773d4e5a39dbf36ce6c0d8e472b88f6f6840377a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:19 +1100
-Subject: [PATCH 067/119] dt-bindings: serial: samsung: Add Exynos9810 UART
+Subject: [PATCH 067/152] dt-bindings: serial: samsung: Add Exynos9810 UART
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---

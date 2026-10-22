@@ -1,7 +1,7 @@
 From 2686600b298e9c83fa202a2dee3e282b152daa8e Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:48:08 +1100
-Subject: [PATCH 013/119] dt-bindings: mailbox: google,gs101-mbox: Add
+Subject: [PATCH 013/152] dt-bindings: mailbox: google,gs101-mbox: Add
  Exynos9810
 
 The AP-to-APM mailbox on Exynos9810 has the Exynos850 register layout:

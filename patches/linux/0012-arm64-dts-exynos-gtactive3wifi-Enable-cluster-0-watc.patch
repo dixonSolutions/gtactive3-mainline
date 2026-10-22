@@ -1,7 +1,7 @@
 From 95c4a7a2457689fc3bb85cfd60fb1666079e69ea Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:42:47 +1100
-Subject: [PATCH 012/119] arm64: dts: exynos: gtactive3wifi: Enable cluster 0
+Subject: [PATCH 012/152] arm64: dts: exynos: gtactive3wifi: Enable cluster 0
  watchdog
 
 The bootloader leaves the cluster 0 watchdog running with its reset

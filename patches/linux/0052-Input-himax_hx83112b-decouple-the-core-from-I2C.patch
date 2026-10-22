@@ -1,7 +1,7 @@
 From ccbb823683158ab6c56a2a37cfb6513891858f27 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:06:45 +1100
-Subject: [PATCH 052/119] Input: himax_hx83112b - decouple the core from I2C
+Subject: [PATCH 052/152] Input: himax_hx83112b - decouple the core from I2C
 
 Keep a struct device pointer and the interrupt number in the driver data
 instead of the I2C client, and move the bus independent part of probe

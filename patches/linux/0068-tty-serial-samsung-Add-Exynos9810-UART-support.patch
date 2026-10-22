@@ -1,7 +1,7 @@
 From d8db5ae90cf9320b402e26977e7223b424f346d9 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:47:19 +1100
-Subject: [PATCH 068/119] tty: serial: samsung: Add Exynos9810 UART support
+Subject: [PATCH 068/152] tty: serial: samsung: Add Exynos9810 UART support
 
 The Exynos9810 dedicated UARTs (UART_DBG, UART_BT) embed a USI v2
 wrapper with USI_CON/USI_OPTION at 0xc4/0xc8 but have no SW_CONF mux,

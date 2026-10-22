@@ -1,7 +1,7 @@
 From 8695adc5b30423e5b6bf0db3f908ee3d84b801f1 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:48:08 +1100
-Subject: [PATCH 015/119] firmware: samsung: acpm: Add Exynos9810 support
+Subject: [PATCH 015/152] firmware: samsung: acpm: Add Exynos9810 support
 
 The Exynos9810 ACPM framework header lives at offset 0x7f00 of the APM
 SRAM (initdata-base in the stock DT). Its layout matches what the

@@ -1,0 +1,61 @@
+From dd321b092116d05933b7f790425dcb20c5bbaf23 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:19:20 +1100
+Subject: [PATCH 123/152] wifi: brcmfmac: pcie: Tell IPC rev 6+ firmware the
+ host API version
+
+Broadcom's DHD driver writes the host capabilities, starting with the
+PCIe IPC API version it speaks, into the shared area (host_cap, offset
+84) before it brings up the rings. brcmfmac never did. The BCM4375's
+18.41 firmware then never consumes the host RX buffers (RXPOST rp stays
+0): scans and events work, but no data frame, EAPOL included, reaches
+the host and every WPA2 association ends in a deauth (reason 2).
+
+Write the version, plus H2D_ENABLE_HOSTRDY when the firmware asks for
+the hostready doorbell. With it the 4375 completes WPA2-PSK, gets a
+DHCP lease and reaches the internet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../broadcom/brcm80211/brcmfmac/pcie.c         | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 7c48910f7..bfd62c5d8 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -234,6 +234,8 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ #define BRCMF_SHARED_CONSOLE_ADDR_OFFSET	20
+ #define BRCMF_SHARED_HTOD_MB_DATA_ADDR_OFFSET	40
+ #define BRCMF_SHARED_DTOH_MB_DATA_ADDR_OFFSET	44
++#define BRCMF_SHARED_HOST_CAP_OFFSET		84
++#define BRCMF_HOSTCAP_H2D_ENABLE_HOSTRDY	0x00000400
+ #define BRCMF_SHARED_RING_INFO_ADDR_OFFSET	48
+ #define BRCMF_SHARED_DMA_SCRATCH_LEN_OFFSET	52
+ #define BRCMF_SHARED_DMA_SCRATCH_ADDR_OFFSET	56
+@@ -1671,6 +1673,22 @@ brcmf_pcie_init_share_ram_info(struct brcmf_pciedev_info *devinfo,
+ 	brcmf_dbg(PCIE, "max rx buf post %d, rx dataoffset %d\n",
+ 		  shared->max_rxbufpost, shared->rx_dataoffset);
+ 
++	/*
++	 * Tell IPC rev 6+ firmware which host API it talks to (host_cap), as
++	 * Broadcom's DHD does; firmware such as the BCM4375's 18.x never
++	 * starts using the host RX buffers otherwise.
++	 */
++	if (shared->version >= 6) {
++		u32 cap = shared->version;
++
++		if (shared->flags & BRCMF_PCIE_SHARED_HOSTRDY_DB1)
++			cap |= BRCMF_HOSTCAP_H2D_ENABLE_HOSTRDY;
++		brcmf_pcie_write_tcm32(devinfo,
++				       sharedram_addr + BRCMF_SHARED_HOST_CAP_OFFSET,
++				       cap);
++		brcmf_dbg(PCIE, "host_cap 0x%08x\n", cap);
++	}
++
+ 	brcmf_pcie_bus_console_init(devinfo);
+ 	brcmf_pcie_bus_console_read(devinfo, false);
+ 
+-- 
+2.56.0
+

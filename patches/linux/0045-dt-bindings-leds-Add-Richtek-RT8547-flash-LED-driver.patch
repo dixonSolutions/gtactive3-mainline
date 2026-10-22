@@ -1,7 +1,7 @@
 From cc426ddc502aa55500b3c05b0857565ebe28c455 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:21:33 +1100
-Subject: [PATCH 045/119] dt-bindings: leds: Add Richtek RT8547 flash LED
+Subject: [PATCH 045/152] dt-bindings: leds: Add Richtek RT8547 flash LED
  driver
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

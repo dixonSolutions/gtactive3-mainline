@@ -1,7 +1,7 @@
 From e895872655287e247d543a9e21ea0a4c21b5640d Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:21:57 +1100
-Subject: [PATCH 096/119] clk: samsung: exynos9810: Add read-only CMU_TOP and
+Subject: [PATCH 096/152] clk: samsung: exynos9810: Add read-only CMU_TOP and
  leaf CMUs
 
 Add the Exynos9810 CMU blocks used so far next to CMU_CHUB: CMU_TOP

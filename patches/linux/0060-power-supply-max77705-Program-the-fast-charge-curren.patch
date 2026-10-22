@@ -1,7 +1,7 @@
 From 150521e4697f2c519d643338d158a9732e752e1a Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:15:56 +1100
-Subject: [PATCH 060/119] power: supply: max77705: Program the fast-charge
+Subject: [PATCH 060/152] power: supply: max77705: Program the fast-charge
  current from battery info
 
 The driver sets the float voltage from the monitored battery but never

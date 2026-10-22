@@ -1,7 +1,7 @@
 From 185434938bc59798a988037761666ae5915aae55 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:32:06 +1100
-Subject: [PATCH 107/119] ASoC: dt-bindings: Add Samsung Galaxy Tab Active3
+Subject: [PATCH 107/152] ASoC: dt-bindings: Add Samsung Galaxy Tab Active3
  audio
 
 The sound card of the Galaxy Tab Active3: RT5665 on A-Box UAIF0 and

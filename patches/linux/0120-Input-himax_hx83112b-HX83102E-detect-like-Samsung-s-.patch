@@ -1,0 +1,324 @@
+From baadce01d58c71096af1f57befb80ddcc8b074d5 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 21:11:52 +1100
+Subject: [PATCH 120/152] Input: himax_hx83112b - HX83102E: detect like
+ Samsung's driver (bring-up)
+
+Enter safe mode (stop the firmware, 0x31/0x32 passwords) before reading
+the IC ID, with byte wide bus register access over SPI and every step
+logged; SPI rate and mode module parameters for bring-up.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/himax_hx83112b.c | 187 ++++++++++++++++++++-
+ 1 file changed, 179 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/input/touchscreen/himax_hx83112b.c b/drivers/input/touchscreen/himax_hx83112b.c
+index 5796039a9..2e82a88c7 100644
+--- a/drivers/input/touchscreen/himax_hx83112b.c
++++ b/drivers/input/touchscreen/himax_hx83112b.c
+@@ -24,6 +24,8 @@
+ #include <linux/input/touchscreen.h>
+ #include <linux/interrupt.h>
+ #include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/regmap.h>
+ #include <linux/spi/spi.h>
+ 
+@@ -92,6 +94,8 @@ struct himax_ts_data {
+ 	struct input_dev *input_dev;
+ 	struct device *dev;
+ 	struct regmap *regmap;
++	/* byte wide access to the bus registers, SPI only */
++	struct regmap *regmap8;
+ 	int irq;
+ 	u8 *event_buf;
+ 	struct touchscreen_properties props;
+@@ -202,6 +206,134 @@ static int himax_check_product_id(struct himax_ts_data *ts)
+ 	return -EINVAL;
+ }
+ 
++/*
++ * HX83102E bring-up: access the bus registers exactly like Samsung's
++ * driver does (byte wide writes, burst mode set before every AHB read)
++ * and log every step.
++ */
++static int hx_w8(struct himax_ts_data *ts, u8 reg, const u8 *buf, size_t n)
++{
++	return regmap_raw_write(ts->regmap8, reg, buf, n);
++}
++
++static int hx_r8(struct himax_ts_data *ts, u8 reg, u8 *buf, size_t n)
++{
++	return regmap_raw_read(ts->regmap8, reg, buf, n);
++}
++
++static int hx_burst(struct himax_ts_data *ts, bool incr4)
++{
++	u8 v = HIMAX_AHB_CMD_CONTI;
++	int error;
++
++	error = hx_w8(ts, HIMAX_AHB_ADDR_CONTI, &v, 1);
++	if (error)
++		return error;
++	v = HIMAX_AHB_CMD_INCR4 | incr4;
++	return hx_w8(ts, HIMAX_AHB_ADDR_INCR4, &v, 1);
++}
++
++static int hx_ahb_read(struct himax_ts_data *ts, u32 addr, u8 *out)
++{
++	u8 a[4] = { addr, addr >> 8, addr >> 16, addr >> 24 };
++	u8 dir = HIMAX_AHB_CMD_ACCESS_DIRECTION_READ;
++	int error;
++
++	error = hx_burst(ts, false);
++	if (!error)
++		error = hx_w8(ts, HIMAX_AHB_ADDR_BYTE_0, a, 4);
++	if (!error)
++		error = hx_w8(ts, HIMAX_AHB_ADDR_ACCESS_DIRECTION, &dir, 1);
++	if (!error)
++		error = hx_r8(ts, HIMAX_AHB_ADDR_RDATA_BYTE_0, out, 4);
++	dev_info(ts->dev, "ahb rd %08x: %4ph (%d)\n", addr, out, error);
++	return error;
++}
++
++static int hx_ahb_write(struct himax_ts_data *ts, u32 addr, u32 val)
++{
++	u8 b[8] = { addr, addr >> 8, addr >> 16, addr >> 24,
++		    val, val >> 8, val >> 16, val >> 24 };
++	int error;
++
++	error = hx_burst(ts, false);
++	if (!error)
++		error = hx_w8(ts, HIMAX_AHB_ADDR_BYTE_0, b, 8);
++	dev_info(ts->dev, "ahb wr %08x = %08x (%d)\n", addr, val, error);
++	return error;
++}
++
++static void hx_interface_on(struct himax_ts_data *ts)
++{
++	u8 d[4] = { }, c = 0, i4 = 0;
++	int i, error;
++
++	error = hx_r8(ts, HIMAX_AHB_ADDR_RDATA_BYTE_0, d, 4);
++	dev_info(ts->dev, "knock rd 08: %4ph (%d)\n", d, error);
++	for (i = 0; i < 10; i++) {
++		hx_burst(ts, false);
++		hx_r8(ts, HIMAX_AHB_ADDR_CONTI, &c, 1);
++		hx_r8(ts, HIMAX_AHB_ADDR_INCR4, &i4, 1);
++		dev_info(ts->dev, "burst readback 13=%02x 0d=%02x (want 31 10)\n",
++			 c, i4);
++		if (c == HIMAX_AHB_CMD_CONTI && i4 == HIMAX_AHB_CMD_INCR4)
++			break;
++		usleep_range(1000, 1100);
++	}
++}
++
++static bool hx83102e_id_ok(const u8 *d)
++{
++	return d[3] == 0x83 && d[2] == 0x10 && d[1] == 0x2e;
++}
++
++static int hx83102e_check_id(struct himax_ts_data *ts)
++{
++	u8 d[4] = { }, v;
++	int i;
++
++	hx_interface_on(ts);
++	hx_ahb_read(ts, HIMAX_REG_ADDR_ICID, d);
++	if (hx83102e_id_ok(d))
++		goto found;
++
++	/* Samsung's detect: stop the firmware, enter safe mode, read the ID */
++	for (i = 0; i < 10; i++) {
++		hx_ahb_write(ts, 0x9000005c, 0xa5);
++		usleep_range(10000, 11000);
++		hx_ahb_read(ts, 0x900000a8, d);
++		if (d[0] != 0x05)
++			break;
++		hx_ahb_read(ts, 0x9000005c, d);
++		if (d[0] == 0x87)
++			break;
++	}
++	v = 0x27;
++	hx_w8(ts, 0x31, &v, 1);
++	v = 0x95;
++	hx_w8(ts, 0x32, &v, 1);
++	hx_ahb_read(ts, 0x900000a8, d);
++	dev_info(ts->dev, "safe mode state %02x (want 0c)\n", d[0]);
++	for (i = 0; i < 5; i++) {
++		hx_ahb_read(ts, HIMAX_REG_ADDR_ICID, d);
++		if (hx83102e_id_ok(d))
++			break;
++	}
++
++	/* sense on: clear the stop request and restart the firmware */
++	hx_ahb_write(ts, 0x9000005c, 0);
++	usleep_range(10000, 11000);
++	himax_reset(ts);
++	if (!hx83102e_id_ok(d)) {
++		dev_err(ts->dev, "HX83102E not detected\n");
++		return -ENODEV;
++	}
++found:
++	dev_info(ts->dev, "HX83102E detected, ID %02x%02x%02x\n",
++		 d[3], d[2], d[1]);
++	return 0;
++}
++
+ static int himax_input_register(struct himax_ts_data *ts)
+ {
+ 	int error;
+@@ -351,7 +483,8 @@ static irqreturn_t himax_irq_handler(int irq, void *dev_id)
+ }
+ 
+ static int himax_probe_common(struct device *dev, struct regmap *regmap,
+-			      int irq, const struct himax_chip *chip)
++			      struct regmap *regmap8, int irq,
++			      const struct himax_chip *chip)
+ {
+ 	int error;
+ 	struct himax_ts_data *ts;
+@@ -367,6 +500,7 @@ static int himax_probe_common(struct device *dev, struct regmap *regmap,
+ 	ts->dev = dev;
+ 	ts->chip = chip;
+ 	ts->regmap = regmap;
++	ts->regmap8 = regmap8;
+ 	ts->irq = irq;
+ 
+ 	if (WARN_ON(chip->event_size < sizeof(struct himax_event) ||
+@@ -431,7 +565,7 @@ static const struct himax_chip hx83100a_chip __maybe_unused = {
+ 
+ static const struct himax_chip hx83102e_chip __maybe_unused = {
+ 	.id = 0x83102e,
+-	.check_id = himax_check_product_id,
++	.check_id = hx83102e_check_id,
+ 	.read_events = himax_read_events,
+ 	.event_size = HX83102E_EVENT_SIZE,
+ 	/* Samsung's driver waits 50 ms before talking to the firmware */
+@@ -462,7 +596,7 @@ static int himax_i2c_probe(struct i2c_client *client)
+ 		return PTR_ERR(regmap);
+ 	}
+ 
+-	return himax_probe_common(dev, regmap, client->irq,
++	return himax_probe_common(dev, regmap, NULL, client->irq,
+ 				  i2c_get_match_data(client));
+ }
+ 
+@@ -521,7 +655,22 @@ static void himax_i2c_unregister(void)
+  */
+ struct himax_spi {
+ 	struct spi_device *spi;
+-	u8 *buf;	/* DMA safe tx buffer, serialized by the regmap lock */
++	struct mutex lock;	/* protects buf, shared by both regmaps */
++	u8 *buf;	/* DMA safe tx buffer */
++};
++
++/* bring-up knobs: 0 / -1 keep the device tree values */
++static unsigned int spi_hz;
++module_param(spi_hz, uint, 0444);
++MODULE_PARM_DESC(spi_hz, "Override the SPI clock rate (Hz)");
++static int spi_mode = -1;
++module_param(spi_mode, int, 0444);
++MODULE_PARM_DESC(spi_mode, "Override the SPI mode (0-3)");
++
++static const struct regmap_config himax_regmap8_config = {
++	.name = "byte",
++	.reg_bits = 8,
++	.val_bits = 8,
+ };
+ 
+ #define HIMAX_SPI_BUF_SIZE	16
+@@ -530,14 +679,18 @@ static int himax_spi_regmap_write(void *context, const void *data,
+ 				  size_t count)
+ {
+ 	struct himax_spi *hs = context;
++	int error;
+ 
+ 	if (count + 1 > HIMAX_SPI_BUF_SIZE)
+ 		return -EINVAL;
+ 
++	mutex_lock(&hs->lock);
+ 	hs->buf[0] = HIMAX_SPI_CMD_WRITE;
+ 	memcpy(&hs->buf[1], data, count);
++	error = spi_write(hs->spi, hs->buf, count + 1);
++	mutex_unlock(&hs->lock);
+ 
+-	return spi_write(hs->spi, hs->buf, count + 1);
++	return error;
+ }
+ 
+ static int himax_spi_regmap_read(void *context, const void *reg,
+@@ -554,14 +707,19 @@ static int himax_spi_regmap_read(void *context, const void *reg,
+ 		},
+ 	};
+ 
++	int error;
++
+ 	if (reg_size != 1)
+ 		return -EINVAL;
+ 
++	mutex_lock(&hs->lock);
+ 	hs->buf[0] = HIMAX_SPI_CMD_READ;
+ 	hs->buf[1] = *(const u8 *)reg;
+ 	hs->buf[2] = 0;
++	error = spi_sync_transfer(hs->spi, xfers, ARRAY_SIZE(xfers));
++	mutex_unlock(&hs->lock);
+ 
+-	return spi_sync_transfer(hs->spi, xfers, ARRAY_SIZE(xfers));
++	return error;
+ }
+ 
+ static const struct regmap_bus himax_spi_regmap_bus = {
+@@ -574,7 +732,7 @@ static const struct regmap_bus himax_spi_regmap_bus = {
+ static int himax_spi_probe(struct spi_device *spi)
+ {
+ 	struct device *dev = &spi->dev;
+-	struct regmap *regmap;
++	struct regmap *regmap, *regmap8;
+ 	struct himax_spi *hs;
+ 	int error;
+ 
+@@ -583,9 +741,15 @@ static int himax_spi_probe(struct spi_device *spi)
+ 				     "Full duplex SPI controller required\n");
+ 
+ 	spi->bits_per_word = 8;
++	if (spi_hz)
++		spi->max_speed_hz = spi_hz;
++	if (spi_mode >= 0 && spi_mode <= 3)
++		spi->mode = (spi->mode & ~SPI_MODE_X_MASK) | spi_mode;
+ 	error = spi_setup(spi);
+ 	if (error)
+ 		return error;
++	dev_info(dev, "SPI mode %u, %u Hz\n", spi->mode & SPI_MODE_X_MASK,
++		 spi->max_speed_hz);
+ 
+ 	hs = devm_kzalloc(dev, sizeof(*hs), GFP_KERNEL);
+ 	if (!hs)
+@@ -596,6 +760,7 @@ static int himax_spi_probe(struct spi_device *spi)
+ 		return -ENOMEM;
+ 
+ 	hs->spi = spi;
++	mutex_init(&hs->lock);
+ 
+ 	regmap = devm_regmap_init(dev, &himax_spi_regmap_bus, hs,
+ 				  &himax_regmap_config);
+@@ -603,7 +768,13 @@ static int himax_spi_probe(struct spi_device *spi)
+ 		return dev_err_probe(dev, PTR_ERR(regmap),
+ 				     "Failed to initialize regmap\n");
+ 
+-	return himax_probe_common(dev, regmap, spi->irq,
++	regmap8 = devm_regmap_init(dev, &himax_spi_regmap_bus, hs,
++				   &himax_regmap8_config);
++	if (IS_ERR(regmap8))
++		return dev_err_probe(dev, PTR_ERR(regmap8),
++				     "Failed to initialize regmap\n");
++
++	return himax_probe_common(dev, regmap, regmap8, spi->irq,
+ 				  spi_get_device_match_data(spi));
+ }
+ 
+-- 
+2.56.0
+

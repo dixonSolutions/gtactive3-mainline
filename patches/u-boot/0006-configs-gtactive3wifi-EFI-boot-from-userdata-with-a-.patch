@@ -1,7 +1,7 @@
 From 97ff9e77e6c8612f11df6eb422e3fc05cb479c22 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:28:34 +1100
-Subject: [PATCH 06/13] configs: gtactive3wifi: EFI boot from userdata with a
+Subject: [PATCH 06/18] configs: gtactive3wifi: EFI boot from userdata with a
  watchdog fallback
 
 - MULTI_DTB_FIT: without it board_fit_config_name_match() never runs,

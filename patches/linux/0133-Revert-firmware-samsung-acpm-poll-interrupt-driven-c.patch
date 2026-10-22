@@ -1,0 +1,69 @@
+From 858c344dafdea9b5dddeec8aa04ce4af408084a9 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 04:01:05 +1100
+Subject: [PATCH 133/152] Revert "firmware: samsung: acpm: poll
+ interrupt-driven channels on Exynos9810"
+
+This reverts commit d2ef34c7e40a1215362408e0e4dcc427b186e0a1.
+---
+ drivers/firmware/samsung/exynos-acpm.c | 12 +-----------
+ 1 file changed, 1 insertion(+), 11 deletions(-)
+
+diff --git a/drivers/firmware/samsung/exynos-acpm.c b/drivers/firmware/samsung/exynos-acpm.c
+index 3c0bb3e60..eb7d8c752 100644
+--- a/drivers/firmware/samsung/exynos-acpm.c
++++ b/drivers/firmware/samsung/exynos-acpm.c
+@@ -178,7 +178,6 @@ struct acpm_info {
+ 	struct device *dev;
+ 	struct acpm_handle handle;
+ 	u32 num_chans;
+-	bool force_polling;
+ };
+ 
+ /**
+@@ -186,14 +185,10 @@ struct acpm_info {
+  * @initdata_base:	offset in SRAM where the channels configuration resides.
+  * @acpm_clk_dev_name:	base name for the ACPM clocks device that we're registering,
+  *			or NULL if the firmware does not provide clocks.
+- * @force_polling:	poll every channel, also those the firmware describes as
+- *			interrupt driven: their responses land in the same RX
+- *			queue, the interrupt only comes in addition.
+  */
+ struct acpm_match_data {
+ 	loff_t initdata_base;
+ 	const char *acpm_clk_dev_name;
+-	bool force_polling;
+ };
+ 
+ #define client_to_acpm_chan(c) container_of(c, struct acpm_chan, cl)
+@@ -561,8 +556,7 @@ static void acpm_chan_shmem_get_params(struct acpm_chan *achan,
+ 	struct acpm_queue *tx = &achan->tx;
+ 
+ 	achan->mlen = readl(&chan_shmem->mlen);
+-	achan->poll_completion = readl(&chan_shmem->poll_completion) ||
+-				 achan->acpm->force_polling;
++	achan->poll_completion = readl(&chan_shmem->poll_completion);
+ 	achan->id = readl(&chan_shmem->id);
+ 	achan->qlen = readl(&chan_shmem->qlen);
+ 
+@@ -741,7 +735,6 @@ static int acpm_probe(struct platform_device *pdev)
+ 
+ 	acpm->shmem = acpm->sram_base + match_data->initdata_base;
+ 	acpm->dev = dev;
+-	acpm->force_polling = match_data->force_polling;
+ 
+ 	ret = acpm_channels_init(acpm);
+ 	if (ret)
+@@ -901,9 +894,6 @@ static const struct acpm_match_data acpm_gs101 = {
+ static const struct acpm_match_data acpm_exynos9810 = {
+ 	.initdata_base = ACPM_EXYNOS9810_INITDATA_BASE,
+ 	.acpm_clk_dev_name = "exynos9810-acpm-clk",
+-	/* the DVFS channel is interrupt driven; without this no rate request
+-	 * was ever sent and the CPU PLL stayed at its boot rate */
+-	.force_polling = true,
+ };
+ 
+ static const struct of_device_id acpm_match[] = {
+-- 
+2.56.0
+

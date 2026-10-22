@@ -1,0 +1,591 @@
+From 86f91825948ef83c492150fd3dd08c49e805f11c Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 01:53:07 +1100
+Subject: [PATCH 124/152] drm: Add an Exynos9810 DPU takeover KMS driver
+
+The bootloader leaves DECON0 scanning out window 5 from IDMA_G0 (both
+DSI links in video mode, SysMMU in bypass). Keep that setup and flip the
+scanout buffer: write IDMA_IN_BASE_ADDR_Y and request a DECON shadow
+update, latched at the next frame start; vblank from the DECON frame
+start interrupt. The driver is called "exynos" so that Mesa's kmsro
+pairs it with panfrost, claims the boot framebuffer so simpledrm backs
+off, reports a DSI connector with the panel size (for the compositor's
+scale and backlight), and exposes the on-screen buffer in debugfs
+(scanout) for screenshots.
+
+Tested on the SM-T570: fbcon on the driver's CMA buffer, simpledrm out.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   |  26 +
+ drivers/gpu/drm/Kconfig                       |   1 +
+ drivers/gpu/drm/Makefile                      |   1 +
+ drivers/gpu/drm/exynos9810/Kconfig            |  14 +
+ drivers/gpu/drm/exynos9810/Makefile           |   1 +
+ drivers/gpu/drm/exynos9810/exynos9810_dpu.c   | 464 ++++++++++++++++++
+ 6 files changed, 507 insertions(+)
+ create mode 100644 drivers/gpu/drm/exynos9810/Kconfig
+ create mode 100644 drivers/gpu/drm/exynos9810/Makefile
+ create mode 100644 drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 2882b2628..50c0e1cc2 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -1086,6 +1086,32 @@ proximity@20 {
+ 	};
+ };
+ 
++&soc {
++	/*
++	 * DECON0 + the IDMA channel S-Boot scans the panel out from
++	 * (stock decon_f@16030000, idma_* dma regs 0x16071000 + n * 0x1000).
++	 * Takeover driver: flips the buffer, keeps the panel/DSI setup.
++	 * Measured: window 5 (0..1199 x 0..1919) <- IDMA_G0, base 0xca000000,
++	 * SysMMU DPU0 in bypass.
++	 */
++	dpu: display-controller@16030000 {
++		compatible = "samsung,exynos9810-decon-takeover";
++		reg = <0x16030000 0x10000>,
++		      <0x16071000 0x1000>;
++		interrupts = <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;
++		samsung,window = <5>;	/* S-Boot: window 5 <- IDMA_G0 */
++		width = <1200>;
++		height = <1920>;
++		/* 8.0" 16:10 panel, portrait */
++		width-mm = <108>;
++		height-mm = <172>;
++		refresh-rate = <60>;
++		status = "okay";
++	};
++};
++
+ &spi_21 {
+ 	/* Software chip select, as in the stock firmware */
+ 	cs-gpios = <&gph0 7 GPIO_ACTIVE_LOW>;
+diff --git a/drivers/gpu/drm/Kconfig b/drivers/gpu/drm/Kconfig
+index 323422861..f1caf5d08 100644
+--- a/drivers/gpu/drm/Kconfig
++++ b/drivers/gpu/drm/Kconfig
+@@ -309,6 +309,7 @@ source "drivers/gpu/drm/atmel-hlcdc/Kconfig"
+ source "drivers/gpu/drm/bridge/Kconfig"
+ source "drivers/gpu/drm/etnaviv/Kconfig"
+ source "drivers/gpu/drm/exynos/Kconfig"
++source "drivers/gpu/drm/exynos9810/Kconfig"
+ source "drivers/gpu/drm/fsl-dcu/Kconfig"
+ source "drivers/gpu/drm/gma500/Kconfig"
+ source "drivers/gpu/drm/gud/Kconfig"
+diff --git a/drivers/gpu/drm/Makefile b/drivers/gpu/drm/Makefile
+index e635fcffd..52b1e9630 100644
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -188,6 +188,7 @@ obj-$(CONFIG_DRM_VKMS)	+= vkms/
+ obj-$(CONFIG_DRM_NOUVEAU) +=nouveau/
+ # nova-drm is built from drivers/gpu/Makefile together with nova-core.
+ obj-$(CONFIG_DRM_EXYNOS) +=exynos/
++obj-$(CONFIG_DRM_EXYNOS9810_DPU) += exynos9810/
+ obj-$(CONFIG_DRM_ROCKCHIP) +=rockchip/
+ obj-$(CONFIG_DRM_GMA500) += gma500/
+ obj-$(CONFIG_DRM_UDL) += udl/
+diff --git a/drivers/gpu/drm/exynos9810/Kconfig b/drivers/gpu/drm/exynos9810/Kconfig
+new file mode 100644
+index 000000000..d8f56bc97
+--- /dev/null
++++ b/drivers/gpu/drm/exynos9810/Kconfig
+@@ -0,0 +1,14 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config DRM_EXYNOS9810_DPU
++	tristate "Exynos9810 DPU (bootloader takeover)"
++	depends on DRM && OF
++	depends on ARCH_EXYNOS || COMPILE_TEST
++	select DRM_CLIENT_SELECTION
++	select DRM_GEM_DMA_HELPER
++	select DRM_KMS_HELPER
++	select APERTURE_HELPERS
++	help
++	  KMS driver for the Exynos9810 display controller (DECON + IDMA) as
++	  the bootloader left it: flips the scanout buffer at vsync, so the
++	  GPU (panfrost, through Mesa's kmsro) can render straight to the
++	  panel. The panel and DSI links are not reprogrammed.
+diff --git a/drivers/gpu/drm/exynos9810/Makefile b/drivers/gpu/drm/exynos9810/Makefile
+new file mode 100644
+index 000000000..5fae32601
+--- /dev/null
++++ b/drivers/gpu/drm/exynos9810/Makefile
+@@ -0,0 +1 @@
++obj-$(CONFIG_DRM_EXYNOS9810_DPU) += exynos9810_dpu.o
+diff --git a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+new file mode 100644
+index 000000000..37c547b76
+--- /dev/null
++++ b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
+@@ -0,0 +1,464 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Exynos9810 DPU (DECON + IDMA) takeover KMS driver.
++ *
++ * The bootloader powers the panel, runs both DSI links in video mode and
++ * leaves DECON0 scanning out one window from a framebuffer through one IDMA
++ * channel. This driver keeps that configuration and only flips the scanout
++ * buffer: it writes the channel's IDMA_IN_BASE_ADDR_Y and asks DECON for a
++ * shadow register update, which the hardware latches at the next frame
++ * start. Vblank comes from the DECON frame start interrupt.
++ *
++ * Register layout from Samsung's GPL dpu_9810 driver (regs-decon.h,
++ * regs-dpp.h): DECON at 0x16030000, IDMA channel n at 0x16071000 +
++ * n * 0x1000.
++ *
++ * The DRM driver is called "exynos" so that Mesa's kmsro loader pairs it
++ * with the Mali (panfrost) render node: GNOME then renders on the GPU and
++ * scans out the result directly.
++ */
++
++#include <linux/aperture.h>
++#include <linux/debugfs.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_reserved_mem.h>
++#include <linux/platform_device.h>
++
++#include <drm/clients/drm_client_setup.h>
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_drv.h>
++#include <drm/drm_fb_dma_helper.h>
++#include <drm/drm_fbdev_dma.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_gem_atomic_helper.h>
++#include <drm/drm_gem_dma_helper.h>
++#include <drm/drm_gem_framebuffer_helper.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_modeset_lock.h>
++#include <drm/drm_probe_helper.h>
++#include <drm/drm_simple_kms_helper.h>
++#include <drm/drm_vblank.h>
++
++/* DECON */
++#define DECON_INTERRUPT_ENABLE		0x0040
++#define DPU_FRAME_START_INT_EN		BIT(12)
++#define DPU_INT_EN			BIT(0)
++#define DECON_INTERRUPT_PENDING		0x004c
++#define DPU_FRAME_DONE_INT_PEND		BIT(13)
++#define DPU_FRAME_START_INT_PEND	BIT(12)
++#define DPU_EXTRA_INT_PEND		BIT(4)
++#define DECON_EXTRA_INTERRUPT_PENDING	0x0050
++#define DECON_SHADOW_REG_UPDATE_REQ	0x0060
++#define SHADOW_REG_UPDATE_REQ_GLOBAL	BIT(31)
++#define SHADOW_REG_UPDATE_REQ_WIN(w)	BIT(w)
++
++/* IDMA channel */
++#define IDMA_SRC_SIZE			0x0010
++#define IDMA_IN_BASE_ADDR_Y		0x0040
++
++struct e9810_dpu {
++	struct drm_device drm;
++	struct drm_simple_display_pipe pipe;
++	struct drm_connector conn;
++
++	void __iomem *decon;
++	void __iomem *idma;
++	u32 win;
++
++	u32 width, height, width_mm, height_mm, refresh;
++	u32 boot_addr;
++	bool irq_ok;
++};
++
++static inline struct e9810_dpu *to_dpu(struct drm_device *drm)
++{
++	return container_of(drm, struct e9810_dpu, drm);
++}
++
++/* one opaque window: no blending is set up, so no alpha formats */
++static const u32 e9810_formats[] = {
++	DRM_FORMAT_XRGB8888,
++};
++
++/* ---- connector: the fixed panel mode ---- */
++
++static int e9810_conn_get_modes(struct drm_connector *conn)
++{
++	struct e9810_dpu *dpu = to_dpu(conn->dev);
++	struct drm_display_mode *mode;
++	/* blanking as in the stock panel timing, only the totals matter here */
++	u32 htotal = dpu->width + 32 + 32 + 2;
++	u32 vtotal = dpu->height + 16 + 16 + 2;
++
++	mode = drm_mode_create(conn->dev);
++	if (!mode)
++		return 0;
++	mode->hdisplay = dpu->width;
++	mode->hsync_start = dpu->width + 32;
++	mode->hsync_end = dpu->width + 34;
++	mode->htotal = htotal;
++	mode->vdisplay = dpu->height;
++	mode->vsync_start = dpu->height + 16;
++	mode->vsync_end = dpu->height + 18;
++	mode->vtotal = vtotal;
++	mode->clock = DIV_ROUND_UP(htotal * vtotal * dpu->refresh, 1000);
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	drm_mode_set_name(mode);
++	drm_mode_probed_add(conn, mode);
++
++	conn->display_info.width_mm = dpu->width_mm;
++	conn->display_info.height_mm = dpu->height_mm;
++	return 1;
++}
++
++static const struct drm_connector_helper_funcs e9810_conn_helper_funcs = {
++	.get_modes = e9810_conn_get_modes,
++};
++
++static const struct drm_connector_funcs e9810_conn_funcs = {
++	.fill_modes = drm_helper_probe_single_connector_modes,
++	.destroy = drm_connector_cleanup,
++	.reset = drm_atomic_helper_connector_reset,
++	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
++	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++};
++
++/* ---- the pipe ---- */
++
++static void e9810_flip(struct e9810_dpu *dpu, dma_addr_t addr)
++{
++	writel(lower_32_bits(addr), dpu->idma + IDMA_IN_BASE_ADDR_Y);
++	writel(SHADOW_REG_UPDATE_REQ_WIN(dpu->win) | SHADOW_REG_UPDATE_REQ_GLOBAL,
++	       dpu->decon + DECON_SHADOW_REG_UPDATE_REQ);
++}
++
++static int e9810_check(struct drm_simple_display_pipe *pipe,
++		       struct drm_plane_state *pstate,
++		       struct drm_crtc_state *cstate)
++{
++	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
++	struct drm_framebuffer *fb = pstate->fb;
++
++	if (!fb)
++		return 0;
++	/* the IDMA keeps the bootloader's source size, stride and format */
++	if (fb->width != dpu->width || fb->height != dpu->height ||
++	    fb->pitches[0] != dpu->width * 4 || fb->offsets[0])
++		return -EINVAL;
++	return 0;
++}
++
++static void e9810_send_event(struct drm_crtc *crtc, bool vblank_ok)
++{
++	struct drm_pending_vblank_event *event = crtc->state->event;
++
++	if (!event)
++		return;
++	crtc->state->event = NULL;
++
++	spin_lock_irq(&crtc->dev->event_lock);
++	if (vblank_ok && drm_crtc_vblank_get(crtc) == 0)
++		drm_crtc_arm_vblank_event(crtc, event);
++	else
++		drm_crtc_send_vblank_event(crtc, event);
++	spin_unlock_irq(&crtc->dev->event_lock);
++}
++
++static void e9810_update(struct drm_simple_display_pipe *pipe,
++			 struct drm_plane_state *old)
++{
++	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
++	struct drm_plane_state *pstate = pipe->plane.state;
++
++	if (pstate->fb && pstate->fb != old->fb)
++		e9810_flip(dpu, drm_fb_dma_get_gem_addr(pstate->fb, pstate, 0));
++
++	e9810_send_event(&pipe->crtc, dpu->irq_ok);
++}
++
++static void e9810_enable(struct drm_simple_display_pipe *pipe,
++			 struct drm_crtc_state *cstate,
++			 struct drm_plane_state *pstate)
++{
++	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
++
++	if (pstate->fb)
++		e9810_flip(dpu, drm_fb_dma_get_gem_addr(pstate->fb, pstate, 0));
++	if (dpu->irq_ok)
++		drm_crtc_vblank_on(&pipe->crtc);
++	e9810_send_event(&pipe->crtc, dpu->irq_ok);
++}
++
++static void e9810_disable(struct drm_simple_display_pipe *pipe)
++{
++	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
++
++	/* keep the panel fed: point the IDMA back at the boot framebuffer */
++	if (dpu->boot_addr)
++		e9810_flip(dpu, dpu->boot_addr);
++	if (dpu->irq_ok)
++		drm_crtc_vblank_off(&pipe->crtc);
++}
++
++static int e9810_enable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
++	u32 v = readl(dpu->decon + DECON_INTERRUPT_ENABLE);
++
++	writel(v | DPU_FRAME_START_INT_EN | DPU_INT_EN,
++	       dpu->decon + DECON_INTERRUPT_ENABLE);
++	return 0;
++}
++
++static void e9810_disable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
++	u32 v = readl(dpu->decon + DECON_INTERRUPT_ENABLE);
++
++	writel(v & ~DPU_FRAME_START_INT_EN, dpu->decon + DECON_INTERRUPT_ENABLE);
++}
++
++static const struct drm_simple_display_pipe_funcs e9810_pipe_funcs = {
++	.check = e9810_check,
++	.enable = e9810_enable,
++	.disable = e9810_disable,
++	.update = e9810_update,
++	.enable_vblank = e9810_enable_vblank,
++	.disable_vblank = e9810_disable_vblank,
++};
++
++static irqreturn_t e9810_irq(int irq, void *data)
++{
++	struct e9810_dpu *dpu = data;
++	u32 pend = readl(dpu->decon + DECON_INTERRUPT_PENDING);
++	u32 ext;
++
++	if (!pend)
++		return IRQ_NONE;
++	writel(pend, dpu->decon + DECON_INTERRUPT_PENDING);
++	if (pend & DPU_EXTRA_INT_PEND) {
++		ext = readl(dpu->decon + DECON_EXTRA_INTERRUPT_PENDING);
++		writel(ext, dpu->decon + DECON_EXTRA_INTERRUPT_PENDING);
++	}
++	if ((pend & DPU_FRAME_START_INT_PEND) && dpu->irq_ok)
++		drm_crtc_handle_vblank(&dpu->pipe.crtc);
++	return IRQ_HANDLED;
++}
++
++/*
++ * debugfs "scanout": the pixels of the buffer on screen (XRGB8888, width x
++ * height x 4), for screenshots over the debug console without a compositor
++ * API. Only buffers with a kernel mapping (dumb/DMA GEM) can be read.
++ */
++static ssize_t e9810_scanout_read(struct file *file, char __user *buf,
++				  size_t len, loff_t *ppos)
++{
++	struct e9810_dpu *dpu = file->private_data;
++	struct drm_plane *plane = &dpu->pipe.plane;
++	struct drm_gem_dma_object *gem;
++	size_t size = dpu->width * dpu->height * 4;
++	ssize_t ret;
++
++	drm_modeset_lock(&plane->mutex, NULL);
++	if (!plane->state || !plane->state->fb) {
++		ret = -ENODATA;
++		goto out;
++	}
++	gem = drm_fb_dma_get_gem_obj(plane->state->fb, 0);
++	if (!gem || !gem->vaddr) {
++		ret = -EIO;
++		goto out;
++	}
++	ret = simple_read_from_buffer(buf, len, ppos, gem->vaddr, size);
++out:
++	drm_modeset_unlock(&plane->mutex);
++	return ret;
++}
++
++static const struct file_operations e9810_scanout_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.read = e9810_scanout_read,
++	.llseek = default_llseek,
++};
++
++static void e9810_debugfs_init(struct drm_minor *minor)
++{
++	struct e9810_dpu *dpu = to_dpu(minor->dev);
++
++	debugfs_create_file("scanout", 0400, minor->debugfs_root, dpu,
++			    &e9810_scanout_fops);
++}
++
++static const struct drm_mode_config_funcs e9810_mode_config_funcs = {
++	.fb_create = drm_gem_fb_create,
++	.atomic_check = drm_atomic_helper_check,
++	.atomic_commit = drm_atomic_helper_commit,
++};
++
++DEFINE_DRM_GEM_DMA_FOPS(e9810_fops);
++
++static const struct drm_driver e9810_drm_driver = {
++	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
++	/* "exynos": Mesa's kmsro pairs it with the panfrost render node */
++	.name = "exynos",
++	.desc = "Exynos9810 DPU (bootloader takeover)",
++	.major = 1,
++	.minor = 0,
++	.fops = &e9810_fops,
++	DRM_GEM_DMA_DRIVER_OPS,
++	DRM_FBDEV_DMA_DRIVER_OPS,
++	.debugfs_init = e9810_debugfs_init,
++};
++
++static int e9810_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct e9810_dpu *dpu;
++	struct drm_device *drm;
++	int ret, i, nirq;
++	u32 cur;
++
++	dpu = devm_drm_dev_alloc(dev, &e9810_drm_driver, struct e9810_dpu, drm);
++	if (IS_ERR(dpu))
++		return PTR_ERR(dpu);
++	drm = &dpu->drm;
++
++	dpu->decon = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(dpu->decon))
++		return PTR_ERR(dpu->decon);
++	dpu->idma = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(dpu->idma))
++		return PTR_ERR(dpu->idma);
++
++	of_property_read_u32(dev->of_node, "samsung,window", &dpu->win);
++	if (of_property_read_u32(dev->of_node, "width", &dpu->width) ||
++	    of_property_read_u32(dev->of_node, "height", &dpu->height))
++		return dev_err_probe(dev, -EINVAL, "no width/height\n");
++	of_property_read_u32(dev->of_node, "width-mm", &dpu->width_mm);
++	of_property_read_u32(dev->of_node, "height-mm", &dpu->height_mm);
++	dpu->refresh = 60;
++	of_property_read_u32(dev->of_node, "refresh-rate", &dpu->refresh);
++
++	cur = readl(dpu->idma + IDMA_IN_BASE_ADDR_Y);
++	dpu->boot_addr = cur;
++	dev_info(dev, "window %u, IDMA base 0x%08x, src size 0x%08x, %ux%u@%u\n",
++		 dpu->win, cur, readl(dpu->idma + IDMA_SRC_SIZE),
++		 dpu->width, dpu->height, dpu->refresh);
++	if (!cur)
++		return dev_err_probe(dev, -ENODEV,
++				     "IDMA channel is not scanning out\n");
++
++	/* take the scanout over from simpledrm on the boot framebuffer */
++	ret = aperture_remove_conflicting_devices(cur, dpu->width * dpu->height * 4,
++						  e9810_drm_driver.name);
++	if (ret)
++		return ret;
++	/* and keep it: simpledrm probing after us then backs off */
++	ret = devm_aperture_acquire_for_platform_device(pdev, cur,
++							dpu->width * dpu->height * 4);
++	if (ret)
++		dev_warn(dev, "could not claim the boot framebuffer: %d\n", ret);
++
++	/* the IDMA takes 32-bit addresses (no SysMMU in use) */
++	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
++	if (ret)
++		return ret;
++	ret = of_reserved_mem_device_init(dev);
++	if (ret && ret != -ENODEV)
++		return ret;
++
++	ret = drmm_mode_config_init(drm);
++	if (ret)
++		return ret;
++	drm->mode_config.min_width = dpu->width;
++	drm->mode_config.max_width = dpu->width;
++	drm->mode_config.min_height = dpu->height;
++	drm->mode_config.max_height = dpu->height;
++	drm->mode_config.preferred_depth = 24;
++	drm->mode_config.funcs = &e9810_mode_config_funcs;
++
++	drm_connector_helper_add(&dpu->conn, &e9810_conn_helper_funcs);
++	ret = drm_connector_init(drm, &dpu->conn, &e9810_conn_funcs,
++				 DRM_MODE_CONNECTOR_DSI);
++	if (ret)
++		return ret;
++
++	ret = drm_simple_display_pipe_init(drm, &dpu->pipe, &e9810_pipe_funcs,
++					   e9810_formats,
++					   ARRAY_SIZE(e9810_formats),
++					   NULL, &dpu->conn);
++	if (ret)
++		return ret;
++
++	/*
++	 * All DECON interrupts share one status register. Vblank is set up
++	 * before the handler can run: S-Boot left the interrupts enabled.
++	 */
++	nirq = platform_irq_count(pdev);
++	if (nirq > 0) {
++		ret = drm_vblank_init(drm, 1);
++		if (ret)
++			return ret;
++	}
++	for (i = 0; i < nirq; i++) {
++		int irq = platform_get_irq(pdev, i);
++
++		if (irq < 0)
++			continue;
++		ret = devm_request_irq(dev, irq, e9810_irq, IRQF_SHARED,
++				       dev_name(dev), dpu);
++		if (!ret)
++			dpu->irq_ok = true;
++	}
++	if (!dpu->irq_ok)
++		dev_warn(dev, "no DECON interrupt, flips complete at once\n");
++
++	drm_mode_config_reset(drm);
++	platform_set_drvdata(pdev, drm);
++
++	ret = drm_dev_register(drm, 0);
++	if (ret)
++		return ret;
++	drm_client_setup(drm, NULL);
++	return 0;
++}
++
++static void e9810_remove(struct platform_device *pdev)
++{
++	struct drm_device *drm = platform_get_drvdata(pdev);
++
++	drm_dev_unplug(drm);
++	drm_atomic_helper_shutdown(drm);
++}
++
++static void e9810_shutdown(struct platform_device *pdev)
++{
++	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
++}
++
++static const struct of_device_id e9810_of_match[] = {
++	{ .compatible = "samsung,exynos9810-decon-takeover" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, e9810_of_match);
++
++static struct platform_driver e9810_driver = {
++	.probe = e9810_probe,
++	.remove = e9810_remove,
++	.shutdown = e9810_shutdown,
++	.driver = {
++		.name = "exynos9810-dpu",
++		.of_match_table = e9810_of_match,
++	},
++};
++module_platform_driver(e9810_driver);
++
++MODULE_DESCRIPTION("Exynos9810 DPU bootloader-takeover KMS driver");
++MODULE_LICENSE("GPL");
+-- 
+2.56.0
+

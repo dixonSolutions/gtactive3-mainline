@@ -1,7 +1,7 @@
 From aa4f5efb1c40cd2b7e7a34deb9632785d3f92a77 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:04:05 +1100
-Subject: [PATCH 079/119] dt-bindings: gpu: mali-bifrost: Add Samsung
+Subject: [PATCH 079/152] dt-bindings: gpu: mali-bifrost: Add Samsung
  Exynos9810 compatible
 
 The Exynos9810 has a Mali-G72 MP18 (GPU_ID 0x62210010, r0p1) in its

@@ -1,7 +1,7 @@
 From 6e5ad366f84d0eee0292a371fdeedad8f8dff746 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:11:19 +1100
-Subject: [PATCH 034/119] arm64: dts: exynos: gtactive3wifi: Add i2c-gpio
+Subject: [PATCH 034/152] arm64: dts: exynos: gtactive3wifi: Add i2c-gpio
  variant for the MAX77705
 
 The HSI2C_40 controller still times out after the bootloader, while

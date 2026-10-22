@@ -1,0 +1,199 @@
+From 786989ab8bd62f1a99d31029f904997f3f0c773d Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:58:13 +1100
+Subject: [PATCH 144/152] arm64: dts: exynos9810-gtactive3wifi: Add the
+ battery, charger and USB NTCs
+
+The stock sec-battery node reads the battery NTC (thermal_source ADC)
+on AP ADC channel 1, the charger NTC on channel 3 and the USB-C
+connector NTC on channel 4. Describe each as a generic-adc-thermal
+sensor with the stock ADC code tables (converted to mV against an
+assumed 1.8 V reference, which cancels out) and give each a thermal
+zone without trips: battery-thermal, charger-thermal, usb-thermal. The
+charger driver and the fuel gauge read them by name.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../dts/exynos/exynos9810-gtactive3wifi.dts   | 159 ++++++++++++++++++
+ 1 file changed, 159 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+index 964030050..79a3f8363 100644
+--- a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
++++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
+@@ -187,6 +187,160 @@ vdd_wacom: regulator-wacom {
+ 		regulator-boot-on;
+ 	};
+ 
++	/*
++	 * The AP ADC samples the NTCs ratiometrically; its reference is not
++	 * described in the stock DT and is assumed to be 1.8 V here. The
++	 * lookup tables below are the stock sec-battery ADC code tables
++	 * (DTBO hw_rev 4) converted to mV with the same 1.8 V, so only the
++	 * ratio matters.
++	 */
++	vref_adc: regulator-adc-vref {
++		compatible = "regulator-fixed";
++		regulator-name = "adc_vref";
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		regulator-always-on;
++	};
++
++	/* Battery pack NTC (stock adc-temp, thermal_source ADC) */
++	batt_ntc: thermal-sensor-battery {
++		compatible = "generic-adc-thermal";
++		#thermal-sensor-cells = <0>;
++		io-channels = <&adc 1>;
++		io-channel-names = "sensor-channel";
++		temperature-lookup-table = <
++			(-20000) 1603 (-19000) 1594 (-18000) 1585 (-17000) 1576
++			(-16000) 1567 (-15000) 1558 (-14000) 1546 (-13000) 1535
++			(-12000) 1523 (-11000) 1512 (-10000) 1500 (-9000) 1487
++			(-8000) 1472 (-7000) 1458 (-6000) 1444 (-5000) 1432
++			(-4000) 1419 (-3000) 1406 (-2000) 1393 (-1000) 1375
++			0 1358 1000 1340 2000 1320 3000 1302
++			4000 1284 5000 1267 6000 1248 7000 1230
++			8000 1212 9000 1194 10000 1175 11000 1156
++			12000 1136 13000 1116 14000 1097 15000 1077
++			16000 1056 17000 1036 18000 1015 19000 995
++			20000 974 21000 955 22000 935 23000 916
++			24000 896 25000 876 26000 855 27000 839
++			28000 826 29000 813 30000 800 31000 786
++			32000 773 33000 760 34000 747 35000 725
++			36000 703 37000 659 38000 625 39000 608
++			40000 590 41000 574 42000 559 43000 543
++			44000 527 45000 511 46000 497 47000 483
++			48000 474 49000 465 50000 457 51000 448
++			52000 439 53000 420 54000 403 55000 385
++			56000 367 57000 357 58000 346 59000 335
++			60000 324 61000 316 62000 309 63000 301
++			64000 293 65000 286 66000 278 67000 270
++			68000 263 69000 255 70000 247 71000 240
++			72000 233 73000 226 74000 219 75000 212
++			76000 206 77000 200 78000 194 79000 188
++			80000 182 81000 178 82000 173 83000 169
++			84000 164 85000 160 86000 156 87000 151
++			88000 147 89000 142 90000 138
++		>;
++	};
++
++	/* NTC next to the MAX77705 charger (stock adc-chg-temp) */
++	chg_ntc: thermal-sensor-charger {
++		compatible = "generic-adc-thermal";
++		#thermal-sensor-cells = <0>;
++		io-channels = <&adc 3>;
++		io-channel-names = "sensor-channel";
++		temperature-lookup-table = <
++			(-20000) 1598 (-19000) 1589 (-18000) 1579 (-17000) 1570
++			(-16000) 1560 (-15000) 1551 (-14000) 1539 (-13000) 1527
++			(-12000) 1516 (-11000) 1504 (-10000) 1492 (-9000) 1478
++			(-8000) 1464 (-7000) 1449 (-6000) 1435 (-5000) 1421
++			(-4000) 1406 (-3000) 1390 (-2000) 1375 (-1000) 1360
++			0 1345 1000 1327 2000 1309 3000 1290
++			4000 1272 5000 1254 6000 1236 7000 1218
++			8000 1200 9000 1181 10000 1163 11000 1143
++			12000 1123 13000 1103 14000 1083 15000 1063
++			16000 1043 17000 1022 18000 1001 19000 981
++			20000 960 21000 941 22000 922 23000 902
++			24000 883 25000 864 26000 843 27000 821
++			28000 800 29000 778 30000 757 31000 739
++			32000 721 33000 703 34000 685 35000 667
++			36000 650 37000 632 38000 614 39000 596
++			40000 578 41000 562 42000 545 43000 528
++			44000 512 45000 495 46000 482 47000 469
++			48000 457 49000 444 50000 431 51000 419
++			52000 407 53000 394 54000 382 55000 369
++			56000 359 57000 348 58000 338 59000 327
++			60000 316 61000 309 62000 301 63000 294
++			64000 286 65000 278 66000 271 67000 263
++			68000 255 69000 248 70000 240 71000 234
++			72000 227 73000 220 74000 213 75000 207
++			76000 200 77000 194 78000 188 79000 182
++			80000 176 81000 172 82000 167 83000 163
++			84000 159 85000 154 86000 150 87000 145
++			88000 141 89000 137 90000 132
++		>;
++	};
++
++	/* NTC at the USB-C connector (stock adc-usb-temp) */
++	usb_ntc: thermal-sensor-usb {
++		compatible = "generic-adc-thermal";
++		#thermal-sensor-cells = <0>;
++		io-channels = <&adc 4>;
++		io-channel-names = "sensor-channel";
++		temperature-lookup-table = <
++			(-20000) 1603 (-19000) 1594 (-18000) 1585 (-17000) 1576
++			(-16000) 1567 (-15000) 1557 (-14000) 1546 (-13000) 1534
++			(-12000) 1523 (-11000) 1512 (-10000) 1501 (-9000) 1487
++			(-8000) 1472 (-7000) 1458 (-6000) 1444 (-5000) 1430
++			(-4000) 1415 (-3000) 1400 (-2000) 1385 (-1000) 1370
++			0 1356 1000 1338 2000 1320 3000 1302
++			4000 1284 5000 1266 6000 1248 7000 1230
++			8000 1212 9000 1193 10000 1175 11000 1156
++			12000 1136 13000 1116 14000 1096 15000 1076
++			16000 1056 17000 1036 18000 1015 19000 994
++			20000 974 21000 954 22000 934 23000 915
++			24000 895 25000 876 26000 854 27000 833
++			28000 812 29000 791 30000 769 31000 751
++			32000 733 33000 714 34000 696 35000 678
++			36000 660 37000 642 38000 625 39000 607
++			40000 589 41000 574 42000 558 43000 541
++			44000 526 45000 510 46000 496 47000 482
++			48000 468 49000 453 50000 439 51000 427
++			52000 414 53000 402 54000 390 55000 378
++			56000 367 57000 356 58000 345 59000 334
++			60000 323 61000 316 62000 308 63000 300
++			64000 292 65000 285 66000 277 67000 269
++			68000 261 69000 254 70000 247 71000 240
++			72000 232 73000 225 74000 218 75000 211
++			76000 205 77000 199 78000 193 79000 187
++			80000 181 81000 177 82000 172 83000 168
++			84000 163 85000 159 86000 155 87000 150
++			88000 146 89000 141 90000 137
++		>;
++	};
++
++	/*
++	 * No trips: the MAX77705 charger driver reads battery-thermal and
++	 * charger-thermal itself and throttles or stops charging at the stock
++	 * thresholds.
++	 */
++	thermal-zones {
++		battery-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&batt_ntc>;
++		};
++
++		charger-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&chg_ntc>;
++		};
++
++		usb-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&usb_ntc>;
++		};
++	};
++
+ 	/*
+ 	 * Stock routing (dtbo-4.dts sound node, samsung,routing): headset mic
+ 	 * on IN1 with MICBIAS1, main mic on IN3 with MICBIAS2, sub mic on IN4
+@@ -275,6 +429,11 @@ &abox {
+ 	status = "okay";
+ };
+ 
++&adc {
++	vdd-supply = <&vref_adc>;
++	status = "okay";
++};
++
+ &pinctrl_alive {
+ 	key_power: key-power-pins {
+ 		samsung,pins = "gpa2-4";
+-- 
+2.56.0
+

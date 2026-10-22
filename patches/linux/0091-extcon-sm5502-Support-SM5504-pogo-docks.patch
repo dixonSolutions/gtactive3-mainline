@@ -1,7 +1,7 @@
 From e9deea1a36d3719076c6bf72832708fcb66e11b4 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:32:13 +1100
-Subject: [PATCH 091/119] extcon: sm5502: Support SM5504 pogo docks
+Subject: [PATCH 091/152] extcon: sm5502: Support SM5504 pogo docks
 
 On the Samsung Galaxy Tab Active3 the SM5504 sits on the pogo connector.
 Samsung's sm5504-muic-pogo driver treats the ID resistors 34k (ADC 0x0f)

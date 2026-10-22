@@ -1,7 +1,7 @@
 From cc3eeab584066c6b087b6e07e1186827ecaf70f9 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:11:16 +1100
-Subject: [PATCH 032/119] arm64: dts: exynos: exynos9810: Add ACPM, mailbox and
+Subject: [PATCH 032/152] arm64: dts: exynos: exynos9810: Add ACPM, mailbox and
  TMU nodes
 
 Add the nodes needed to talk to the APM firmware and to read the SoC

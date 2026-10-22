@@ -1,7 +1,7 @@
 From 348b01f7a7480f72438460dcc0f27e74685aa835 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:26:57 +1100
-Subject: [PATCH 02/13] exynos-mobile: gtactive3wifi: bring-up safety net and
+Subject: [PATCH 02/18] exynos-mobile: gtactive3wifi: bring-up safety net and
  RAM console log
 
 - EXYNOS9810_EARLY_SAFETY: at entry set the S-Boot reboot reason to

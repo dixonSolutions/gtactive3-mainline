@@ -1,7 +1,7 @@
 From 29d37b01a1302d6b48155e09948e39237d5dfe9f Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 16:54:59 +1100
-Subject: [PATCH 093/119] arm64: dts: exynos: exynos9810: Add CPU capacities
+Subject: [PATCH 093/152] arm64: dts: exynos: exynos9810: Add CPU capacities
 
 Describe the relative performance of the two clusters so that the
 scheduler does not treat the Mongoose M3 cores like the Cortex-A55 ones

@@ -1,7 +1,7 @@
 From 126f124e6da6efc8e1b067dd1301ac96e25e4b78 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 15:55:09 +1100
-Subject: [PATCH 051/119] dt-bindings: soc: samsung: exynos-sysreg: Add
+Subject: [PATCH 051/152] dt-bindings: soc: samsung: exynos-sysreg: Add
  Exynos9810 CHUB sysreg
 
 Add a compatible for the CHUB system register block of Exynos9810, which

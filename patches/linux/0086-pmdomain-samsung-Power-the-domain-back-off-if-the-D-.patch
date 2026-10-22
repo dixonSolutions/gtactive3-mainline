@@ -1,7 +1,7 @@
 From 6db8f4bd19fe32db8b448019f9518990c00778a4 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 17:16:29 +1100
-Subject: [PATCH 086/119] pmdomain: samsung: Power the domain back off if the
+Subject: [PATCH 086/152] pmdomain: samsung: Power the domain back off if the
  D-TZPC restore fails
 
 When the secure monitor refuses to restore a domain's D-TZPC after

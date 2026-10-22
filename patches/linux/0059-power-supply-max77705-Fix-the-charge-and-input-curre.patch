@@ -1,7 +1,7 @@
 From 9ff7cbb0a969f93303790ac673d7d6224ca6561c Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Wed, 21 Oct 2026 18:15:36 +1100
-Subject: [PATCH 059/119] power: supply: max77705: Fix the charge and input
+Subject: [PATCH 059/152] power: supply: max77705: Fix the charge and input
  current setters
 
 Both writable properties go through max77705_set_integer(), which
