@@ -15,9 +15,12 @@ yourself, autonomously, overnight. Keep going until the mission is met.
   repo-local). Commit in small chunks, end messages with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, push `main`.
 - **Mission (user's words, condensed):** postmarketOS **Duranium** (immutable,
-  systemd, UKI + systemd-boot, A/B sysupdate) booting with the **GNOME UI only**
-  (`postmarketos-ui-gnome` → `postmarketos-base-ui-gnome-duranium`; no Phosh, no
-  Plasma), every piece of hardware working and verified on the device, drivers
+  systemd, UKI + systemd-boot, A/B sysupdate) with a **GNOME-family UI**
+  (`postmarketos-base-ui-gnome-duranium`; never KDE Plasma; the user only
+  excluded Plasma). 2026-10-22 the user chose **Phosh** (phone-style app grid,
+  `UI=phosh`) and wants several UI download options later, with releases
+  rebuilt automatically on new postmarketOS publishes, so the project only
+  maintains drivers and kernel: keep device packages UI-neutral. Every piece of hardware working and verified on the device, drivers
   built from Samsung's GPL kernel + stock DT + the reverse-engineered firmware,
   plus a USB debug layer (on in dev builds, removable for release). Long-horizon:
   don't stop, adjust tactics, commit and merge as you go.

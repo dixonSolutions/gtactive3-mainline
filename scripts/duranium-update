@@ -22,11 +22,14 @@
 #
 #   scripts/duranium-update [VERSION]   default: newest build in mkosi.output
 #   EXTENSIONS="dev-tools waydroid" ...  extensions to deliver ("" = none)
+#   UI=phosh ...                         image variant (default gnome); a
+#                                        switch is an A/B update like any other
 #   then reboot the tablet ("tab reboot" or from GNOME)
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
-OUT=$P/build/wt/duranium/mkosi.output/samsung-gtactive3wifi_gnome_edge
-NAME=samsung-gtactive3wifi_gnome_edge
+UI=${UI:-gnome}
+NAME=samsung-gtactive3wifi_${UI}_edge
+OUT=$P/build/wt/duranium/mkosi.output/$NAME
 LL=fe80::57:aff:fe00:1
 W=$P/build/.upd
 mkdir -p "$W"
@@ -136,7 +139,7 @@ if [ -n "$OLDV" ] && [ "$OLDV" != "$BOOTV" ] && [ "$OLDV" != "$V" ]; then
 	log "retiring the $OLDV boot entry (its slot is rewritten now; booted: $BOOTV)"
 	trun retire "set -e
 E=/run/upd-esp; mkdir -p \$E; mountpoint -q \$E || mount -t vfat /dev/$ESP0 \$E
-rm -f \$E/EFI/Linux/${NAME}_${OLDV}.efi \$E/EFI/Linux/${NAME}_${OLDV}+*.efi
+rm -f \$E/EFI/Linux/*_${OLDV}.efi \$E/EFI/Linux/*_${OLDV}+*.efi
 sync; ls \$E/EFI/Linux; umount \$E"
 fi
 
