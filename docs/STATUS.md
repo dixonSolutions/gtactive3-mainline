@@ -37,8 +37,8 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | **NFC** S3FWRN5 | nci + s3fwrn5_i2c | ◐ nfc0 registers; LDO41/clock not handled | ? | regulator + clock, neard test |
 | **Audio** A-Box + RT5665 codec + RT5510 amp, speaker, 3.5 mm jack, mics | firmware-less A-Box, machine driver, UCM profile (new) | ◐ both PCMs stream; audibility unconfirmed | ? (no UCM until now) | verify speaker/headphones/mic in GNOME; jack detection (JD1+JD2 mode) |
 | **USB-C** charging / data | MAX77705 charger + USB-C BC1.2 input, DWC3 gadget | ✔ (SDP 475 mA, charging) | ◐ charging; host mode untested | USB host/OTG role switching (SM5504 role switch missing) |
-| **Battery** 5050 mAh | max17042 fuel gauge | ✔ capacity/voltage/temp | ? (GNOME battery indicator) | verify in GNOME |
-| **Thermal** | TMU 8 zones | ✔ | ? | cooling via cpufreq (needs DVFS) |
+| **Battery** 5050 mAh | max17042 fuel gauge; temperature from the battery NTC (AP ADC ch1) | ✔ capacity/voltage; temp: was a stale 29.5 °C (FG in host-temperature mode), now the NTC | ◐ NTC + temperature policy verified with test modules on 26102209; ADC driver + DT not booted yet (drv/battemp) | boot drv/battemp; wall-charger measurement |
+| **Thermal** | TMU 8 zones; battery/charger/USB NTCs (exynos_adc 9810 + generic-adc-thermal) | ✔ TMU | ◐ NTC zones via test module | cooling via cpufreq (needs DVFS) |
 | **PMIC** S2MPS18 | ACPM read-only regulators | ◐ read-only | ◐ | regulator control through ACPM (LDO40/41 for grip/NFC) |
 | **Grip sensor** A96T3x6 | driver, bus at 100 kHz | ✘ needs LDO40 | ? | PMIC regulator control |
 | **Pogo pins** SM5504 MUIC | extcon-sm5502 | ✘ probe fails (no USB role switch) | ? | dwc3 role switch |
@@ -92,3 +92,47 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
   update window, as Samsung's dpp_reg does), test the EOTF+GM+TM path with
   linear curves in the bring-up kernel first, and do not expose GAMMA_LUT to
   GNOME again until a warm tint is confirmed by eye.
+
+## Battery temperature and charging limits (2026-10-22, measured on 26102209)
+
+Branch `src/linux drv/battemp` (not merged into gtactive3wifi yet: the DT/ADC
+driver path has not been booted). Kernel aport refreshed to it (pkgrel 9).
+
+- **AP ADC** (0x14230000, CMGP, SPI 8, vendor "exynos-adc-v3"): CON1 0x00
+  (bit 2 soft reset, bit 1 release, bit 0 start), CON2 0x04 (C_TIME<<4 | ch),
+  DAT 0x08 (bit 31 = done, 12-bit), INT_EN 0x10, INT_ST 0x14, VER 0x20 = 0x144.
+  Poked live: conversions on every channel. New compatible
+  `samsung,exynos9810-adc` (12 channels, two CMGP bus clocks).
+- **NTCs** (stock sec-battery tables, `battery,*_temp_table_adc`):
+  ch1 battery, ch3 charger, ch4 USB connector, ch6 backlight (not used),
+  ch11 "in-bat" voltage (reads ~4.07 V by the stock table while the gauge says
+  3.80 V: not used). Live, room temperature, laptop USB (SDP 475 mA):
+
+  | | raw | °C |
+  |---|---|---|
+  | battery (ch1) | 1995 | 25.0-26.0 |
+  | charger (ch3) | 1649 | 31.8-34.8 |
+  | USB (ch4) | 1996 | 25.5 |
+  | CPU little (TMU) | | 39-46 |
+
+  3 min of 4-core busy loops (the log was cut by a reboot from another
+  session): CPU 43.4 -> 46.3 °C, charger NTC 33.9 -> 34.8 °C,
+  battery NTC 25.9 -> 25.8 °C, i.e. the battery channel does not follow the
+  SoC. (The A55s run at a fixed clock without DVFS, so the load heats little;
+  the warming-while-charging check needs a wall charger, still open.)
+- **Fuel gauge**: CONFIG = 0x0314, TEX = 1: TEMP is written by the host and
+  was stuck at 29.6 °C from the vendor kernel. max17042 now writes the
+  battery-thermal temperature every 10 s: reported 25.6 °C (NTC 25.7 °C).
+- **Charger policy** (max77705_charger, battery-thermal zone, 10 s poll),
+  stock values: < 0 °C off, 0-5 °C 450 mA, 5-15 °C 1.15 A, 15-42 °C battery
+  limits (3.1 A, 4.26 V), 42-50 °C 1.75 A, >= 50 °C off; 4.05 V float outside
+  15-42 °C; 2 °C recovery margin. Charger NTC >= 46 °C (44 °C recovery): input
+  1 A, charge 1.25 A. Without a readable zone: the old 1.5 A input and charge
+  caps. Verified on the real charger with faked zone temperatures (all steps,
+  both hysteresis directions, charger-hot on/off): status Not charging +
+  health Overheat/Cold when off, Warm/Cool when reduced.
+- **Input current**: max77705_usbc_psy no longer caps (Type-C Rp 3.0 A ->
+  3 A, DCP 1.8 A, CDP 1.5 A, SDP 475 mA).
+- **Not measured yet**: charge current from a wall charger (needs the cable
+  moved from the laptop), and raising the charge current on the battery: the
+  automatic permission check refused that step, so it waits for the user.
