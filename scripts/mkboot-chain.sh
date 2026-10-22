@@ -17,7 +17,9 @@
 #
 # Environment: UL (uniLoader tree with gtactive3wifi_chain_defconfig),
 # UB (U-Boot tree), UBO (U-Boot build dir), UBOOT (prebuilt u-boot.bin: skips
-# the U-Boot build). Never writes boot-mainline.img (what devd.sh flashes).
+# the U-Boot build), INITRAMFS_LIST (gen_init_cpio list for the fallback
+# Linux's ramdisk, default build/initramfs.list from scripts/build.sh).
+# Never writes boot-mainline.img (what devd.sh flashes).
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 B=$P/build/bringup
@@ -32,6 +34,7 @@ pick() {
 UL=${UL:-$(pick "$P/src/uniLoader" "$P/build/wt/uniloader" configs/gtactive3wifi_chain_defconfig)}
 UB=${UB:-$(pick "$P/src/u-boot-9820" "$P/build/wt/u-boot" drivers/watchdog/exynos_wdt.c)}
 UBO=${UBO:-$P/build/wt/u-boot-out}
+LIST=${INITRAMFS_LIST:-$P/build/initramfs.list}
 
 case $MODE in
 	chain) DEF=0; IMG=$OUT/boot-chain.img ;;
@@ -51,7 +54,7 @@ fi
 
 for f in "$B/arch/arm64/boot/Image" \
 	 "$B/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dtb" \
-	 "$B/usr/gen_init_cpio" "$P/build/initramfs.list" "$UBOOT" \
+	 "$B/usr/gen_init_cpio" "$LIST" "$UBOOT" \
 	 "$P/firmware/stock/boot-unpacked/dtb" "$P/firmware/keys/avb_rsa4096.pem"; do
 	[ -e "$f" ] || { echo "mkboot-chain: missing $f" >&2; exit 1; }
 done
@@ -65,7 +68,7 @@ fi
 mkdir -p "$OUT"
 
 # Ramdisk for the fallback Linux (same contents as the built-in initramfs)
-"$B/usr/gen_init_cpio" "$P/build/initramfs.list" | gzip -9 > "$OUT/ramdisk-chain.cpio.gz"
+"$B/usr/gen_init_cpio" "$LIST" | gzip -9 > "$OUT/ramdisk-chain.cpio.gz"
 
 cp "$B/arch/arm64/boot/Image" "$UL/blob/Image"
 cp "$B/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dtb" "$UL/blob/dtb"
