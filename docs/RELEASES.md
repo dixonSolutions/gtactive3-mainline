@@ -168,10 +168,14 @@ update clears the partial slot by itself. Signature or checksum failures
 (tampered or half-uploaded files) end the same way.
 
 The root partition (user, settings, files, `/var/lib/firmware`) is never
-touched by an update. Switching UI is an update too: in one boot, replace
-the `/etc/os-release` symlink with a copy of `/usr/lib/os-release` that has
-the other `VARIANT_ID` (`phosh`, `gnome`), run `updatectl update`, reboot
-(the new /usr brings its own os-release, and boot relinks it).
+touched by an update. Switching UI is an update too:
+`sudo gtactive3wifi-switch-ui gnome` (or `phosh`) installs the newest image
+of that UI's channel into the inactive slot, then reboot (device package
+r33+). Never edit `/etc/os-release` for this: the next boot checks the new
+image's base confext (`/etc`) against it, and a copy naming the old version
+leaves `/etc` without the image's configuration (seen on the tablet: sshd,
+avahi and tuned failed, GDM hung) until the symlink is restored and
+`systemd-confext refresh` runs.
 
 ### Firmware
 
