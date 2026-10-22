@@ -109,6 +109,18 @@ the PLL stayed at 1053 MHz, because requests went to ACPM channel 5.
   residency in long idle is still to be measured, in the next Duranium
   kernel. Later: the MCT (0x10040000, stock clockevent) as a real broadcast
   timer so all four cores can power down at once.
+- MCT (branch `drv/mct`, not merged): DT node (SPI 466-477, oscclk + CMU_PERIS
+  MCT_PCLK), CMU_PERIS registered early (CLK_OF_DECLARE: the MCT probes in
+  time_init). Mainline arm64 rates the MCT locals and FRC below the arch
+  timer, so the arch timer stays tick + clocksource and only mct-comp (no
+  C3STOP) is meant as the broadcast device; stock instead ticks on the MCT
+  locals. Measured: the MCT is clocked (CMU gate CG_VAL=1, Q-channel off;
+  G_CNT counts at 26 MHz). Bring-up boot with C2 + MCT **hung at 0.85 s**
+  (pstore): CPUs 0-2 entered C2 and never answered IPIs, CPU3 alone kept
+  running. A core in C2 is not woken even by an SGI, so the C2 wake path
+  (GIC -> PMU/APM handshake) is broken, independent of the timer. The
+  bring-up watchdog is armed only by init, so an initcall-time hang never
+  resets. Still open: broadcast = mct-comp with C2 off, then C2 per core.
 - Battery current in the bring-up (USB SDP input, console idle, no C2):
   net -6 mA (gauge, 20 s average). Duranium (coordinator): 214 mA screen
   on, 184 mA blanked.
