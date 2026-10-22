@@ -4,7 +4,11 @@
 # Runs at low priority on 4 cores so the laptop stays cool.
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
-K=$P/src/linux
+# kernel tree (default: the integration worktree) and optional extra config
+# fragments applied after the bring-up config, e.g. configs/gtactive3-pm.config
+K=${KSRC:-src/linux}
+case $K in /*) ;; *) K=$P/$K ;; esac
+EXTRA_CONFIGS=${EXTRA_CONFIGS:-}
 O=$P/build/bringup
 MK="flock $P/build/kbuild.lock nice -n 5 make -j12 -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=$O"
 MODS="drivers/phy/samsung/phy-exynos5-usbdrd drivers/usb/dwc3/dwc3 drivers/usb/dwc3/dwc3-exynos drivers/i2c/busses/i2c-exynos5 drivers/ufs/core/ufshcd-core drivers/ufs/host/ufshcd-pltfrm drivers/ufs/host/ufs-exynos drivers/phy/samsung/phy-exynos-ufs drivers/soc/samsung/exynos-usi drivers/video/backlight/exynos9810-dsim-bl"
@@ -45,8 +49,14 @@ gen_list
 sed "s|@P@|$P|g" "$P/configs/gtactive3-bringup.config" > "$P/build/gtactive3-bringup.config"
 cd "$K"
 make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O="$O" allnoconfig >/dev/null
+extra=
+for f in $EXTRA_CONFIGS; do
+	case $f in /*) ;; *) f=$P/$f ;; esac
+	extra="$extra $f"
+done
+# shellcheck disable=SC2086 # $extra is a list of paths
 KCONFIG_CONFIG=$O/.config scripts/kconfig/merge_config.sh -m -O "$O" "$O/.config" \
-	"$P/build/gtactive3-bringup.config" >/dev/null
+	"$P/build/gtactive3-bringup.config" $extra >/dev/null
 make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O="$O" olddefconfig
 
 echo "== kernel + modules"
