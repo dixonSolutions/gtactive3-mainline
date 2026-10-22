@@ -24,6 +24,8 @@
 #   EXTENSIONS="dev-tools waydroid" ...  extensions to deliver ("" = none)
 #   UI=phosh ...                         image variant (default gnome); a
 #                                        switch is an A/B update like any other
+#   GTA3_SSH=root@100.x.y.z ...          over ssh (Tailscale) instead of the
+#                                        USB console; data goes zstd-compressed
 #   OUT=DIR ...                          where the image files are (default:
 #                                        build/wt/duranium/mkosi.output/<image>;
 #                                        ./setup.sh update --test uses it)
@@ -36,8 +38,17 @@ OUT=${OUT:-$P/build/wt/duranium/mkosi.output/$NAME}
 LL=fe80::57:aff:fe00:1
 W=$P/build/.upd
 mkdir -p "$W"
-t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
-tput_() { flock "$P/build/tab.lock" "$P/scripts/tab-put" "$@" >/dev/null; }
+# Transport: the bring-up console over USB (default), or ssh when there is
+# no cable (GTA3_SSH=root@<tailscale address>, see scripts/tablet-remote).
+if [ -n "${GTA3_SSH:-}" ]; then
+	sshc() { ssh -o BatchMode=yes "$GTA3_SSH" "$@"; }
+	# the console commands this script uses: "cat FILE" and "run /bin/sh FILE"
+	t() { case $1 in "run "*) sshc "${1#run }" ;; *) sshc "$1" ;; esac < /dev/null; }
+	tput_() { sshc "cat > '$2'" < "$1"; }
+else
+	t() { flock "$P/build/tab.lock" "$P/scripts/tab" "$@"; }
+	tput_() { flock "$P/build/tab.lock" "$P/scripts/tab-put" "$@" >/dev/null; }
+fi
 # run a small shell script on the tablet (the console limits each run to 60 s)
 trun() { printf '%s\n' "$2" > "$W/$1.sh"; tput_ "$W/$1.sh" "/run/upd-$1.sh"; t "run /bin/sh /run/upd-$1.sh"; }
 # a longer job (hashing a partition): run it as a transient unit, poll
@@ -147,6 +158,16 @@ rm -f \$E/EFI/Linux/*_${OLDV}.efi \$E/EFI/Linux/*_${OLDV}+*.efi
 sync; ls \$E/EFI/Linux; [ \$E != /run/upd-esp ] || umount \$E"
 fi
 
+if [ -n "${GTA3_SSH:-}" ]; then
+send() { # local remote len: zstd-compressed over ssh (a phone hotspot is slow)
+	local t0=$SECONDS got
+	got=$(head -c "$3" "$1" | zstd -q -3 -T0 -c |
+		sshc "zstd -q -d -c | dd of='$2' bs=1M iflag=fullblock conv=fsync 2>/dev/null; blockdev --getsize64 '$2' 2>/dev/null || stat -c %s '$2'" | head -1)
+	echo "  $2: written in $((SECONDS - t0)) s"
+	# a block device reports its whole size, a file its length: both >= len
+	[ -n "$got" ] && [ "$got" -ge "$3" ]
+}
+else
 IFC=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
 [ -n "$IFC" ] || die "tablet USB network not present"
 send() { # local remote len
@@ -176,6 +197,7 @@ print(f"  {remote}: {line} ({sent / (time.time() - t0) / 1e6:.1f} MB/s)")
 sys.exit(0 if line == f"ok {n}" else 1)
 PY
 }
+fi
 
 if [ "${SKIP_WRITE:-0}" = 1 ]; then log "SKIP_WRITE=1: checking the data already written"; else
 log "writing usr -> /dev/$TU"
