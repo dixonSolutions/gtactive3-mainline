@@ -5,6 +5,32 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-23 00:40 (lead: test campaign session "Camera firmware drivers and OS setup")
+
+- Tablet: slot A = GNOME 26102218 (CI, gnome_edge-dev, installed by the
+  tablet's own systemd-sysupdate), slot B = Phosh 26102219~test2 (local,
+  kernel r14 cand/1023, device r33), booted and blessed. BOOT = new chain
+  (U-Boot drv/bootchain2: wdt_handover=keep 82.6 s, off-mode charging
+  screen, fallback-Linux auto-restart); previous chain in
+  build/images/boot-chain-prev.img. /etc/modprobe.d/gta3-firstboot-test.conf
+  on the tablet is useless (initrd loads those drivers) and can go.
+- Kernel candidates: cand/1023 = cand/1022 + drv/suspend + drv/cam +
+  drv/hwgaps (tested), cand/1024 = + drv/cam e8606290d (RAW10 in 16-bit
+  words, tested as a live module) = aport r15 (building). C2 stays off.
+- Device package r35 (pmaports-duranium): suspend gate + Wi-Fi unload hook,
+  camera conf, firmware import from the ESP, podman + Alpine, tuning,
+  switch-ui, sysupdate retry with vacuum, deadline reboot fix.
+- Images: build-image.sh asks for the PipeWire audio backend (pmaports.py
+  ignores _pmb_select: images had pulseaudio). Local test builds are
+  numbered <newest published+1>~test<N> (mkosi.version); CI publishes
+  YYMMDDNN to the -dev channels; nothing is in pmos/VERIFIED yet.
+- Results: logs/test-runs/2026102{2,3}-*/results.tsv, docs/STATUS.md,
+  docs/TESTPLAN.md. Unattended reboots: scripts/tab-unlock (ClaudeKeys
+  DISK_ENCRYPT_AND_USER_PASSWD = disk passphrase; not the login password).
+- Waiting for the user (physical): power-key wake from suspend, battery
+  drain with the cable out, camera in daylight (Snapshot), microSD card,
+  NFC tag, touch/pen/audio/backlight looks, Night Light (needs login).
+
 ## State 2026-10-22 afternoon (coordinator)
 
 - Tablet: GNOME 26102209 is the known-good version. 26102210 (kernel r11)
