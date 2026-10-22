@@ -53,13 +53,13 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 |---|---|
 | Boot chain S-Boot → uniLoader → U-Boot → systemd-boot → UKI | ✔ boots GNOME; watchdog + "chain died" fallback tested |
 | Immutable /usr (EROFS + dm-verity), A/B slots, LUKS root via systemd-repart | ✔ first boot creates the root (needed BLK_DEV_WRITE_MOUNTED) |
-| USB debug layer (console 23, shell 2323, ssh 22) in the booted system | ✘ died after boot (gadget re-enumeration); fixed in the next image (udev restart + adb off), dead-man reboot as safety net |
+| USB debug layer (console 23, shell 2323, ssh 22) in the booted system | ✘ died after boot (gadget re-enumeration); ✔ (udev restart + adb off); no boot/shutdown deadlines any more (U-Boot stops the watchdog, systemd pets it at runtime only) |
 | Wi-Fi profile, dev SSH key | baked into local dev images only (never committed) |
 | GNOME on the GPU | ✘ (software rendering); next image has the KMS driver |
 | Hardware keys in GNOME | ✘ Home/Recent; fixed in the next image |
 | Audio (PipeWire/UCM) | next image (untested) |
-| Updates (sysupdate) instead of 6.9 GB reinstalls | not set up yet |
-| distrobox / podman / brew | queued check (dev-tools sysext) |
+| Updates instead of 6.9 GB reinstalls | ✔ `scripts/duranium-update` (A/B usr + verity, UKI with boot counting, dev-tools sysext/confext per version in /var/lib/duranium-extensions) |
+| distrobox / podman / brew | ✔ podman 6.1.4 + distrobox 1.8.2.5 (dev-tools sysext), Fedora 44 box, `distrobox-export --bin` tested (26102209) |
 
 ## DVFS findings (2026-10-22, bring-up #76/#77, measured)
 

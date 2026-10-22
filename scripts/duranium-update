@@ -11,11 +11,17 @@
 #   4. copy the new UKI into the ESP with boot counting (+2-0): if it does
 #      not boot twice, systemd-boot goes back to the current version, which
 #      stays installed
+#   5. before that, copy the system/configuration extensions built with the
+#      new version (EXTENSIONS, default dev-tools: podman, distrobox) into
+#      /var/lib/duranium-extensions, next to the booted version's; the
+#      device package links the ones matching the booted /usr into
+#      /run/extensions and /run/confexts (gtactive3wifi-extensions-link)
 #
 # pmOS_root (the encrypted root: user account, settings, files) is never
 # opened, written or resized.
 #
 #   scripts/duranium-update [VERSION]   default: newest build in mkosi.output
+#   EXTENSIONS="dev-tools waydroid" ...  extensions to deliver ("" = none)
 #   then reboot the tablet ("tab reboot" or from GNOME)
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
@@ -56,6 +62,15 @@ H=$(grep -ao 'usrhash=[0-9a-f]\{64\}' "$UKI" | head -1 | cut -d= -f2)
 USR=$OUT/${NAME}_$V.usr-arm64.${H:0:32}.raw
 VTY=$OUT/${NAME}_$V.usr-arm64-verity.${H:32:32}.raw
 [ -f "$USR" ] && [ -f "$VTY" ] || die "usr/verity images for usrhash $H not found"
+EXTS=()
+for e in ${EXTENSIONS-dev-tools}; do
+	n=0
+	for k in sysext confext; do
+		f=$OUT/${NAME}_$V.$e-$k-arm64.raw
+		[ -f "$f" ] && { EXTS+=("$f"); n=$((n + 1)); }
+	done
+	[ "$n" -gt 0 ] || die "no $e sysext/confext built for $V"
+done
 
 t "cat /proc/version" | grep -q postmarketOS || die "the tablet is not in a booted Duranium"
 CUR=$(t "cat /proc/cmdline" | grep -o 'usrhash=[0-9a-f]\{64\}' | cut -d= -f2)
@@ -166,22 +181,44 @@ send "$UKI" /run/new.efi "$(stat -c %s "$UKI")"
 
 log "checking the written data on the tablet"
 # in 256 MiB pieces: every console request must answer within 30 s
-chk() { # local remote len label
+same() { # local remote len label: 0 if the remote bytes match
 	local off=0 n=0 step=$((256 << 20)) want got
 	while [ "$off" -lt "$3" ]; do
 		local c=$(( $3 - off < step ? $3 - off : step ))
 		want=$(python3 -I -c 'import hashlib, sys; f = open(sys.argv[1], "rb"); f.seek(int(sys.argv[2])); print(hashlib.sha256(f.read(int(sys.argv[3]))).hexdigest())' "$1" "$off" "$c")
 		got=$(trun "c$n" "dd if=$2 bs=1M skip=$((off >> 20)) count=$(( (c + 1048575) >> 20 )) 2>/dev/null | head -c $c | sha256sum" | grep -oE '^[0-9a-f]{64}' || true)
-		[ "$want" = "$got" ] || die "$4 mismatch at offset $off: want $want, got '${got}'"
+		[ "$want" = "$got" ] || { echo "$4 mismatch at offset $off: want $want, got '${got}'" >&2; return 1; }
 		off=$((off + c)); n=$((n + 1))
 	done
 	log "  $4: $n pieces match"
 }
+chk() { same "$@" || die "$4 does not match"; }
 trun sync "sync; echo 3 > /proc/sys/vm/drop_caches" >/dev/null
 chk "$USR" "/dev/$TU" "$ULEN" usr
 chk "$VTY" "/dev/$TV" "$VLEN" verity
 chk "$UKI" /run/new.efi "$(stat -c %s "$UKI")" UKI
 log "hashes match"
+
+if [ "${#EXTS[@]}" -gt 0 ]; then
+	XS=/var/lib/duranium-extensions
+	CURV=$(t "cat /usr/lib/os-release" | sed -n 's/^IMAGE_VERSION="\{0,1\}\([0-9]*\).*/\1/p')
+	[ -n "$CURV" ] || die "no IMAGE_VERSION in the tablet's os-release"
+	# keep the booted version's images (a fallback boot links them), drop the rest
+	log "extensions: keeping $CURV and $V in $XS"
+	trun xprune "set -e
+mkdir -p $XS; cd $XS
+for f in *; do case \$f in *_${CURV}.*.raw|*_${V}.*.raw) ;; *) [ -e \"\$f\" ] && rm -f \"\$f\" && echo \"removed \$f\" ;; esac; done
+true"
+	for f in "${EXTS[@]}"; do
+		b=$(basename "$f"); sz=$(stat -c %s "$f")
+		if same "$f" "$XS/$b" "$sz" "$b" 2>/dev/null; then log "  $b already there"; continue; fi
+		log "writing $b ($((sz >> 20)) MiB)"
+		send "$f" "$XS/$b.part" "$sz"
+		trun xsync "sync; echo 3 > /proc/sys/vm/drop_caches" >/dev/null
+		chk "$f" "$XS/$b.part" "$sz" "$b"
+		trun xmv "mv -f $XS/$b.part $XS/$b && sync && echo moved" | grep -q moved || die "could not install $b"
+	done
+fi
 
 NU=$(uuid "${H:0:32}"); NV=$(uuid "${H:32:32}")
 ESP=$(echo "$PARTS" | awk '$3 == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" { print $1 }')
