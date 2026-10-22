@@ -155,12 +155,17 @@ reboot                   # boot counting: if the new version does not boot
                          # twice, systemd-boot goes back to the old one
 ```
 
-While it writes, sysupdate marks the target slot as partial (its GPT type
-changes to a derived one), so a half-written slot never boots. After a
-failed or interrupted update, `updatectl update` refuses ("already acquired
-and partially installed"): run `/usr/lib/systemd/systemd-sysupdate vacuum`
-(the slot goes back to `_empty`), then update again. Signature or checksum
-failures (tampered or half-uploaded files) end the same way.
+To make room, sysupdate first drops the installed version that is not
+booted (its slot and UKI), then writes the new one; the booted version is
+never touched (`ProtectVersion=%A`). While it writes, it marks the target
+slot as partial (its GPT type changes to a derived one), so a half-written
+slot never boots. After a
+failed or interrupted update, retrying the same version is refused
+("already acquired and partially installed"): run
+`/usr/lib/systemd/systemd-sysupdate vacuum` (the slot goes back to
+`_empty`), then update again. Once a newer version is published, the next
+update clears the partial slot by itself. Signature or checksum failures
+(tampered or half-uploaded files) end the same way.
 
 The root partition (user, settings, files, `/var/lib/firmware`) is never
 touched by an update. Switching UI is an update too: in one boot, replace
