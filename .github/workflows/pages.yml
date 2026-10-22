@@ -42,6 +42,13 @@ jobs:
           python3 ci/pages site
           # the tablet's one-line remote-access setup (docs/INSTALL.md)
           cp scripts/tablet-remote site/remote
+          # and the Tailscale build it installs (pinned in the script), for
+          # networks that filter pkgs.tailscale.com
+          v=$(sed -n 's/^V=//p' scripts/tablet-remote)
+          sha=$(sed -n 's/^SHA=//p' scripts/tablet-remote)
+          mkdir -p site/tools
+          curl -fsSL -o "site/tools/tailscale_${v}_arm64.tgz" "https://pkgs.tailscale.com/stable/tailscale_${v}_arm64.tgz"
+          echo "$sha  site/tools/tailscale_${v}_arm64.tgz" | sha256sum -c -
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site

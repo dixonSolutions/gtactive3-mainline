@@ -24,10 +24,21 @@ UNIT=/etc/systemd/system/gta3-tailscaled.service
 [ "$(id -u)" = 0 ] || { echo "run it with sudo" >&2; exit 1; }
 mkdir -p "$D" /var/lib/tailscale
 
+# School and work networks (e.g. detnsw) filter remote-access services:
+# say so plainly instead of failing later with TLS errors
+if ! wget -q --spider -T 15 https://controlplane.tailscale.com/ 2>/dev/null; then
+	echo "This network blocks Tailscale (a web filter: TLS errors or resets)." >&2
+	echo "Connect the tablet to another Wi-Fi, e.g. a phone hotspot, and run this again." >&2
+	exit 1
+fi
+
 if [ ! -x "$D/tailscaled" ] || ! "$D/tailscaled" --version 2>/dev/null | grep -q "^$V"; then
 	echo "downloading Tailscale $V (arm64)"
 	t=$(mktemp -d)
-	wget -qO "$t/ts.tgz" "https://pkgs.tailscale.com/stable/tailscale_${V}_arm64.tgz"
+	# a copy on this project's Pages site (same file, checked below), else
+	# Tailscale's own server
+	wget -qO "$t/ts.tgz" "https://dixonsolutions.github.io/gtactive3-mainline/tools/tailscale_${V}_arm64.tgz" ||
+		wget -qO "$t/ts.tgz" "https://pkgs.tailscale.com/stable/tailscale_${V}_arm64.tgz"
 	echo "$SHA  $t/ts.tgz" | sha256sum -c -
 	tar -xzf "$t/ts.tgz" -C "$t"
 	mv "$t/tailscale_${V}_arm64/tailscale" "$t/tailscale_${V}_arm64/tailscaled" "$D/"
