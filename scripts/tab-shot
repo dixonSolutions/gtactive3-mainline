@@ -1,11 +1,16 @@
 #!/bin/bash
-# Screenshot of the tablet's panel: reads the scanout framebuffer that
-# simpledrm (and so Mutter/GNOME) draws into, 0xca000000, 1200x1920 XRGB8888,
-# with the debug console's "memcat" and writes a PNG.
+# Screenshot of the tablet's panel (1200x1920 XRGB8888) as a PNG.
 #
 #   scripts/tab-shot [OUT.png]   (default build/shots/shot-<time>.png)
-# BASE=0x... reads another buffer; BASE=live reads whatever IDMA_G0 scans
-# out right now (IDMA_IN_BASE_ADDR_Y, 0x16071040), e.g. under the KMS driver.
+#
+# By default it reads the buffer on screen from the Exynos9810 KMS driver's
+# debugfs file (/sys/kernel/debug/dri/0/scanout) with the console's "cat":
+# works for GNOME on the GPU (the scanout buffers are CMA dumb buffers).
+# SRC=/path reads another file. BASE=0x... reads physical memory with
+# "memcat" instead (simpledrm / bring-up: 0xca000000); BASE=live reads
+# whatever IDMA_G0 scans out (IDMA_IN_BASE_ADDR_Y, 0x16071040). memcat goes
+# through /dev/mem, which cannot map ordinary RAM such as the CMA buffers
+# the KMS driver flips between (STRICT_DEVMEM): use the default there.
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$P/build/shots/shot-$(date +%Y%m%d-%H%M%S).png}
@@ -13,14 +18,15 @@ mkdir -p "$(dirname "$OUT")"
 LL=fe80::57:aff:fe00:1
 ifc=$(for d in /sys/class/net/*; do [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = cdc_ncm ] && basename "$d"; done | head -1 || true)
 [ -n "$ifc" ] || { echo "tablet USB network not present" >&2; exit 1; }
-BASE=${BASE:-0xca000000}
+SRC=${SRC:-/sys/kernel/debug/dri/0/scanout}
+BASE=${BASE:-}
 if [ "$BASE" = live ]; then
 	BASE=$(flock "$P/build/tab.lock" "$P/scripts/tab" "peek 0x16071040" | tr -d '\r\n')
 fi
-flock "$P/build/tab.lock" python3 -I - "$LL%$ifc" "$OUT" "$BASE" <<'PY'
+flock "$P/build/tab.lock" python3 -I - "$LL%$ifc" "$OUT" "$BASE" "$SRC" <<'PY'
 import socket, struct, sys, zlib
-addr, out = sys.argv[1], sys.argv[2]
-W, H, BASE = 1200, 1920, int(sys.argv[3], 0)
+addr, out, base, src = sys.argv[1:5]
+W, H = 1200, 1920
 n = W * H * 4
 s = socket.create_connection((addr, 23), timeout=30)
 s.settimeout(30)
@@ -30,16 +36,20 @@ while not buf.endswith(b"> "):
     if not d:
         sys.exit("console closed before the prompt")
     buf += d
-s.sendall(f"memcat {BASE:#x} {n}\n".encode())
+if base:
+    s.sendall(f"memcat {int(base, 0):#x} {n}\n".encode())
+else:
+    s.sendall(f"cat {src}\n".encode())
 data = bytearray()
 while len(data) < n:
     d = s.recv(min(1 << 20, n - len(data)))
     if not d:
         sys.exit(f"short read: {len(data)} of {n} (no memcat on this console?)")
     data += d
+    # an error answer is short and followed by the prompt: don't wait for n bytes
+    if len(data) < 256 and data.endswith(b"> ") and (data.startswith(b"error") or b"\n" in data):
+        sys.exit("read failed on the device: %r" % bytes(data[:200]))
 s.close()
-if data[:6] == b"error\n":
-    sys.exit("memcat failed on the device")
 # XRGB8888 little endian: B G R X -> RGB rows with a filter byte
 raw = bytearray()
 for y in range(H):
