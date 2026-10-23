@@ -10358,10 +10358,10 @@ index 0000000000000000000000000000000000000000..5fae326012f95956c22b9c61e3a61d7c
 +obj-$(CONFIG_DRM_EXYNOS9810_DPU) += exynos9810_dpu.o
 diff --git a/drivers/gpu/drm/exynos9810/exynos9810_dpu.c b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1073e4cae
+index 0000000000000000000000000000000000000000..61581255a2c62594a8c4abcf4bf94506af5cfe8d
 --- /dev/null
 +++ b/drivers/gpu/drm/exynos9810/exynos9810_dpu.c
-@@ -0,0 +1,802 @@
+@@ -0,0 +1,883 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Exynos9810 DPU (DECON + IDMA) takeover KMS driver.
@@ -10379,9 +10379,12 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 + *
 + * Screen blank (DPMS off, system sleep) goes as far down as the panel
 + * driver allows (its power_off_level parameter): backlight off, panel
-+ * asleep, then DECON stopped with the DSI links in ULPS, then the panel
-+ * rails off. DECON is only stopped and restarted, never reset, so the
-+ * bootloader's configuration survives; the DPU power domain stays on.
++ * asleep, then DECON stopped with the DSI links' HS clocks off, then the
++ * lanes and the panel rails off. DECON is only stopped and restarted,
++ * never reset, so the bootloader's configuration survives; the DPU power
++ * domain stays on. If DECON gives no frames after an unblank (a DSI link
++ * that did not come back stalls it), vblank comes from a timer until the
++ * next blank, so that DRM clients do not wait for vblanks forever.
 + *
 + * The CRTC gamma LUT (GNOME's Night Light) is not applied in the DPU: the
 + * VGRF HDR block garbled the picture. With "samsung,panel-gamma" it is
@@ -10405,6 +10408,8 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 +#include <linux/of.h>
 +#include <linux/of_reserved_mem.h>
 +#include <linux/platform_device.h>
++#include <linux/spinlock.h>
++#include <linux/wait.h>
 +
 +#include <drm/clients/drm_client_setup.h>
 +#include <drm/drm_atomic_helper.h>
@@ -10464,6 +10469,15 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 +	bool irq_ok;
 +	/* shutdown/unbind: blank with the backlight only */
 +	bool going_down;
++
++	/* DECON_INTERRUPT_ENABLE, and the frame count below */
++	spinlock_t int_lock;
++	/* frame starts counted by e9810_frames_flow() */
++	wait_queue_head_t frame_wq;
++	unsigned int frames;
++	bool counting;
++	/* no frames from DECON since the last unblank: vblank from a timer */
++	bool vblank_timer;
 +};
 +
 +static inline struct e9810_dpu *to_dpu(struct drm_device *drm)
@@ -10526,6 +10540,48 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 +	writel(lower_32_bits(addr), dpu->idma + IDMA_IN_BASE_ADDR_Y);
 +	writel(SHADOW_REG_UPDATE_REQ_WIN(dpu->win) | SHADOW_REG_UPDATE_REQ_GLOBAL,
 +	       dpu->decon + DECON_SHADOW_REG_UPDATE_REQ);
++}
++
++/* frame start interrupt on/off, for vblank and e9810_frames_flow() */
++static void e9810_frame_start_irq(struct e9810_dpu *dpu, bool on)
++{
++	unsigned long flags;
++	u32 v;
++
++	spin_lock_irqsave(&dpu->int_lock, flags);
++	v = readl(dpu->decon + DECON_INTERRUPT_ENABLE);
++	if (on)
++		v |= DPU_FRAME_START_INT_EN | DPU_INT_EN;
++	else
++		v &= ~DPU_FRAME_START_INT_EN;
++	writel(v, dpu->decon + DECON_INTERRUPT_ENABLE);
++	spin_unlock_irqrestore(&dpu->int_lock, flags);
++}
++
++/*
++ * After an unblank, before vblank is switched on: does DECON give frames?
++ * A DSI link that did not come back stalls DECON within its first frame,
++ * so wait for two frame starts (four frame times at most).
++ */
++static bool e9810_frames_flow(struct e9810_dpu *dpu)
++{
++	long timeout = msecs_to_jiffies(4 * 1000 / dpu->refresh + 1);
++	bool ok;
++
++	spin_lock_irq(&dpu->int_lock);
++	dpu->frames = 0;
++	dpu->counting = true;
++	spin_unlock_irq(&dpu->int_lock);
++	/* one latched before the unblank does not count */
++	writel(DPU_FRAME_START_INT_PEND, dpu->decon + DECON_INTERRUPT_PENDING);
++	e9810_frame_start_irq(dpu, true);
++	ok = wait_event_timeout(dpu->frame_wq, READ_ONCE(dpu->frames) >= 2,
++				timeout);
++	e9810_frame_start_irq(dpu, false);
++	spin_lock_irq(&dpu->int_lock);
++	dpu->counting = false;
++	spin_unlock_irq(&dpu->int_lock);
++	return ok;
 +}
 +
 +/* ---- DECON stop/start (screen blank) ---- */
@@ -10808,8 +10864,18 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 +	e9810_panel_unblank(dpu);
 +	mutex_unlock(&e9810_panel_lock);
 +
-+	if (dpu->irq_ok)
++	if (dpu->irq_ok) {
++		/*
++		 * Without frames DRM would wait for vblanks that never come:
++		 * every atomic commit times out and the compositor stalls.
++		 * The next blank and unblank try the panel again.
++		 */
++		WRITE_ONCE(dpu->vblank_timer, !e9810_frames_flow(dpu));
++		if (dpu->vblank_timer)
++			dev_warn(dpu->drm.dev,
++				 "no frames from DECON, vblank from a timer until the next blank\n");
 +		drm_crtc_vblank_on(&pipe->crtc);
++	}
 +	e9810_send_event(&pipe->crtc, dpu->irq_ok);
 +}
 +
@@ -10832,22 +10898,25 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 +		drm_crtc_vblank_off(&pipe->crtc);
 +}
 +
++/* vblank_timer only changes while vblank is off (see e9810_enable()) */
 +static int e9810_enable_vblank(struct drm_simple_display_pipe *pipe)
 +{
 +	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
-+	u32 v = readl(dpu->decon + DECON_INTERRUPT_ENABLE);
 +
-+	writel(v | DPU_FRAME_START_INT_EN | DPU_INT_EN,
-+	       dpu->decon + DECON_INTERRUPT_ENABLE);
++	if (dpu->vblank_timer)
++		return drm_crtc_vblank_start_timer(&pipe->crtc);
++	e9810_frame_start_irq(dpu, true);
 +	return 0;
 +}
 +
 +static void e9810_disable_vblank(struct drm_simple_display_pipe *pipe)
 +{
 +	struct e9810_dpu *dpu = to_dpu(pipe->crtc.dev);
-+	u32 v = readl(dpu->decon + DECON_INTERRUPT_ENABLE);
 +
-+	writel(v & ~DPU_FRAME_START_INT_EN, dpu->decon + DECON_INTERRUPT_ENABLE);
++	if (dpu->vblank_timer)
++		drm_crtc_vblank_cancel_timer(&pipe->crtc);
++	else
++		e9810_frame_start_irq(dpu, false);
 +}
 +
 +static const struct drm_simple_display_pipe_funcs e9810_pipe_funcs = {
@@ -10872,7 +10941,16 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 +		ext = readl(dpu->decon + DECON_EXTRA_INTERRUPT_PENDING);
 +		writel(ext, dpu->decon + DECON_EXTRA_INTERRUPT_PENDING);
 +	}
-+	if ((pend & DPU_FRAME_START_INT_PEND) && dpu->irq_ok)
++	if (!(pend & DPU_FRAME_START_INT_PEND))
++		return IRQ_HANDLED;
++
++	spin_lock(&dpu->int_lock);
++	if (dpu->counting) {
++		dpu->frames++;
++		wake_up(&dpu->frame_wq);
++	}
++	spin_unlock(&dpu->int_lock);
++	if (dpu->irq_ok && !READ_ONCE(dpu->vblank_timer))
 +		drm_crtc_handle_vblank(&dpu->pipe.crtc);
 +	return IRQ_HANDLED;
 +}
@@ -10975,6 +11053,9 @@ index 0000000000000000000000000000000000000000..cd17ac65d93b28ef8cdb1db4114ec4c1
 +	if (IS_ERR(dpu))
 +		return PTR_ERR(dpu);
 +	drm = &dpu->drm;
++
++	spin_lock_init(&dpu->int_lock);
++	init_waitqueue_head(&dpu->frame_wq);
 +
 +	dpu->decon = devm_platform_ioremap_resource(pdev, 0);
 +	if (IS_ERR(dpu->decon))
@@ -11640,10 +11721,10 @@ index 0000000000000000000000000000000000000000..d090c59355a7eb32862d9c05742de06f
 +bcm4775_shub-y := core.o tl.o loader.o ssp.o iio.o
 diff --git a/drivers/iio/common/bcm4775_shub/bcm4775_shub.h b/drivers/iio/common/bcm4775_shub/bcm4775_shub.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d71c30a2d9412a20fecbc11a88535dc39165b915
+index 0000000000000000000000000000000000000000..ac12659c4f3609bfa9db3f4ff835a2af2289e21e
 --- /dev/null
 +++ b/drivers/iio/common/bcm4775_shub/bcm4775_shub.h
-@@ -0,0 +1,433 @@
+@@ -0,0 +1,437 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/*
 + * Broadcom BCM4775 GNSS chip with sensor-hub MCU (Samsung Galaxy Tab
@@ -12009,6 +12090,9 @@ index 0000000000000000000000000000000000000000..d71c30a2d9412a20fecbc11a88535dc3
 +	struct mutex state_lock;
 +	enum shub_state state;
 +	struct work_struct boot_work;
++	struct delayed_work fw_retry;	/* firmware not there yet */
++	unsigned int fw_waits;
++	unsigned int ssp_fails;		/* consecutive SSP start failures */
 +	unsigned int boots;
 +	struct shub_version rom_ver;
 +	struct shub_version app_ver;
@@ -12056,6 +12140,7 @@ index 0000000000000000000000000000000000000000..d71c30a2d9412a20fecbc11a88535dc3
 +
 +/* loader */
 +void shub_boot_work(struct work_struct *work);
++void shub_fw_retry_work(struct work_struct *work);
 +void shub_on_version(struct bcm4775_shub *shub, u32 asic, u32 rom,
 +		     u32 patch);
 +
@@ -12079,10 +12164,10 @@ index 0000000000000000000000000000000000000000..d71c30a2d9412a20fecbc11a88535dc3
 +#endif
 diff --git a/drivers/iio/common/bcm4775_shub/core.c b/drivers/iio/common/bcm4775_shub/core.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6657dc629cb435523fac730d3c715069aa12bb64
+index 0000000000000000000000000000000000000000..d4d53ae854fde59554d4375e558c05bc43be2104
 --- /dev/null
 +++ b/drivers/iio/common/bcm4775_shub/core.c
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,651 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * BCM4775 sensor hub: SPI link ("SSI"), power, probe.
@@ -12478,6 +12563,7 @@ index 0000000000000000000000000000000000000000..6657dc629cb435523fac730d3c715069
 +	shub->state = SHUB_OFF;
 +	mutex_unlock(&shub->state_lock);
 +	shub_tl_stop(shub);
++	cancel_delayed_work_sync(&shub->fw_retry);
 +	cancel_work_sync(&shub->boot_work);
 +	shub_ssp_reset(shub);
 +	shub_tl_stop(shub);
@@ -12544,6 +12630,8 @@ index 0000000000000000000000000000000000000000..6657dc629cb435523fac730d3c715069
 +	mutex_lock(&shub->state_lock);
 +	if (shub->state != SHUB_BOOTING) {
 +		shub->state = SHUB_BOOTING;
++		shub->fw_waits = 0;
++		shub->ssp_fails = 0;
 +		queue_work(system_long_wq, &shub->boot_work);
 +	}
 +	mutex_unlock(&shub->state_lock);
@@ -12659,6 +12747,7 @@ index 0000000000000000000000000000000000000000..6657dc629cb435523fac730d3c715069
 +	spin_lock_init(&shub->txq_lock);
 +	INIT_WORK(&shub->work, shub_xfer_work);
 +	INIT_WORK(&shub->boot_work, shub_boot_work);
++	INIT_DELAYED_WORK(&shub->fw_retry, shub_fw_retry_work);
 +	init_completion(&shub->ver_done);
 +
 +	shub->txb = devm_kzalloc(dev, SSI_FRAME_MAX, GFP_KERNEL | GFP_DMA);
@@ -13015,10 +13104,10 @@ index 0000000000000000000000000000000000000000..fb8c8226961800b53ed699044f5c1979
 +}
 diff --git a/drivers/iio/common/bcm4775_shub/loader.c b/drivers/iio/common/bcm4775_shub/loader.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..27bbb22cd2d23f5e2faf3b3ed8c2dfe1bff996c7
+index 0000000000000000000000000000000000000000..76960885c64cb3dc61974b9300fc40e2a8b2fbd8
 --- /dev/null
 +++ b/drivers/iio/common/bcm4775_shub/loader.c
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,442 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * BCM4775 sensor hub: bring the hub application up.
@@ -13054,6 +13143,9 @@ index 0000000000000000000000000000000000000000..27bbb22cd2d23f5e2faf3b3ed8c2dfe1
 +#define SHUB_BOOT_TRIES		3
 +#define SHUB_SYNC_TRIES		5
 +#define SHUB_VERSION_TRIES	5
++#define SHUB_FW_WAITS		120	/* x SHUB_FW_WAIT_MS: 10 minutes */
++#define SHUB_FW_WAIT_MS		5000
++#define SHUB_SSP_RESTARTS	3
 +
 +struct shub_patch {
 +	u32 asic;
@@ -13376,6 +13468,15 @@ index 0000000000000000000000000000000000000000..27bbb22cd2d23f5e2faf3b3ed8c2dfe1
 +	return 0;
 +}
 +
++void shub_fw_retry_work(struct work_struct *work)
++{
++	struct bcm4775_shub *shub = container_of(to_delayed_work(work),
++						 struct bcm4775_shub, fw_retry);
++
++	if (READ_ONCE(shub->state) == SHUB_BOOTING)
++		queue_work(system_long_wq, &shub->boot_work);
++}
++
 +void shub_boot_work(struct work_struct *work)
 +{
 +	struct bcm4775_shub *shub = container_of(work, struct bcm4775_shub,
@@ -13384,7 +13485,21 @@ index 0000000000000000000000000000000000000000..27bbb22cd2d23f5e2faf3b3ed8c2dfe1
 +	struct shub_patch pt = { };
 +	int i, ret;
 +
-+	ret = request_firmware(&fw, shub->fw_name, shub->dev);
++	/*
++	 * The patch is not redistributable, so it may live on a file system
++	 * that is mounted after the driver probes (e.g. an encrypted root):
++	 * keep looking for a while.
++	 */
++	ret = firmware_request_nowarn(&fw, shub->fw_name, shub->dev);
++	if (ret == -ENOENT && shub->fw_waits < SHUB_FW_WAITS &&
++	    !shub_stopping(shub)) {
++		if (!shub->fw_waits++)
++			dev_info(shub->dev, "waiting for firmware %s\n",
++				 shub->fw_name);
++		queue_delayed_work(system_long_wq, &shub->fw_retry,
++				   msecs_to_jiffies(SHUB_FW_WAIT_MS));
++		return;
++	}
 +	if (ret) {
 +		dev_err(shub->dev, "firmware %s: %d\n", shub->fw_name, ret);
 +		goto fail;
@@ -13415,11 +13530,17 @@ index 0000000000000000000000000000000000000000..27bbb22cd2d23f5e2faf3b3ed8c2dfe1
 +	mutex_unlock(&shub->state_lock);
 +
 +	ret = shub_ssp_start(shub);
-+	if (ret) {
-+		dev_err(shub->dev, "SSP start failed: %d\n", ret);
-+		shub_request_reset(shub, "SSP start failed");
++	if (!ret) {
++		shub->ssp_fails = 0;
++		return;
 +	}
-+	return;
++	dev_err(shub->dev, "SSP start failed: %d\n", ret);
++	if (++shub->ssp_fails <= SHUB_SSP_RESTARTS) {
++		shub_request_reset(shub, "SSP start failed");
++		return;
++	}
++	dev_err(shub->dev, "giving up after %u restarts\n", SHUB_SSP_RESTARTS);
++	shub_ssp_reset(shub);
 +
 +fail:
 +	mutex_lock(&shub->state_lock);
@@ -13431,10 +13552,10 @@ index 0000000000000000000000000000000000000000..27bbb22cd2d23f5e2faf3b3ed8c2dfe1
 +}
 diff --git a/drivers/iio/common/bcm4775_shub/ssp.c b/drivers/iio/common/bcm4775_shub/ssp.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..686b586243983be307bdf5a3ed7f3c4201421579
+index 0000000000000000000000000000000000000000..dad80cb1de017071b66d3c8c49748a618acac833
 --- /dev/null
 +++ b/drivers/iio/common/bcm4775_shub/ssp.c
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,641 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * BCM4775 sensor hub: Samsung sensor protocol (SSP).
@@ -13462,6 +13583,8 @@ index 0000000000000000000000000000000000000000..686b586243983be307bdf5a3ed7f3c42
 +#define SSP_INIT_DONE_MS	1000
 +#define SSP_IDLE_MS		5000	/* stop a polled-only sensor after this */
 +#define SSP_POLL_PERIOD_MS	20
++#define SSP_SCAN_TRIES		30
++#define SSP_SCAN_WAIT_MS	100
 +
 +/* sample bytes per sensor id (0 = unknown: the frame cannot be parsed) */
 +static const u8 ssp_sample_len[SSP_ID_MAX] = {
@@ -13852,7 +13975,7 @@ index 0000000000000000000000000000000000000000..686b586243983be307bdf5a3ed7f3c42
 +	mutex_unlock(&ssp->sensor_lock);
 +
 +	if (!buffered && on)
-+		mod_delayed_work(system_wq, &ssp->idle_work,
++		mod_delayed_work(system_dfl_wq, &ssp->idle_work,
 +				 msecs_to_jiffies(SSP_IDLE_MS));
 +
 +	return ret;
@@ -13886,7 +14009,7 @@ index 0000000000000000000000000000000000000000..686b586243983be307bdf5a3ed7f3c42
 +			mutex_unlock(&ssp->sensor_lock);
 +			return ret;
 +		}
-+		mod_delayed_work(system_wq, &ssp->idle_work,
++		mod_delayed_work(system_dfl_wq, &ssp->idle_work,
 +				 msecs_to_jiffies(SSP_IDLE_MS));
 +	}
 +	mutex_unlock(&ssp->sensor_lock);
@@ -13927,7 +14050,7 @@ index 0000000000000000000000000000000000000000..686b586243983be307bdf5a3ed7f3c42
 +	mutex_unlock(&ssp->sensor_lock);
 +
 +	if (next)
-+		mod_delayed_work(system_wq, &ssp->idle_work,
++		mod_delayed_work(system_dfl_wq, &ssp->idle_work,
 +				 max_t(long, next - jiffies, 1));
 +}
 +
@@ -13967,14 +14090,26 @@ index 0000000000000000000000000000000000000000..686b586243983be307bdf5a3ed7f3c42
 +	if (ret)
 +		return ret;
 +
-+	ret = ssp_read(shub, SSP_SENSOR_SCANNING, &present, sizeof(present));
-+	if (ret)
-+		return ret;
-+	ssp->present = le64_to_cpu(present);
++	/*
++	 * The hub powers and probes its sensors from its main task, which
++	 * starts after the application and takes ~0.7 s of delays before
++	 * the first probe: the bitmap stays empty until then.
++	 */
++	for (i = 0; i < SSP_SCAN_TRIES; i++) {
++		ret = ssp_read(shub, SSP_SENSOR_SCANNING, &present,
++			       sizeof(present));
++		if (ret)
++			return ret;
++		ssp->present = le64_to_cpu(present);
++		if (ssp->present)
++			break;
++		msleep(SSP_SCAN_WAIT_MS);
++	}
 +	if (!ssp->present) {
 +		dev_err(shub->dev, "the hub found no sensors\n");
 +		return -ENODEV;
 +	}
++	dev_dbg(shub->dev, "sensor scan: %d tries\n", i + 1);
 +
 +	if (!ssp_read(shub, SSP_FIRMWARE_REV, &rev, sizeof(rev)))
 +		ssp->fw_rev = le32_to_cpu(rev);
@@ -14064,7 +14199,7 @@ index 0000000000000000000000000000000000000000..686b586243983be307bdf5a3ed7f3c42
 +}
 diff --git a/drivers/iio/common/bcm4775_shub/tl.c b/drivers/iio/common/bcm4775_shub/tl.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a54752f46466afd9014af6bff6f9811bbfc91c20
+index 0000000000000000000000000000000000000000..2770b209b0807ab5714f93db6b2c94efae96f057
 --- /dev/null
 +++ b/drivers/iio/common/bcm4775_shub/tl.c
 @@ -0,0 +1,910 @@
@@ -14248,7 +14383,7 @@ index 0000000000000000000000000000000000000000..a54752f46466afd9014af6bff6f9811b
 +
 +static void tl_schedule_tick(struct shub_tl *tl, unsigned int ms)
 +{
-+	mod_delayed_work(system_wq, &tl->tick, msecs_to_jiffies(ms));
++	mod_delayed_work(system_dfl_wq, &tl->tick, msecs_to_jiffies(ms));
 +}
 +
 +static int tl_send_reliable_locked(struct bcm4775_shub *shub,
@@ -24343,10 +24478,10 @@ index fbe381e2a2e1062c318b10b3df171e328901fa7a..d5b471cf907f10f93cd0bfccfec774b2
  	void (*powerdown_conf)(enum sys_powerdown);
 diff --git a/drivers/soc/samsung/exynos9810-cpucl1.c b/drivers/soc/samsung/exynos9810-cpucl1.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e4680ae03
+index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b9355926b54ab8
 --- /dev/null
 +++ b/drivers/soc/samsung/exynos9810-cpucl1.c
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,476 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Exynos9810 big (Samsung Mongoose M3) cluster bring-up helper.
@@ -24389,10 +24524,19 @@ index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e
 + *                       watchdog (~82 s) and make any reset enter Download
 + *                       mode, unless the watchdog is already armed (a hang
 + *                       before userspace then still comes back to the host)
++ *   BIT(5) REPORT_PLL   in the report, read PLL_CON0_PLL_CPUCL1 while the
++ *                       PMU says cluster 1 is on (with 0x09 the report hung
++ *                       the SoC on 26102302: this read or the debug one)
 + *
 + * Each armed CPU_ON is followed by a report a few seconds later (PMU core and
-+ * cluster status, GRP1 state, CRP_PM_CC1_0, the CPUCL1 PLL). The secondary
++ * cluster status, GRP1 state, CRP_PM_CC1_0, optionally the CPUCL1 PLL and
++ * the core's debug registers: both sit behind the cluster's bus port). The secondary
 + * boot trace (CONFIG_ARM64_DEBUG_SECONDARY_BOOT) tells how far the core got.
++ *
++ * After a watchdog reset (PMU RST_STAT) the big cores stay off for that boot
++ * (wdt_fallback=1, default), so a big-core setup that hangs the boot cannot
++ * loop; wdt_to_recovery=1 makes the WATCHDOG bit's reset re-enter RECOVERY
++ * (the bring-up test kernel) instead of Download mode.
 + *
 + * Independently of enable=, every CPU that comes online is checked against
 + * the MPIDR hash the suspend code uses (arm64 sleep.S drops one affinity
@@ -24432,12 +24576,25 @@ index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e
 +#define CPUCL1_SCI_CONNECT	BIT(2)
 +#define CPUCL1_DEBUG_PCSR	BIT(3)
 +#define CPUCL1_WATCHDOG		BIT(4)
++#define CPUCL1_REPORT_PLL	BIT(5)
 +
 +static unsigned int enable;
 +module_param(enable, uint, 0644);
 +MODULE_PARM_DESC(enable, "big cluster bring-up steps (bit mask, see source)");
 +
++static bool wdt_to_recovery;
++module_param(wdt_to_recovery, bool, 0644);
++MODULE_PARM_DESC(wdt_to_recovery,
++		 "WATCHDOG bit: a reset re-enters RECOVERY instead of Download mode");
++
++static bool wdt_fallback = true;
++module_param(wdt_fallback, bool, 0444);
++MODULE_PARM_DESC(wdt_fallback,
++		 "After a watchdog reset, leave the big cores off for this boot");
++
 +/* PMU (samsung,exynos9810-pmu) */
++#define PMU_RST_STAT			0x0404
++#define PMU_RST_WDT			(BIT(24) | BIT(23))	/* CL0, CL1 WDT */
 +#define PMU_WDT_DISABLE			0x0408
 +#define PMU_WDT_MASK_RESET		0x040c
 +#define PMU_CL0_WDTRESET		BIT(24)
@@ -24445,6 +24602,7 @@ index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e
 +#define PMU_INFORM3			0x080c
 +#define PMU_SEC_POWER_RESET		0x12345678
 +#define PMU_SEC_RESET_DOWNLOAD		0x12345671
++#define PMU_SEC_RESET_RECOVERY		0x12345674
 +#define PMU_CPU_QCH_CL1_NONCPU		0x1088
 +#define PMU_CL1_CPU_CONFIG(n)		(0x2000 + 8 * (n))
 +#define PMU_CL1_CPU_STATUS(n)		(0x2004 + 8 * (n))
@@ -24555,15 +24713,18 @@ index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e
 +/* Same sequence as uniLoader's chain guard: ~82 s, then a reset */
 +static void cpucl1_wdt_arm(void)
 +{
++	const char *to = wdt_to_recovery ? "RECOVERY" : "Download";
++
 +	if (!cl1.wdt) {
 +		pr_warn("no watchdog node, not arming\n");
 +		return;
 +	}
 +	writel(PMU_SEC_POWER_RESET, cl1.pmu + PMU_INFORM2);
-+	writel(PMU_SEC_RESET_DOWNLOAD, cl1.pmu + PMU_INFORM3);
++	writel(wdt_to_recovery ? PMU_SEC_RESET_RECOVERY : PMU_SEC_RESET_DOWNLOAD,
++	       cl1.pmu + PMU_INFORM3);
 +	if (cpucl1_wdt_armed()) {
-+		pr_info("watchdog already armed (WTCON %08x), reset -> Download\n",
-+			readl(cl1.wdt + WTCON));
++		pr_info("watchdog already armed (WTCON %08x), reset -> %s\n",
++			readl(cl1.wdt + WTCON), to);
 +		return;
 +	}
 +	writel(0, cl1.wdt + WTCON);
@@ -24572,8 +24733,8 @@ index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e
 +	writel(WTCON_ARMED, cl1.wdt + WTCON);
 +	cpucl1_rmw(cl1.pmu + PMU_WDT_DISABLE, PMU_CL0_WDTRESET, 0);
 +	cpucl1_rmw(cl1.pmu + PMU_WDT_MASK_RESET, PMU_CL0_WDTRESET, 0);
-+	pr_info("watchdog armed (~82 s, WTCON %08x), reset -> Download\n",
-+		readl(cl1.wdt + WTCON));
++	pr_info("watchdog armed (~82 s, WTCON %08x), reset -> %s\n",
++		readl(cl1.wdt + WTCON), to);
 +}
 +
 +static bool cpucl1_cluster_on(void)
@@ -24620,8 +24781,9 @@ index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e
 +	/* CMU_CPUCL1 and the core's debug APB sit in the cluster power domain */
 +	if (!cl_on)
 +		return;
-+	pr_info("cpu%u: PLL_CON0_PLL_CPUCL1 %08x\n", cpu,
-+		readl(cl1.cmu + CMU_CPUCL1_PLL_CON0));
++	if (READ_ONCE(enable) & CPUCL1_REPORT_PLL)
++		pr_info("cpu%u: PLL_CON0_PLL_CPUCL1 %08x\n", cpu,
++			readl(cl1.cmu + CMU_CPUCL1_PLL_CON0));
 +
 +	if ((READ_ONCE(enable) & CPUCL1_DEBUG_PCSR) && cl1.dbg[core] &&
 +	    (st & PMU_PWR_ON) == PMU_PWR_ON) {
@@ -24761,6 +24923,24 @@ index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e
 +
 +	mutex_init(&cl1.lock);
 +	INIT_DELAYED_WORK(&cl1.work, cpucl1_work_fn);
++
++	/*
++	 * A boot that brought the big cores up and then hung ends in a
++	 * watchdog reset: start this one with the A55s only, so a bad big-core
++	 * setup cannot loop. smp_init() has not run yet, so the big cores are
++	 * simply not started. The next ordinary reboot tries them again.
++	 */
++	if (enable && wdt_fallback &&
++	    (readl(cl1.pmu + PMU_RST_STAT) & PMU_RST_WDT)) {
++		unsigned int cpu;
++
++		pr_warn("last reset was a watchdog reset (RST_STAT %08x): big cores stay off this boot\n",
++			readl(cl1.pmu + PMU_RST_STAT));
++		enable = 0;
++		for_each_present_cpu(cpu)
++			if (cpucl1_core(cpu) >= 0)
++				set_cpu_present(cpu, false);
++	}
 +
 +	ret = cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN,
 +					"soc/exynos9810-cpucl1:prepare",
@@ -25404,10 +25584,10 @@ index abe7e472759e94fef353e9a97bc9b55f6a0324c1..80a5d92b5de3d3f89dc6eaf1cf553998
  
  #define for_each_ufs_rx_lane(ufs, i) \
 diff --git a/drivers/video/backlight/Kconfig b/drivers/video/backlight/Kconfig
-index dbf4ca23a9b6d8575a86e39618b312b4df43ea19..52cbf7364a136772fab0b950a164b4c963711261 100644
+index dbf4ca23a9b6d8575a86e39618b312b4df43ea19..a008cf7bb1d6bc447eb21bbff0c3c8376f15aabd 100644
 --- a/drivers/video/backlight/Kconfig
 +++ b/drivers/video/backlight/Kconfig
-@@ -191,6 +191,24 @@ config BACKLIGHT_KTD253
+@@ -191,6 +191,25 @@ config BACKLIGHT_KTD253
  	  which is a 1-wire GPIO-controlled backlight found in some mobile
  	  phones.
  
@@ -25424,7 +25604,8 @@ index dbf4ca23a9b6d8575a86e39618b312b4df43ea19..52cbf7364a136772fab0b950a164b4c9
 +	  The driver queues DCS packets into the running DSIM command FIFOs
 +	  and does not configure the display pipeline. On screen blank it
 +	  can also put the panel to sleep, stop the DSI links and switch
-+	  the panel supplies off (parameter power_off_level, default off).
++	  the panel supplies off (parameter power_off_level; by default the
++	  panel sleeps and DECON and the DSI HS clocks stop).
 +
 +	  To compile this driver as a module, choose M here: the module will
 +	  be called exynos9810-dsim-bl.
@@ -25446,10 +25627,10 @@ index 34469711c6cd957dae63c7072ade4830879aba1a..5c3abbcef7eb8fd22058c473a992f7f0
  obj-$(CONFIG_BACKLIGHT_HP700)		+= jornada720_bl.o
 diff --git a/drivers/video/backlight/exynos9810-dsim-bl.c b/drivers/video/backlight/exynos9810-dsim-bl.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93266a9809
+index 0000000000000000000000000000000000000000..00be8aad768ccdf4926cc48c20fe761b7e7a6e2c
 --- /dev/null
 +++ b/drivers/video/backlight/exynos9810-dsim-bl.c
-@@ -0,0 +1,1186 @@
+@@ -0,0 +1,1448 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Backlight through MIPI DCS on a bootloader-initialised Exynos9810 DSIM
@@ -25479,19 +25660,27 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 + *
 + * Screen blank: the DPU driver calls the panel hooks in
 + * exynos9810-panel-gamma.h, and the power_off_level parameter says how
-+ * far the panel goes down (Samsung's sequences from dsim_reg.c and the
-+ * hx83102e_gtactive3 panel driver):
++ * far the panel goes down (sequences from Samsung's dsim_reg.c,
++ * dsim_drv.c and the hx83102e_gtactive3 panel driver):
 + *  0  backlight off (DCS brightness 0), everything keeps running;
 + *  1  + DISPLAY_OFF and SLEEP_IN, the video stream keeps running;
-+ *  2  + DECON stopped (DPU driver), the links' HS clocks stopped (LP-11,
-+ *     or ULPS with link_ulps=1); PLLs and configuration are kept;
-+ *  3  + Samsung's exit sequence, panel reset held, BUCK_EN and LDO_EN
-+ *     low; on unblank the panel is reset and gets Samsung's whole init
-+ *     sequence again. Needs the three GPIOs in the DT.
++ *  2  + DECON stopped (DPU driver), the links' HS clocks stopped: lanes
++ *     in LP-11, or in ULPS with link_ulps=1; PLLs and configuration are
++ *     kept (the default);
++ *  3  + Samsung's exit sequence, then as stock's dsim_reg_stop(): lanes
++ *     disabled, escape clocks and D-PHY PLLs off, but no link reset (the
++ *     bootloader's configuration stays); panel reset held, BUCK_EN and
++ *     LDO_EN low. On unblank the rails come back, the PLLs lock, the lanes
++ *     come up in LP-11, the panel is reset and gets Samsung's whole init
++ *     sequence. Needs the three GPIOs in the DT.
++ * Stock uses ULPS only for command mode panels; the HX83102E runs in
++ * video mode, so level 3 switches the lanes off instead.
 + * The touch part of the TDDI follows through the DPU's panel notifier.
-+ * A wake-up that fails is retried once (for level 3 with a panel power
-+ * cycle); if that fails too, blanking falls back to level 0 until the
-+ * driver is reloaded.
++ * A wake-up that fails is retried once with a full power cycle (link
++ * function reset, lanes and PLLs off, rails off, panel reset and init).
++ * If that fails too, the panel is left powered and the next blank takes
++ * it all the way down again; after three failures in a row blanking falls
++ * back to level 0 until the driver is reloaded.
 + */
 +
 +#include <linux/backlight.h>
@@ -25506,6 +25695,7 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +#include <linux/iopoll.h>
 +#include <linux/kernel.h>
 +#include <linux/kstrtox.h>
++#include <linux/ktime.h>
 +#include <linux/mod_devicetable.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
@@ -25522,14 +25712,22 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +#define DSIM_SWRST_FUNCRST		BIT(8)
 +#define DSIM_LINK_STATUS0		0x08
 +#define DSIM_LINK_STATUS0_VIDEO_MODE	BIT(24)
++#define DSIM_LINK_STATUS3		0x14
++#define DSIM_LINK_STATUS3_PLL_STABLE	BIT(0)
 +#define DSIM_DPHY_STATUS		0x1c
 +#define DSIM_DPHY_STATUS_TX_READY_HS_CLK	BIT(10)
 +#define DSIM_DPHY_STATUS_ULPS_CLK	BIT(9)
 +#define DSIM_DPHY_STATUS_STOP_STATE_CLK	BIT(8)
 +#define DSIM_DPHY_STATUS_ULPS_DAT	GENMASK(7, 4)
++#define DSIM_DPHY_STATUS_STOP_STATE_DAT	GENMASK(3, 0)
 +#define DSIM_CLK_CTRL			0x20
++#define DSIM_CLK_CTRL_CLOCK_SEL		BIT(26)	/* link clock: word clock, not OSC */
 +#define DSIM_CLK_CTRL_NONCONT_CLOCK_LANE	BIT(25)
 +#define DSIM_CLK_CTRL_TX_REQUEST_HSCLK	BIT(20)
++#define DSIM_CLK_CTRL_WORDCLK_EN	BIT(17)
++#define DSIM_CLK_CTRL_ESCCLK_EN		BIT(16)
++#define DSIM_CLK_CTRL_LANE_ESCCLK_EN	GENMASK(12, 8)
++#define DSIM_CLK_CTRL_ESC_PRESCALER	GENMASK(7, 0)
 +#define DSIM_ESCMODE			0x2c
 +#define DSIM_ESCMODE_TX_ULPS_DATA	BIT(3)
 +#define DSIM_ESCMODE_TX_ULPS_DATA_EXIT	BIT(2)
@@ -25540,6 +25738,7 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +/* bit 0 clock lane, bits 1-4 data lanes 0-3 */
 +#define DSIM_CONFIG_LANES_EN		GENMASK(4, 0)
 +#define DSIM_INTSRC			0x50
++#define DSIM_INTSRC_PLL_STABLE		BIT(31)
 +#define DSIM_INTSRC_SFR_PL_FIFO_EMPTY	BIT(29)
 +#define DSIM_INTSRC_SFR_PH_FIFO_EMPTY	BIT(28)
 +#define DSIM_PKTHDR			0x58
@@ -25553,6 +25752,8 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +#define DSIM_FIFOCTRL_FULL_PL_SFR	BIT(9)
 +/* active-low FIFO resets: all three must read 1 on a running link */
 +#define DSIM_FIFOCTRL_INIT_ALL		GENMASK(2, 0)
++#define DSIM_PLLCTRL			0xa0
++#define DSIM_PLLCTRL_PLL_EN		BIT(23)
 +
 +#define DSIM_MAX_LINKS			2
 +/* the payload FIFO is much deeper, but no command we send is longer */
@@ -25561,6 +25762,16 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +#define DSIM_CMD_TIMEOUT_US		50000
 +/* lane state changes: Samsung polls 1000 x 10 us */
 +#define DSIM_LANE_TIMEOUT_US		10000
++/* PLL lock: the same */
++#define DSIM_PLL_TIMEOUT_US		10000
++/* after (dis)abling the lanes, as dsim_reg_set_lanes() */
++#define DSIM_LANE_ENABLE_US		400
++/* ULPS exit: Mark-1 for at least Twakeup = 1 ms */
++#define DSIM_ULPS_WAKEUP_US		1000
++/* recovery: how long the panel rails stay off */
++#define DSIM_BL_POWER_CYCLE_MS		50
++/* failed wake-ups in a row before blanking stops powering the panel down */
++#define DSIM_BL_MAX_FAILURES		3
 +
 +#define DCS_CABC_MAX			3
 +
@@ -25729,14 +25940,14 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	[DSIM_BL_POWER_OFF] = "power-off",
 +};
 +
-+static unsigned int power_off_level;
++static unsigned int power_off_level = EXYNOS9810_PANEL_LINK_OFF;
 +module_param(power_off_level, uint, 0644);
 +MODULE_PARM_DESC(power_off_level,
-+		 "Screen blank: 0 backlight off (default), 1 panel sleep, 2 + DSI links stopped, 3 + panel rails off");
++		 "Screen blank: 0 backlight off, 1 panel sleep, 2 + DECON and DSI HS clocks stopped (default), 3 + DSI lanes, PLLs and panel rails off");
 +
 +static bool link_ulps;
 +module_param(link_ulps, bool, 0644);
-+MODULE_PARM_DESC(link_ulps, "Put the DSI lanes into ULPS (not only LP-11) at power_off_level >= 2");
++MODULE_PARM_DESC(link_ulps, "At power_off_level 2, put the DSI lanes into ULPS instead of LP-11");
 +
 +struct dsim_bl {
 +	struct device *dev;
@@ -25752,8 +25963,18 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	bool dgc;
 +	bool blanked;			/* DPU switched the CRTC off */
 +	enum dsim_bl_state state;
-+	bool ulps[DSIM_MAX_LINKS];
-+	bool broken;			/* a wake-up failed: blank with level 0 */
++	unsigned int max_level;		/* what this panel and DT allow */
++	/* per link, as the bootloader set it up */
++	u32 lanes[DSIM_MAX_LINKS];	/* DSIM_CONFIG lane enables, bit 0 clock */
++	u32 clk_ctrl[DSIM_MAX_LINKS];	/* DSIM_CLK_CTRL, HS request off */
++	bool pll[DSIM_MAX_LINKS];	/* the D-PHY PLL is ours to switch */
++	/* per link, while blanked */
++	bool ulps[DSIM_MAX_LINKS];	/* ULPS requested */
++	bool lanes_off[DSIM_MAX_LINKS];	/* lanes disabled, PLL off */
++	bool failed;			/* the last wake-up failed */
++	unsigned int failures;		/* ... so many times in a row */
++	bool broken;			/* too many: blank with level 0 */
++	bool cabc_lost;			/* the init sequence set CABC mode 1 */
 +	bool removing;
 +	struct gpio_desc *reset_gpio;	/* LCD_RST */
 +	struct gpio_desc *ldo_gpio;	/* LDO_EN */
@@ -25996,6 +26217,7 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	memcpy(want, bl->dgc_want, sizeof(want));
 +	spin_unlock_irq(&bl->dgc_slock);
 +
++	bl->cabc_lost = true;
 +	while (i < ARRAY_SIZE(hx83102e_init)) {
 +		unsigned int len = hx83102e_init[i];
 +		const u8 *data = &hx83102e_init[i + 1];
@@ -26019,73 +26241,44 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	return 0;
 +}
 +
-+/*
-+ * dsim_reg_stop(), without the PHY and clock teardown: HS clock off, the
-+ * lanes in LP-11, or in ULPS (LP-00) if asked. Returns whether the lanes
-+ * reached ULPS.
-+ */
-+static bool dsim_bl_link_off(struct dsim_bl *bl, unsigned int i, bool ulps)
++/* the data lanes, in the bit order of DSIM_DPHY_STATUS */
++static u32 dsim_bl_data_lanes(struct dsim_bl *bl, unsigned int i)
 +{
-+	void __iomem *base = bl->link[i];
-+	u32 data = FIELD_GET(DSIM_CONFIG_LANES_EN,
-+			     readl(base + DSIM_CONFIG)) >> 1;
-+	u32 val;
-+
-+	writel(readl(base + DSIM_CLK_CTRL) & ~DSIM_CLK_CTRL_TX_REQUEST_HSCLK,
-+	       base + DSIM_CLK_CTRL);
-+	if (readl_poll_timeout(base + DSIM_DPHY_STATUS, val,
-+			       val & DSIM_DPHY_STATUS_STOP_STATE_CLK, 10,
-+			       DSIM_LANE_TIMEOUT_US))
-+		dev_warn(bl->dev, "link %u: clock lane not in stop state (%#x)\n",
-+			 i, val);
-+
-+	bl->ulps[i] = false;
-+	if (!ulps)
-+		return false;
-+
-+	writel(readl(base + DSIM_ESCMODE) | DSIM_ESCMODE_TX_ULPS_CLK |
-+	       DSIM_ESCMODE_TX_ULPS_DATA, base + DSIM_ESCMODE);
-+	if (readl_poll_timeout(base + DSIM_DPHY_STATUS, val,
-+			       (val & DSIM_DPHY_STATUS_ULPS_CLK) &&
-+			       FIELD_GET(DSIM_DPHY_STATUS_ULPS_DAT, val) == data,
-+			       10, DSIM_LANE_TIMEOUT_US)) {
-+		/* stay in LP-11 */
-+		writel(readl(base + DSIM_ESCMODE) & ~DSIM_ESCMODE_ULPS_ALL,
-+		       base + DSIM_ESCMODE);
-+		dev_warn(bl->dev, "link %u: lanes did not enter ULPS (%#x)\n",
-+			 i, val);
-+		return false;
-+	}
-+	bl->ulps[i] = true;
-+	return true;
++	return bl->lanes[i] >> 1;
 +}
 +
-+/* dsim_reg_set_ulps(.., 0, ..): back to LP-11 */
-+static int dsim_bl_link_exit_ulps(struct dsim_bl *bl, unsigned int i)
++/* the clock lane and all data lanes in the stop state (LP-11) */
++static int dsim_bl_wait_lp11(struct dsim_bl *bl, unsigned int i)
++{
++	u32 data = dsim_bl_data_lanes(bl, i);
++	u32 val;
++	int ret;
++
++	ret = readl_poll_timeout(bl->link[i] + DSIM_DPHY_STATUS, val,
++				 (val & DSIM_DPHY_STATUS_STOP_STATE_CLK) &&
++				 FIELD_GET(DSIM_DPHY_STATUS_STOP_STATE_DAT, val) == data,
++				 10, DSIM_LANE_TIMEOUT_US);
++	if (ret)
++		dev_err(bl->dev, "link %u: lanes not in LP-11 (%#x)\n", i, val);
++	return ret;
++}
++
++/* dsim_reg_set_hs_clock(.., 0): HS clock off, the clock lane to LP-11 */
++static int dsim_bl_hs_off(struct dsim_bl *bl, unsigned int i)
 +{
 +	void __iomem *base = bl->link[i];
 +	u32 val;
 +	int ret;
 +
-+	if (!bl->ulps[i])
-+		return 0;
-+
-+	writel(readl(base + DSIM_ESCMODE) | DSIM_ESCMODE_TX_ULPS_CLK_EXIT |
-+	       DSIM_ESCMODE_TX_ULPS_DATA_EXIT, base + DSIM_ESCMODE);
++	writel(readl(base + DSIM_CLK_CTRL) & ~DSIM_CLK_CTRL_TX_REQUEST_HSCLK,
++	       base + DSIM_CLK_CTRL);
 +	ret = readl_poll_timeout(base + DSIM_DPHY_STATUS, val,
-+				 !(val & (DSIM_DPHY_STATUS_ULPS_CLK |
-+					  DSIM_DPHY_STATUS_ULPS_DAT)),
-+				 10, DSIM_LANE_TIMEOUT_US);
-+	/* Twakeup for the MARK-1 state, then clear both requests */
-+	usleep_range(1000, 1100);
-+	writel(readl(base + DSIM_ESCMODE) & ~DSIM_ESCMODE_ULPS_ALL,
-+	       base + DSIM_ESCMODE);
-+	if (ret) {
-+		dev_err(bl->dev, "link %u: lanes stuck in ULPS (%#x)\n", i, val);
-+		return ret;
-+	}
-+	bl->ulps[i] = false;
-+	return 0;
++				 val & DSIM_DPHY_STATUS_STOP_STATE_CLK, 10,
++				 DSIM_LANE_TIMEOUT_US);
++	if (ret)
++		dev_warn(bl->dev, "link %u: clock lane not in stop state (%#x)\n",
++			 i, val);
++	return ret;
 +}
 +
 +/* dsim_reg_start(): HS clock on */
@@ -26105,6 +26298,148 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	if (ret)
 +		dev_err(bl->dev, "link %u: HS clock not ready (%#x)\n", i, val);
 +	return ret;
++}
++
++/*
++ * dsim_reg_set_ulps(.., 1, ..): request ULPS on the clock and the data
++ * lanes and wait until all of them are in it. The request stays set until
++ * the exit sequence, which from here on is the only way back.
++ */
++static int dsim_bl_ulps_enter(struct dsim_bl *bl, unsigned int i)
++{
++	void __iomem *base = bl->link[i];
++	u32 data = dsim_bl_data_lanes(bl, i);
++	u32 val;
++	int ret;
++
++	writel(readl(base + DSIM_ESCMODE) | DSIM_ESCMODE_TX_ULPS_CLK |
++	       DSIM_ESCMODE_TX_ULPS_DATA, base + DSIM_ESCMODE);
++	bl->ulps[i] = true;
++	ret = readl_poll_timeout(base + DSIM_DPHY_STATUS, val,
++				 (val & DSIM_DPHY_STATUS_ULPS_CLK) &&
++				 FIELD_GET(DSIM_DPHY_STATUS_ULPS_DAT, val) == data,
++				 10, DSIM_LANE_TIMEOUT_US);
++	if (ret)
++		dev_warn(bl->dev, "link %u: lanes did not enter ULPS (%#x)\n",
++			 i, val);
++	return ret;
++}
++
++/*
++ * dsim_reg_set_ulps(.., 0, ..): with the enter request still set, request
++ * the exit and wait until no lane is in ULPS, hold Mark-1 for Twakeup
++ * (at least 1 ms), then drop both requests: the lanes go to LP-11.
++ */
++static int dsim_bl_ulps_exit(struct dsim_bl *bl, unsigned int i)
++{
++	void __iomem *base = bl->link[i];
++	u32 val;
++	int ret;
++
++	writel(readl(base + DSIM_ESCMODE) | DSIM_ESCMODE_TX_ULPS_CLK_EXIT |
++	       DSIM_ESCMODE_TX_ULPS_DATA_EXIT, base + DSIM_ESCMODE);
++	ret = readl_poll_timeout(base + DSIM_DPHY_STATUS, val,
++				 !(val & (DSIM_DPHY_STATUS_ULPS_CLK |
++					  DSIM_DPHY_STATUS_ULPS_DAT)),
++				 10, DSIM_LANE_TIMEOUT_US);
++	usleep_range(DSIM_ULPS_WAKEUP_US, DSIM_ULPS_WAKEUP_US + 100);
++	writel(readl(base + DSIM_ESCMODE) & ~DSIM_ESCMODE_ULPS_ALL,
++	       base + DSIM_ESCMODE);
++	if (ret) {
++		dev_err(bl->dev, "link %u: lanes stuck in ULPS (%#x)\n", i, val);
++		return ret;
++	}
++	bl->ulps[i] = false;
++	return dsim_bl_wait_lp11(bl, i);
++}
++
++/*
++ * Level 3, after the HS clock: stock's dsim_reg_stop() without the link
++ * software reset, which would lose the bootloader's configuration that
++ * nothing here can program again. Link clock back to OSC, the lanes
++ * disabled (the D-PHY stops driving them, so nothing feeds the panel while
++ * its rails are off), lane escape clocks, escape clock and D-PHY PLL off.
++ */
++static void dsim_bl_lanes_off(struct dsim_bl *bl, unsigned int i)
++{
++	void __iomem *base = bl->link[i];
++	u32 clk;
++
++	clk = readl(base + DSIM_CLK_CTRL) &
++	      ~(DSIM_CLK_CTRL_TX_REQUEST_HSCLK | DSIM_CLK_CTRL_CLOCK_SEL);
++	writel(clk, base + DSIM_CLK_CTRL);
++	writel(readl(base + DSIM_CONFIG) & ~DSIM_CONFIG_LANES_EN,
++	       base + DSIM_CONFIG);
++	usleep_range(DSIM_LANE_ENABLE_US, DSIM_LANE_ENABLE_US + 100);
++	/* the lanes must not come back into a pending ULPS request */
++	writel(readl(base + DSIM_ESCMODE) & ~DSIM_ESCMODE_ULPS_ALL,
++	       base + DSIM_ESCMODE);
++	clk &= ~(DSIM_CLK_CTRL_LANE_ESCCLK_EN | DSIM_CLK_CTRL_ESCCLK_EN);
++	writel(clk, base + DSIM_CLK_CTRL);
++	if (bl->pll[i])
++		writel(readl(base + DSIM_PLLCTRL) & ~DSIM_PLLCTRL_PLL_EN,
++		       base + DSIM_PLLCTRL);
++	bl->ulps[i] = false;
++	bl->lanes_off[i] = true;
++}
++
++/*
++ * _dsim_enable() without the resets and the configuration, which were
++ * kept: escape clock, D-PHY PLL (until it locks), lanes enabled, link
++ * clock back on the word clock, lane escape clocks. The lanes then come
++ * up in LP-11.
++ */
++static int dsim_bl_lanes_on(struct dsim_bl *bl, unsigned int i)
++{
++	void __iomem *base = bl->link[i];
++	u32 boot = bl->clk_ctrl[i];
++	u32 clk, val;
++	int ret;
++
++	clk = readl(base + DSIM_CLK_CTRL) &
++	      ~(DSIM_CLK_CTRL_TX_REQUEST_HSCLK | DSIM_CLK_CTRL_ESC_PRESCALER);
++	clk |= boot & (DSIM_CLK_CTRL_ESCCLK_EN | DSIM_CLK_CTRL_ESC_PRESCALER);
++	writel(clk, base + DSIM_CLK_CTRL);
++
++	if (bl->pll[i]) {
++		writel(DSIM_INTSRC_PLL_STABLE, base + DSIM_INTSRC);
++		writel(readl(base + DSIM_PLLCTRL) | DSIM_PLLCTRL_PLL_EN,
++		       base + DSIM_PLLCTRL);
++		/* the lock time (PLLTMR) is about 1 ms in Samsung's setup */
++		usleep_range(1000, 1100);
++		ret = readl_poll_timeout(base + DSIM_LINK_STATUS3, val,
++					 val & DSIM_LINK_STATUS3_PLL_STABLE,
++					 10, DSIM_PLL_TIMEOUT_US);
++		if (ret) {
++			dev_err(bl->dev, "link %u: PLL does not lock (%#x)\n",
++				i, val);
++			return ret;
++		}
++	}
++
++	writel(readl(base + DSIM_CONFIG) | bl->lanes[i], base + DSIM_CONFIG);
++	usleep_range(DSIM_LANE_ENABLE_US, DSIM_LANE_ENABLE_US + 100);
++	clk |= boot & (DSIM_CLK_CTRL_CLOCK_SEL | DSIM_CLK_CTRL_LANE_ESCCLK_EN |
++		       DSIM_CLK_CTRL_WORDCLK_EN);
++	writel(clk, base + DSIM_CLK_CTRL);
++	bl->lanes_off[i] = false;
++	return dsim_bl_wait_lp11(bl, i);
++}
++
++/*
++ * Level 2 with link_ulps. A link whose lanes do not all reach ULPS is
++ * taken back to LP-11 (Samsung would leave it half way, which is what kept
++ * the clock lane of link 0 in ULPS after a wake-up); one that does not get
++ * there either has its lanes switched off and on at wake-up.
++ */
++static void dsim_bl_link_ulps(struct dsim_bl *bl, unsigned int i)
++{
++	if (!dsim_bl_ulps_enter(bl, i))
++		return;
++	if (dsim_bl_ulps_exit(bl, i))
++		dsim_bl_lanes_off(bl, i);
++	else
++		dev_info(bl->dev, "link %u stays in LP-11\n", i);
 +}
 +
 +/* dsim_set_panel_power(0): "dsim_set_panel_power_disable" in the stock DT */
@@ -26142,33 +26477,144 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	return bl->reset_gpio && bl->ldo_gpio && bl->buck_gpio;
 +}
 +
++/*
++ * Out of unprepare(), in the order of _dsim_enable() for both links,
++ * dsim_reg_start_dual() and hx83102e_init(): rails, lanes to LP-11 (the
++ * panel must see LP-11 when it leaves reset), panel reset, HS clocks
++ * (link 0 first), init sequence, sleep out. @full: the panel was (or is
++ * to be treated as) unpowered, so reset and initialise it.
++ */
++static int dsim_bl_wake(struct dsim_bl *bl, bool full)
++{
++	unsigned int i;
++	int ret;
++
++	if (full && dsim_bl_has_rails(bl))
++		dsim_bl_rails_on(bl);
++	for (i = 0; i < bl->nlinks; i++) {
++		/* a link that does not leave ULPS cleanly is switched off */
++		if (bl->ulps[i] && dsim_bl_ulps_exit(bl, i))
++			dsim_bl_lanes_off(bl, i);
++		if (bl->lanes_off[i]) {
++			ret = dsim_bl_lanes_on(bl, i);
++			if (ret)
++				return ret;
++		}
++	}
++	if (full && bl->reset_gpio)
++		dsim_bl_panel_reset(bl);
++	for (i = 0; i < bl->nlinks; i++) {
++		ret = dsim_bl_link_hs_on(bl, i);
++		if (ret)
++			return ret;
++	}
++	bl->state = DSIM_BL_ASLEEP;
++	if (full) {
++		ret = dsim_bl_panel_init(bl);
++		if (ret)
++			return ret;
++	}
++	return dsim_bl_sleep_out(bl);
++}
++
++/*
++ * Recovery: a link function reset (Samsung's answer to a stuck link), all
++ * the way down as for level 3, then a full wake-up with panel reset and
++ * init sequence. Without the rails the panel is only held in reset.
++ */
++static int dsim_bl_power_cycle(struct dsim_bl *bl)
++{
++	unsigned int i;
++
++	dsim_bl_function_reset(bl);
++	for (i = 0; i < bl->nlinks; i++) {
++		dsim_bl_hs_off(bl, i);
++		dsim_bl_lanes_off(bl, i);
++	}
++	if (dsim_bl_has_rails(bl))
++		dsim_bl_rails_off(bl);
++	else if (bl->reset_gpio)
++		gpiod_set_value_cansleep(bl->reset_gpio, 1);
++	bl->state = DSIM_BL_POWER_OFF;
++	msleep(DSIM_BL_POWER_CYCLE_MS);
++	return dsim_bl_wake(bl, true);
++}
++
++/*
++ * After a wake-up. One that failed leaves the panel powered, out of reset
++ * and the links as far up as they go (rather than dark and unpowered), and
++ * the next blank takes the panel all the way down so that the unblank
++ * after it initialises it from scratch.
++ */
++static void dsim_bl_wake_done(struct dsim_bl *bl, int err)
++{
++	void __iomem *base;
++	unsigned int i;
++
++	if (!err) {
++		if (bl->failed)
++			dev_info(bl->dev, "panel is back\n");
++		bl->failed = false;
++		bl->failures = 0;
++		return;
++	}
++
++	if (dsim_bl_has_rails(bl))
++		dsim_bl_rails_on(bl);
++	if (bl->reset_gpio)
++		gpiod_set_value_cansleep(bl->reset_gpio, 0);
++	for (i = 0; i < bl->nlinks; i++) {
++		base = bl->link[i];
++		if (bl->lanes_off[i])
++			dsim_bl_lanes_on(bl, i);
++		writel(readl(base + DSIM_CLK_CTRL) |
++		       DSIM_CLK_CTRL_TX_REQUEST_HSCLK, base + DSIM_CLK_CTRL);
++	}
++
++	bl->failed = true;
++	if (++bl->failures >= DSIM_BL_MAX_FAILURES) {
++		bl->broken = true;
++		dev_err(bl->dev,
++			"panel did not wake up (%d), blanking keeps it on from now\n",
++			err);
++	} else {
++		dev_err(bl->dev,
++			"panel did not wake up (%d), the next blank power cycles it\n",
++			err);
++	}
++}
++
 +/* DPU: CRTC off, the video stream still runs */
 +static unsigned int dsim_bl_disable(void *priv, unsigned int max_level)
 +{
 +	struct dsim_bl *bl = priv;
-+	unsigned int level = min(READ_ONCE(power_off_level), max_level);
++	unsigned int level = READ_ONCE(power_off_level);
 +	int ret;
 +
++	guard(mutex)(&bl->seq_lock);
++	/* after a failed wake-up: down to the rails, the unblank inits */
++	if (bl->failed)
++		level = EXYNOS9810_PANEL_POWER_OFF;
 +	if (bl->broken)
 +		level = EXYNOS9810_PANEL_BACKLIGHT_OFF;
-+	if (level > EXYNOS9810_PANEL_POWER_OFF)
-+		level = EXYNOS9810_PANEL_POWER_OFF;
-+	if (level == EXYNOS9810_PANEL_POWER_OFF && !dsim_bl_has_rails(bl))
-+		level = EXYNOS9810_PANEL_LINK_OFF;
++	level = min3(level, max_level, bl->max_level);
 +
-+	guard(mutex)(&bl->seq_lock);
 +	bl->blanked = true;
 +	dsim_bl_send_brightness(bl, 0);
 +	if (level >= EXYNOS9810_PANEL_SLEEP) {
 +		ret = dsim_bl_panel_sleep(bl, level >= EXYNOS9810_PANEL_POWER_OFF);
 +		if (ret) {
-+			/* the panel may still be on: go no further */
-+			dev_err(bl->dev, "panel did not go to sleep: %d\n", ret);
++			/* drop the commands stuck in the FIFOs */
 +			dsim_bl_function_reset(bl);
-+			level = EXYNOS9810_PANEL_BACKLIGHT_OFF;
-+		} else {
-+			bl->state = DSIM_BL_ASLEEP;
++			/* the panel may still be on: go no further */
++			if (!bl->failed) {
++				dev_err(bl->dev, "panel did not go to sleep: %d\n",
++					ret);
++				level = EXYNOS9810_PANEL_BACKLIGHT_OFF;
++			}
 +		}
++		if (level >= EXYNOS9810_PANEL_SLEEP)
++			bl->state = DSIM_BL_ASLEEP;
 +	}
 +	dev_dbg(bl->dev, "blank, level %u\n", level);
 +	return level;
@@ -26179,88 +26625,48 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +{
 +	struct dsim_bl *bl = priv;
 +	bool power_off = level >= EXYNOS9810_PANEL_POWER_OFF;
-+	bool ulps = true;
 +	unsigned int i;
 +
 +	guard(mutex)(&bl->seq_lock);
 +	if (level < EXYNOS9810_PANEL_LINK_OFF)
 +		return;
 +
-+	/* LP-11 would drive the lanes into an unpowered panel: use ULPS */
-+	for (i = 0; i < bl->nlinks; i++)
-+		ulps &= dsim_bl_link_off(bl, i, link_ulps || power_off);
++	/* link by link, as each stock DSIM device stops its own */
++	for (i = 0; i < bl->nlinks; i++) {
++		if (dsim_bl_hs_off(bl, i) && !power_off)
++			continue;
++		if (power_off)
++			dsim_bl_lanes_off(bl, i);
++		else if (link_ulps)
++			dsim_bl_link_ulps(bl, i);
++	}
 +	bl->state = DSIM_BL_LINK_OFF;
 +
 +	if (power_off) {
-+		if (!ulps) {
-+			dev_warn(bl->dev, "lanes not in ULPS, panel stays powered\n");
-+			return;
-+		}
 +		dsim_bl_rails_off(bl);
 +		bl->state = DSIM_BL_POWER_OFF;
 +	}
-+}
-+
-+/*
-+ * _dsim_enable() + hx83102e_init() order: rails, lanes to LP-11, panel
-+ * reset (it must see LP-11 when it leaves reset), HS clock, init, sleep
-+ * out.
-+ */
-+static int dsim_bl_wake(struct dsim_bl *bl, unsigned int level)
-+{
-+	bool power_off = level >= EXYNOS9810_PANEL_POWER_OFF;
-+	unsigned int i;
-+	int ret;
-+
-+	if (power_off)
-+		dsim_bl_rails_on(bl);
-+	for (i = 0; i < bl->nlinks; i++) {
-+		ret = dsim_bl_link_exit_ulps(bl, i);
-+		if (ret)
-+			return ret;
-+	}
-+	if (power_off)
-+		dsim_bl_panel_reset(bl);
-+	for (i = 0; i < bl->nlinks; i++) {
-+		ret = dsim_bl_link_hs_on(bl, i);
-+		if (ret)
-+			return ret;
-+	}
-+	bl->state = DSIM_BL_ASLEEP;
-+	if (power_off) {
-+		ret = dsim_bl_panel_init(bl);
-+		if (ret)
-+			return ret;
-+	}
-+	return dsim_bl_sleep_out(bl);
++	dev_dbg(bl->dev, "links down, level %u\n", level);
 +}
 +
 +/* DPU: before DECON starts again (level >= LINK_OFF) */
 +static int dsim_bl_prepare(void *priv, unsigned int level)
 +{
 +	struct dsim_bl *bl = priv;
-+	unsigned int i;
-+	int ret, try;
++	ktime_t start = ktime_get();
++	int ret;
 +
 +	guard(mutex)(&bl->seq_lock);
-+	for (try = 0; try < 2; try++) {
-+		ret = dsim_bl_wake(bl, level);
-+		if (!ret)
-+			return 0;
-+		dev_warn(bl->dev, "panel wake-up %d failed: %d\n", try + 1, ret);
-+		dsim_bl_function_reset(bl);
-+		if (level >= EXYNOS9810_PANEL_POWER_OFF) {
-+			/* power cycle the panel, the next try inits it again */
-+			for (i = 0; i < bl->nlinks; i++)
-+				dsim_bl_link_off(bl, i, true);
-+			dsim_bl_rails_off(bl);
-+			msleep(20);
-+		}
++	ret = dsim_bl_wake(bl, level >= EXYNOS9810_PANEL_POWER_OFF ||
++			   bl->failed);
++	if (ret) {
++		dev_warn(bl->dev, "panel wake-up failed (%d), power cycling it\n",
++			 ret);
++		ret = dsim_bl_power_cycle(bl);
 +	}
-+	bl->broken = true;
-+	dev_err(bl->dev,
-+		"panel did not wake up (%d), blanking keeps it on from now\n",
-+		ret);
++	dsim_bl_wake_done(bl, ret);
++	dev_dbg(bl->dev, "panel up in %lld ms (%d)\n",
++		ktime_ms_delta(ktime_get(), start), ret);
 +	return ret;
 +}
 +
@@ -26286,12 +26692,9 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +				if (!ret)
 +					ret = dsim_bl_sleep_out(bl);
 +			}
-+			if (ret) {
-+				bl->broken = true;
-+				dev_err(bl->dev, "panel did not wake up: %d\n",
-+					ret);
-+			}
++			dsim_bl_wake_done(bl, ret);
 +		}
++		/* even after a failure: the panel may well be up */
 +		if (level >= EXYNOS9810_PANEL_SLEEP) {
 +			/* > 20 ms */
 +			ret = dsim_bl_dcs_seq(bl, 21, MIPI_DCS_SET_DISPLAY_ON);
@@ -26299,10 +26702,11 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +				dev_err(bl->dev, "DISPLAY_ON failed: %d\n", ret);
 +		}
 +		/* the init sequence selected CABC mode 1 again */
-+		if (level >= EXYNOS9810_PANEL_POWER_OFF && bl->cabc >= 0) {
++		if (bl->cabc_lost && bl->cabc >= 0) {
 +			cabc[1] = bl->cabc;
 +			dsim_bl_dcs_write(bl, cabc, sizeof(cabc));
 +		}
++		bl->cabc_lost = false;
 +		bl->state = DSIM_BL_ON;
 +		bl->blanked = false;
 +		if (!bl->removing)
@@ -26411,14 +26815,22 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +}
 +static DEVICE_ATTR_RW(cabc_mode);
 +
-+/* "on", "asleep", "link-off" or "power-off", and "broken" after a failure */
++/*
++ * "on", "asleep", "link-off" or "power-off"; "ulps" while a link is in
++ * ULPS, "failed" after a failed wake-up, "broken" after too many
++ */
 +static ssize_t panel_state_show(struct device *dev,
 +				struct device_attribute *attr, char *buf)
 +{
 +	struct dsim_bl *bl = dev_get_drvdata(dev);
++	bool ulps = false;
++	unsigned int i;
 +
 +	guard(mutex)(&bl->seq_lock);
-+	return sysfs_emit(buf, "%s%s\n", dsim_bl_state_names[bl->state],
++	for (i = 0; i < bl->nlinks; i++)
++		ulps |= bl->ulps[i];
++	return sysfs_emit(buf, "%s%s%s%s\n", dsim_bl_state_names[bl->state],
++			  ulps ? " ulps" : "", bl->failed ? " failed" : "",
 +			  bl->broken ? " broken" : "");
 +}
 +static DEVICE_ATTR_RO(panel_state);
@@ -26501,6 +26913,26 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	return 0;
 +}
 +
++/* what level 3 restores: the bootloader's lanes, clocks and PLL */
++static bool dsim_bl_save_link(struct dsim_bl *bl, unsigned int i)
++{
++	void __iomem *base = bl->link[i];
++	u32 lanes = readl(base + DSIM_CONFIG) & DSIM_CONFIG_LANES_EN;
++
++	bl->lanes[i] = lanes;
++	bl->clk_ctrl[i] = readl(base + DSIM_CLK_CTRL) &
++			  ~DSIM_CLK_CTRL_TX_REQUEST_HSCLK;
++	bl->pll[i] = (readl(base + DSIM_PLLCTRL) & DSIM_PLLCTRL_PLL_EN) &&
++		     (readl(base + DSIM_LINK_STATUS3) &
++		      DSIM_LINK_STATUS3_PLL_STABLE);
++	dev_dbg(bl->dev, "link %u: lanes %#x clk_ctrl %#x pll %#x dphy %#x\n",
++		i, lanes, bl->clk_ctrl[i], readl(base + DSIM_PLLCTRL),
++		readl(base + DSIM_DPHY_STATUS));
++
++	/* the clock lane and at least one data lane */
++	return (lanes & BIT(0)) && (lanes >> 1);
++}
++
 +static int dsim_bl_probe(struct platform_device *pdev)
 +{
 +	struct device *dev = &pdev->dev;
@@ -26543,10 +26975,16 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	if (ret < 0)
 +		return dev_err_probe(dev, ret, "failed to enable clocks\n");
 +
++	bl->max_level = EXYNOS9810_PANEL_POWER_OFF;
 +	for (i = 0; i < bl->nlinks; i++) {
 +		ret = dsim_bl_check_link(bl, i);
 +		if (ret)
 +			return ret;
++		if (!dsim_bl_save_link(bl, i)) {
++			dev_warn(dev, "link %u: unexpected lanes %#x, blanking keeps the links up\n",
++				 i, bl->lanes[i]);
++			bl->max_level = EXYNOS9810_PANEL_SLEEP;
++		}
 +	}
 +
 +	/*
@@ -26566,6 +27004,10 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	if (IS_ERR(bl->buck_gpio))
 +		return dev_err_probe(dev, PTR_ERR(bl->buck_gpio),
 +				     "failed to get the BUCK enable GPIO\n");
++
++	if (!dsim_bl_has_rails(bl))
++		bl->max_level = min_t(unsigned int, bl->max_level,
++				      EXYNOS9810_PANEL_LINK_OFF);
 +
 +	max = 4095;
 +	device_property_read_u32(dev, "max-brightness", &max);
@@ -26610,10 +27052,11 @@ index 0000000000000000000000000000000000000000..b92cac95684f8102fc67db46df256e93
 +	exynos9810_dpu_set_panel(bl->dgc ? &dsim_bl_panel_ops :
 +				 &dsim_bl_panel_ops_nogamma, bl);
 +
-+	dev_info(dev, "%u DSI link(s), brightness %u/%u%s%s\n", bl->nlinks,
-+		 props.brightness, props.max_brightness,
++	dev_info(dev, "%u DSI link(s), brightness %u/%u%s%s, blank levels up to %u\n",
++		 bl->nlinks, props.brightness, props.max_brightness,
 +		 bl->dgc ? ", panel digital gamma" : "",
-+		 dsim_bl_has_rails(bl) ? ", panel power control" : "");
++		 dsim_bl_has_rails(bl) ? ", panel power control" : "",
++		 bl->max_level);
 +
 +	return 0;
 +}
@@ -27654,7 +28097,7 @@ index db8a7ca81080d146e355846768b08093d93a113a..34271c9595cc5030ae875da103db3cba
  #endif /* __LINUX_SOC_EXYNOS_REGS_PMU_H */
 diff --git a/include/soc/samsung/exynos9810-panel-gamma.h b/include/soc/samsung/exynos9810-panel-gamma.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..13c3b366e23d09790c5d0d6a6df835262e40b167
+index 0000000000000000000000000000000000000000..583183b5c00159c0559ad793322e767acd1e21c9
 --- /dev/null
 +++ b/include/soc/samsung/exynos9810-panel-gamma.h
 @@ -0,0 +1,75 @@
@@ -27696,8 +28139,8 @@ index 0000000000000000000000000000000000000000..13c3b366e23d09790c5d0d6a6df83526
 +enum exynos9810_panel_level {
 +	EXYNOS9810_PANEL_BACKLIGHT_OFF,	/* backlight 0, video keeps running */
 +	EXYNOS9810_PANEL_SLEEP,		/* + DISPLAY_OFF/SLEEP_IN */
-+	EXYNOS9810_PANEL_LINK_OFF,	/* + DECON stopped, DSI links in ULPS */
-+	EXYNOS9810_PANEL_POWER_OFF,	/* + panel rails off, reset held */
++	EXYNOS9810_PANEL_LINK_OFF,	/* + DECON stopped, DSI HS clocks off */
++	EXYNOS9810_PANEL_POWER_OFF,	/* + DSI lanes, panel rails off */
 +};
 +
 +enum exynos9810_panel_event {
