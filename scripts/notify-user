@@ -1,8 +1,8 @@
 #!/bin/bash
 # Get the user's attention when a test needs their hands (a button press, a
-# finger on the screen, plugging a cable). Desktop notification + a sound at
-# full volume (the previous volume and mute state are restored afterwards)
-# + the request read out loud, and a line in logs/user-requests.log.
+# finger on the screen, plugging a cable). Desktop notification + a siren at
+# full volume (--info: a chime; the previous volume and mute state are
+# restored afterwards) + the request read out loud, and a line in logs/user-requests.log.
 #
 #   scripts/notify-user [options] TITLE [WHAT-TO-DO]
 #     --info          softer: normal urgency, one chime, no speech
@@ -44,7 +44,27 @@ printf '%s %s: %s\n' "$(date '+%F %T')" "$title" "$body" >> "$P/logs/user-reques
 
 SINK=@DEFAULT_AUDIO_SINK@
 SOUNDS=/usr/share/sounds/freedesktop/stereo
-if [ $urgent = 1 ]; then chime=$SOUNDS/alarm-clock-elapsed.oga; else chime=$SOUNDS/complete.oga; fi
+chime=$SOUNDS/complete.oga
+if [ $urgent = 1 ]; then
+	# A siren (rising and falling wail, ~6 s), generated once
+	chime=$P/build/siren.wav
+	[ -s "$chime" ] || python3 - "$chime" <<'PY' || chime=$SOUNDS/alarm-clock-elapsed.oga
+import math, struct, sys, wave
+rate, out = 44100, []
+phase = 0.0
+for cycle in range(4):
+	n = int(rate * 1.5)
+	for i in range(n):
+		t = i / n
+		f = 650 + 750 * (math.sin(math.pi * t) ** 2)	# 650 -> 1400 -> 650 Hz
+		phase += 2 * math.pi * f / rate
+		v = math.sin(phase) + 0.3 * math.sin(3 * phase)	# a bit of edge
+		out.append(int(max(-1, min(1, v / 1.3)) * 30000))
+w = wave.open(sys.argv[1], "wb")
+w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+w.writeframes(struct.pack("<%dh" % len(out), *out))
+PY
+fi
 
 # Play the chime (and say the request) at 100 %, then put the volume back
 alert() {
