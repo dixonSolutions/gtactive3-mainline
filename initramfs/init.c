@@ -34,6 +34,7 @@
 #define SEC_POWER_RESET		0x12345678
 #define SEC_REASON_NORMAL	0x12345670
 #define SEC_REASON_DOWNLOAD	0x12345671
+#define SEC_REASON_RECOVERY	0x12345674
 
 #define CMU_TOP_BASE	0x1a240000UL
 #define CMU_FSYS0_BASE	0x11000000UL
@@ -48,6 +49,8 @@ static int st_max, st_gadget;
 static int kmsg = -1;
 static int devmem = -1;
 static int wdt = -1;
+/* gta3.recovery on the command line: a RECOVERY test kernel (see main()) */
+static int recovery_mode;
 static char logbuf[1 << 17];
 
 /* ---------- output helpers ---------- */
@@ -198,9 +201,13 @@ static void ulog_print(int c)
 
 static void arm_download_on_reset(void)
 {
+	unsigned int reason = recovery_mode ? SEC_REASON_RECOVERY : SEC_REASON_DOWNLOAD;
+
 	if (poke(PMU_BASE + PMU_INFORM2, SEC_POWER_RESET) ||
-	    poke(PMU_BASE + PMU_INFORM3, SEC_REASON_DOWNLOAD))
-		out("WARNING: could not arm Download mode on reset (/dev/mem)\n");
+	    poke(PMU_BASE + PMU_INFORM3, reason))
+		out("WARNING: could not arm the reset target (/dev/mem)\n");
+	else if (recovery_mode)
+		out("Any reset now re-enters this RECOVERY kernel.\n");
 	else
 		out("Any reset now goes to Download mode.\n");
 }
@@ -316,6 +323,9 @@ static int os_hang_check(void)
 	unsigned int magic = 0, rst = 0, now = 0, stage = 0, n;
 	char b[96];
 
+	/* a RECOVERY test kernel: a watchdog reset is our own test, not Duranium */
+	if (recovery_mode)
+		return 0;
 	if (peek(UL_RECORD, &magic) || magic != UL_MAGIC ||
 	    peek(UL_STAGE, &stage) || peek(UL_RST_STAT, &rst))
 		return 0;
@@ -656,7 +666,7 @@ static void serve(int c)
 	unsigned int v;
 
 	wr(c, "SM-T570 mainline bring-up console. Commands: dmesg, peek ADDR, dump ADDR N, "
-	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, run PATH [ARGS], insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, evread PATH [N] [SECS], ulog, reboot [download|recovery|normal]\n> ");
+	      "poke ADDR VAL, cat PATH, write PATH VALUE, put PATH LEN, run PATH [ARGS], insmod PATH [ARGS], rmmod NAME, ls DIR, i2cw ADDR B.., i2cr ADDR REG N, evread PATH [N] [SECS], ulog, reboot [download|recovery|normal], kexec PATH\n> ");
 	for (;;) {
 		r = read(c, line + n, 1);
 		if (r <= 0) return;
@@ -770,8 +780,11 @@ static void serve(int c)
 			int fd = open(line + 4, O_RDONLY);
 			if (fd < 0) wr(c, "error\n");
 			else {
-				while ((r = read(fd, fb, sizeof(fb))) > 0)
+				while ((r = read(fd, fb, sizeof(fb))) > 0) {
 					write(c, fb, r);
+					if (wdt >= 0)	/* a long stream must not starve the watchdog */
+						ioctl(wdt, WDIOC_KEEPALIVE, 0);
+				}
 				close(fd);
 			}
 		} else if (!strncmp(line, "i2cw ", 5) || !strncmp(line, "i2cr ", 5)) {
@@ -809,6 +822,8 @@ static void serve(int c)
 				if (k <= 0) break;
 				if (fd >= 0) write(fd, pb, k);
 				got += k;
+				if (wdt >= 0)	/* uploads of RECOVERY images take ~1 min */
+					ioctl(wdt, WDIOC_KEEPALIVE, 0);
 			}
 			if (fd >= 0) close(fd);
 			snprintf(fbuf, sizeof(fbuf), fd < 0 ? "error\n" : "ok %ld\n", got);
@@ -924,6 +939,31 @@ static void serve(int c)
 			snprintf(fbuf, sizeof(fbuf), pid < 0 ? "run: fork failed\n" :
 				 "run: exit %d signal %d\n", (st >> 8) & 0xff, st & 0x7f);
 			wr(c, fbuf);
+		} else if (!strncmp(line, "kexec ", 6)) {
+			/*
+			 * kexec PATH: start the kernel Image at PATH (uploaded with
+			 * put, its own built-in initramfs and command line) without
+			 * going through the bootloader. A test kernel that hangs then
+			 * needs only a forced restart to come back to this console.
+			 */
+			int fd = open(line + 6, O_RDONLY);
+			long rr = fd < 0 ? -2 :
+				__nolibc_syscall5(294 /* __NR_kexec_file_load */, fd, -1, 1, "",
+						  2 /* KEXEC_FILE_NO_INITRAMFS */);
+
+			if (fd >= 0) close(fd);
+			if (rr) {
+				snprintf(fbuf, sizeof(fbuf), "kexec_file_load failed: errno %ld\n", -rr);
+				wr(c, fbuf);
+				goto prompt;
+			}
+			wr(c, "kexec: starting the new kernel\n");
+			close(c);
+			sync();
+			__nolibc_syscall4(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+					  LINUX_REBOOT_CMD_KEXEC, 0);
+			out("kexec failed\n");
+			goto prompt;
 		} else if (!strncmp(line, "reboot", 6)) {
 			const char *m = line[6] == ' ' ? line + 7 : "normal";
 			wr(c, "rebooting\n");
@@ -995,6 +1035,18 @@ int main(void)
 	out("\n\n==============================================\n");
 	out("  Galaxy Tab Active3 - mainline Linux is alive\n");
 	out("==============================================\n\n");
+	{
+		static char cl[1024];
+		int fd = open("/proc/cmdline", O_RDONLY), n = 0, k;
+
+		if (fd >= 0) {
+			n = read(fd, cl, sizeof(cl) - 1);
+			close(fd);
+		}
+		for (k = 0; n > 0 && k + 13 <= n; k++)
+			if (!strncmp(cl + k, "gta3.recovery", 13))
+				recovery_mode = 1;
+	}
 	arm_download_on_reset();
 	cat("Kernel:   ", "/proc/version", 200);
 	cat("CPUs:     ", "/sys/devices/system/cpu/online", 32);
