@@ -1,15 +1,16 @@
 #!/bin/bash
 # Get the user's attention when a test needs their hands (a button press, a
-# finger on the screen, plugging a cable). Desktop notification + a siren at
-# full volume (--info: a chime; the previous volume and mute state are
-# restored afterwards) + the request read out loud, and a line in logs/user-requests.log.
+# finger on the screen, plugging a cable). Desktop notification and a line in
+# logs/user-requests.log. Silent by default: the user asked for no sounds
+# (2026-10-23); --sound brings back the siren (--info: a chime) and speech.
 #
 #   scripts/notify-user [options] TITLE [WHAT-TO-DO]
 #     --info          softer: normal urgency, one chime, no speech
 #     --wait SECS     keep the notification up with a "Done" button and wait
 #                     for it; the sound repeats every 90 s while waiting.
 #                     Prints "done" or "timeout" and exits 0 / 2.
-#     --quiet         notification only, no sound (for follow-ups)
+#     --quiet         notification only, no sound (the default)
+#     --sound         siren / chime and the request read out loud
 #     --dry-run       print what would happen
 #
 # Agents also call the PushNotification tool so the request reaches the
@@ -17,12 +18,13 @@
 set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
 
-urgent=1 wait=0 sound=1 dry=0
+urgent=1 wait=0 sound=0 dry=0  # silent: the user asked for no sounds (2026-10-23)
 while [ $# -gt 0 ]; do
 	case $1 in
 		--info) urgent=0; shift ;;
 		--wait) wait=$2; shift 2 ;;
 		--quiet) sound=0; shift ;;
+		--sound) sound=1; shift ;;
 		--dry-run) dry=1; shift ;;
 		--) shift; break ;;
 		-*) echo "notify-user: unknown option $1" >&2; exit 1 ;;
