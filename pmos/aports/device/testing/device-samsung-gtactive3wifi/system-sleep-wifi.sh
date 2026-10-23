@@ -6,11 +6,14 @@
 # Wake-on-WLAN until the D3 path works.
 set -eu
 mark=/run/gtactive3wifi/brcmfmac-unloaded
+# shared with wifi-recover: never sleep in the middle of a chip power cycle
+mkdir -p "${mark%/*}"
+exec 9> /run/gtactive3wifi/wifi.lock
+flock -w 60 9 || true
 
 case "$1" in
 pre)
 	if grep -q '^brcmfmac ' /proc/modules; then
-		mkdir -p "${mark%/*}"
 		: > "$mark"
 		modprobe -r brcmfmac_wcc brcmfmac
 	fi

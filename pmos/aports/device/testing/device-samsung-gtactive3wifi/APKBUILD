@@ -3,7 +3,7 @@ maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
 pkgname=device-samsung-gtactive3wifi
 pkgdesc="Samsung Galaxy Tab Active3 (Wi-Fi)"
 pkgver=2
-pkgrel=45
+pkgrel=46
 url="https://github.com/dixonSolutions/gtactive3-mainline"
 license="MIT"
 arch="aarch64"
@@ -79,6 +79,8 @@ source="
 	gtactive3wifi-active-key.service
 	system-sleep-usb.sh
 	system-sleep-wifi.sh
+	wifi-recover.sh
+	gtactive3wifi-wifi-recover.service
 	usb-resume-check.sh
 	gtactive3wifi-usb-resume.service
 	60-gtactive3wifi-pm.rules
@@ -193,6 +195,13 @@ package() {
 	# Wi-Fi out of the way while asleep (brcmfmac's PCIe D3 fails)
 	install -Dm755 "$srcdir"/system-sleep-wifi.sh \
 		"$pkgdir"/usr/lib/systemd/system-sleep/gtactive3wifi-wifi
+	# a Wi-Fi chip whose firmware died for good gets power-cycled
+	install -Dm755 "$srcdir"/wifi-recover.sh \
+		"$pkgdir"/usr/libexec/gtactive3wifi/wifi-recover
+	install -Dm644 "$srcdir"/gtactive3wifi-wifi-recover.service \
+		-t "$pkgdir"/usr/lib/systemd/system/
+	ln -s ../gtactive3wifi-wifi-recover.service \
+		"$pkgdir"/usr/lib/systemd/system/multi-user.target.wants/
 	install -Dm755 "$srcdir"/usb-resume-check.sh \
 		"$pkgdir"/usr/libexec/gtactive3wifi/usb-resume-check
 	install -Dm644 "$srcdir"/60-gtactive3wifi-pm.rules \
@@ -451,7 +460,9 @@ b3a054807f4cd896e1a18fdfc90249adc8f7e155012220693e49b1141d10c0c571e784a39da646a3
 3484d585f5adc408cce9add987c119198cfca7bb8b560df399caef85ef10ab6fec0092eb85ff135e687db5ec2a6dfe94068042b5cf004b80af4e13b38fe034d6  gtactive3wifi-boot-default.service
 4019671d606592d9cf1d5d4abe6fb131c0f270fc2cdb0e946368fc8576043b2b79f631ba8dee4215e00f2997301d83b8268280aadbc8c01d0b6dfb593cb5f9c7  gtactive3wifi-suspend-gate.service
 dd982aead67e3cc4d6b0b128395d21bcbcd4065f3cfd5c1733123813a48169032a499ee8788c1de3e6d7618718688707868c512cb66d349f33e4b4d8c5237dfe  system-sleep-usb.sh
-76077674d4eb9571713f718fd5bf7ea2575b95bd65ba76cf7f48c8dceac50a6dcb6eba7bd2e1914b585ef58749accf96effb5c6b02cd1f5cdc883e0f5188b5f6  system-sleep-wifi.sh
+5390a4cf096eab6c3d0b09871481490951dd2e7e5a374550580822f5b5e7829ea308c079c81f2ad5e997716cb93595370613a3bf310258b091d063902c1e06dc  system-sleep-wifi.sh
+29121844bd1b8d3f3c32837e3bd3924a33dababd5852ad38a1e7ea2cefc08bf3294172b3cf68243103d3c2565cdee059013fa1734deaaea38771a72ac8792f59  wifi-recover.sh
+8357295dac628ae6267ec52e172269213e76f1dd619891cfa5321a437ffbe36fd502d143262369ce42417afe9fd26cb457b78c476fae40c1396ed539be9e425f  gtactive3wifi-wifi-recover.service
 95fa85a3da27ed79aaefbd26b2587ea167f9ee0e37af80650049be237084340330480b95278738b599e6dcfda4b336445122a10f391c818334e57ef77d9a12a6  usb-resume-check.sh
 9d5cf13e6260f3c30417156e013c54dc3806ca0ab732d07396e62fd2438ed1ba15bfc4f2f9275814cd17e82407b281df2b6c51f1176f525590aaaca6366df34d  gtactive3wifi-usb-resume.service
 26af87d4a912495b3f46a120eceab3ebfe58337e7006fae0a9d2057e98ac69507ddb0c44550abc7e3482769e74db2844c013fc12c62916021776fc3cf3bd1e09  60-gtactive3wifi-pm.rules

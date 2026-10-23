@@ -1,0 +1,12 @@
+[Unit]
+Description=Power-cycle the Wi-Fi chip when its firmware dies for good (SM-T570)
+
+[Service]
+ExecStart=/usr/libexec/gtactive3wifi/wifi-recover
+# exits 0 when it gives up (repeated failures): stays stopped until reboot
+Restart=on-failure
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
