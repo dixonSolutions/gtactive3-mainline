@@ -1,0 +1,85 @@
+From 80b4026938f38bec4e14f1c2cd360495d23521eb Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 18:16:13 +1100
+Subject: [PATCH] ipa: simple: Read the gamma, contrast and saturation
+ defaults from the tuning file
+
+The Adjust algorithm starts every stream with gamma 2.2, contrast 1.0
+and saturation 1.0. Let a tuning file set other defaults, e.g.
+
+  - Adjust:
+      contrast: 1.15
+      saturation: 1.1
+
+so that a sensor gets a sensible look without the application setting
+the controls. The control ranges are unchanged.
+
+Signed-off-by: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+---
+ src/ipa/simple/algorithms/adjust.cpp | 23 ++++++++++++++++-------
+ src/ipa/simple/algorithms/adjust.h   |  4 ++++
+ 2 files changed, 20 insertions(+), 7 deletions(-)
+
+diff --git a/src/ipa/simple/algorithms/adjust.cpp b/src/ipa/simple/algorithms/adjust.cpp
+index 8bf39c4..ea4b37b 100644
+--- a/src/ipa/simple/algorithms/adjust.cpp
++++ b/src/ipa/simple/algorithms/adjust.cpp
+@@ -24,24 +24,33 @@ constexpr float kDefaultSaturation = 1.0f;
+ 
+ LOG_DEFINE_CATEGORY(IPASoftAdjust)
+ 
+-int Adjust::init(IPAContext &context, [[maybe_unused]] const ValueNode &tuningData)
++int Adjust::init(IPAContext &context, const ValueNode &tuningData)
+ {
++	/* The defaults can be tuned per sensor. */
++	gamma_ = std::clamp(tuningData["gamma"].get<float>(kDefaultGamma), 0.1f, 10.0f);
++	contrast_ = std::clamp(tuningData["contrast"].get<float>(kDefaultContrast), 0.0f, 2.0f);
++	saturation_ = std::clamp(tuningData["saturation"].get<float>(kDefaultSaturation), 0.0f, 2.0f);
++
+ 	context.ctrlMap[&controls::Gamma] =
+-		ControlInfo(0.1f, 10.0f, kDefaultGamma);
++		ControlInfo(0.1f, 10.0f, gamma_);
+ 	context.ctrlMap[&controls::Contrast] =
+-		ControlInfo(0.0f, 2.0f, kDefaultContrast);
++		ControlInfo(0.0f, 2.0f, contrast_);
+ 	if (context.ccmEnabled)
+ 		context.ctrlMap[&controls::Saturation] =
+-			ControlInfo(0.0f, 2.0f, kDefaultSaturation);
++			ControlInfo(0.0f, 2.0f, saturation_);
+ 	return 0;
+ }
+ 
+ int Adjust::configure(IPAContext &context,
+ 		      [[maybe_unused]] const IPAConfigInfo &configInfo)
+ {
+-	context.activeState.knobs.gamma = kDefaultGamma;
+-	context.activeState.knobs.contrast = std::optional<float>();
+-	context.activeState.knobs.saturation = std::optional<float>();
++	context.activeState.knobs.gamma = gamma_;
++	context.activeState.knobs.contrast =
++		contrast_ != kDefaultContrast ? std::optional<float>(contrast_)
++					      : std::optional<float>();
++	context.activeState.knobs.saturation =
++		saturation_ != kDefaultSaturation ? std::optional<float>(saturation_)
++						  : std::optional<float>();
+ 
+ 	return 0;
+ }
+diff --git a/src/ipa/simple/algorithms/adjust.h b/src/ipa/simple/algorithms/adjust.h
+index 49c1f26..0c4f2fa 100644
+--- a/src/ipa/simple/algorithms/adjust.h
++++ b/src/ipa/simple/algorithms/adjust.h
+@@ -43,6 +43,10 @@ public:
+ 
+ private:
+ 	void applySaturation(Matrix<float, 3, 3> &ccm, float saturation);
++
++	float gamma_;
++	float contrast_;
++	float saturation_;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.56.0
+

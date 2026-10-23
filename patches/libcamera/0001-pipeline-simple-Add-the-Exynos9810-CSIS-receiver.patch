@@ -1,7 +1,7 @@
 From 244bef5f2d011cb41cefc32281e098cb86a0ccf4 Mon Sep 17 00:00:00 2001
 From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 18:07:47 +1100
-Subject: [PATCH 1/2] pipeline: simple: Add the Exynos9810 CSIS receiver
+Subject: [PATCH] pipeline: simple: Add the Exynos9810 CSIS receiver
 
 The Samsung Exynos9810 camera front end has MIPI CSI-2 receivers (CSIS
 v5.1) whose virtual channel DMA writes the raw Bayer stream of the
