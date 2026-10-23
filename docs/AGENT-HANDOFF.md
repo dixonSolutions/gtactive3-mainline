@@ -5,7 +5,7 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
-## State 2026-10-24 09:30 (coordinator "PostmarketOS duranium bootloader unlock")
+## State 2026-10-24 09:45 (coordinator "PostmarketOS duranium bootloader unlock")
 
 - Repo: exynos-linux/samsung-gtactive3wifi, values in config.toml
   (scripts/config), device-template skills and rules (be17aaf).
@@ -19,16 +19,17 @@ yourself, autonomously, overnight. Keep going until the mission is met.
   version in build/wt/duranium: 26102219~test4. pmos/VERIFIED does not
   exist yet: release channels get nothing until an on-device pass of an
   export (scripts/pmos-verify).
-- Tablet: on the dock, charging. Unreachable from the laptop at 09:30: no
-  USB gadget link (only the dock's LAN adapter enumerates) and the BCM4375
-  firmware crashed at 08:51 (session "BCM4375 Wi-Fi firmware crash after
-  boot"), so Tailscale is down too. Which version is booted is not
-  confirmed this morning.
-- In flight: the Wi-Fi session has the coordinator's go to reload
-  brcmfmac + pcie_exynos9810 under build/device.lock once it has a console
-  route (remove paths read first, dmesg into
-  logs/test-runs/2026-10-24-wifi-reload/). "Suspend, updates, cores" is
-  asked to hold suspend/Wi-Fi tests until then.
+- Tablet: on the dock, charging (52 %). The BCM4375 firmware crashed at
+  08:51 (session "BCM4375 Wi-Fi firmware crash after boot") and the tablet
+  was unreachable; ~09:40 it had rebooted and the user unlocked it. Booted:
+  Phosh 26102304 (CI), kernel #19 (built 2026-10-23 04:42), `maxcpus=4` on
+  the command line (big cores unused in this image). Wi-Fi came back by
+  itself after the reboot (brcmfmac at 74 s, firmware 18.41.117), USB
+  console and Tailscale both up. The user is on the tablet: nothing that
+  reboots or may panic it without asking them first.
+- In flight: the Wi-Fi session works offline on why the firmware crashed
+  and on a recovery path that needs no human; its driver-reload test is on
+  hold and gets slotted at a quiet moment (with the next A/B reboot).
 - Next three steps (same as PLAN.md): see PLAN.md "Next three steps".
 - Waits for the owner: a console route (USB cable to the laptop, or the
   tablet back on Wi-Fi) when the Wi-Fi session needs it; charging current
