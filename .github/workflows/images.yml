@@ -83,6 +83,35 @@ jobs:
         with:
           path: kpkgs
           key: kernel-${{ hashFiles('pmos/aports/device/testing/linux-postmarketos-exynos9810/**', 'work/duranium-build/contrib/samsung-gtactive3wifi/pkgbuilder.Containerfile') }}
+      - name: Upstream kernel source version
+        id: kbase
+        run: echo "base=$(sed -n 's/^_base="\(.*\)"/\1/p' pmos/aports/device/testing/linux-postmarketos-exynos9810/APKBUILD)" >> "$GITHUB_OUTPUT"
+      - name: Upstream kernel source cache
+        if: steps.kcache.outputs.cache-hit != 'true'
+        uses: actions/cache@v5
+        with:
+          path: distfiles/linux-${{ steps.kbase.outputs.base }}.tar.gz
+          key: kernel-src-${{ steps.kbase.outputs.base }}
+      - name: Fetch the upstream kernel source
+        if: steps.kcache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # GitHub answers anonymous archive downloads from shared runner IPs
+          # with 429 Too Many Requests; fetch it authenticated, with retries,
+          # before abuild would (it finds it in SRCDEST and checks the hash)
+          set -eu
+          f=distfiles/linux-${{ steps.kbase.outputs.base }}.tar.gz
+          mkdir -p distfiles
+          [ -s "$f" ] && { echo "cached: $f"; exit 0; }
+          for i in 1 2 3 4 5 6; do
+            if curl -fL --retry 3 --retry-delay 20 -H "Authorization: Bearer $GH_TOKEN" \
+              -o "$f.part" "https://github.com/torvalds/linux/archive/${{ steps.kbase.outputs.base }}.tar.gz"; then
+              mv "$f.part" "$f"; ls -l "$f"; exit 0
+            fi
+            echo "attempt $i failed, waiting $((i * 60)) s"; sleep $((i * 60))
+          done
+          exit 1
       - name: Build our packages
         run: |
           set -eu
