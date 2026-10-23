@@ -21,7 +21,7 @@ ls "$E"/samsung-gtactive3wifi_phosh_edge_*.efi > /dev/null 2>&1 ||
 
 mkdir -p /var/lib/gtactive3wifi
 echo phosh > /var/lib/gtactive3wifi/ui
-{ grep -v '^default' "$C" 2> /dev/null || :; echo 'default samsung-gtactive3wifi_phosh_edge_*'; } > "$C.new"
+{ grep -v '^default' "$C" 2> /dev/null || :; echo 'default samsung-gtactive3wifi_phosh_edge_*@main'; } > "$C.new"
 mv -f "$C.new" "$C"
 for f in "$E"/*.efi; do
 	case ${f##*/} in

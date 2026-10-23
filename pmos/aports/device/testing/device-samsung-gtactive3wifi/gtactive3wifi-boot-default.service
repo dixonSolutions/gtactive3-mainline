@@ -1,0 +1,11 @@
+[Unit]
+Description=Boot the owner's UI by default (systemd-boot loader.conf)
+RequiresMountsFor=/boot /var/lib
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gtactive3wifi/boot-default
+
+[Install]
+WantedBy=multi-user.target

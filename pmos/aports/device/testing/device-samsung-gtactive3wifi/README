@@ -42,6 +42,19 @@ Booted system:
 - kernel.panic=10 (Alpine's sysctl.d sets 120 s): a panic reboots quickly
   and boot counting can fall back.
 - New users get /bin/bash (/etc/default/useradd).
+- gtactive3wifi-claim-android-space (opt-in, run by hand as root): turns
+  Android's unused "super" partition (7.13 GB: system, vendor, product)
+  into a LUKS2 + ext4 volume on /var/mnt/android-space (~/android-space ->
+  a folder of the user), unlocked at every start by a key file on the
+  encrypted root (crypttab/fstab entries with nofail, headless and a 10 s
+  device timeout: a missing volume never blocks the boot); its passphrase
+  is the disk passphrase. --with-prism adds "prism" (0.63 GB) as a second
+  volume on /var/mnt/android-space-prism whose filesystem ends before
+  prism's AVB metadata (S-Boot reads it at every start). --containers
+  moves the user's podman/distrobox storage there. --status, --undo
+  [--wipe]. This removes Android's OS: only a full stock firmware flash
+  (Odin) brings Android back. Only partitions named super and prism on the
+  UFS are ever written.
 - gtactive3wifi-switch-ui UI: switch to another UI image (phosh, gnome) with the
   A/B update (sysupdate with the other UI's channel); /etc/os-release is never
   edited (the next boot's base confext is checked against it).

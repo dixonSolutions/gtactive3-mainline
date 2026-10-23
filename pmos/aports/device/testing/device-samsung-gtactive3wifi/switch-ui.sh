@@ -13,7 +13,8 @@ set -eu
 
 ui=${1:-}
 case $ui in
-"" | *[!a-z0-9-]*) echo "usage: gtactive3wifi-switch-ui UI (phosh, gnome)" >&2; exit 1 ;;
+-h | --help) echo "usage: gtactive3wifi-switch-ui UI [systemd-sysupdate options] (UI: phosh, gnome)"; exit 0 ;;
+"" | -* | *[!a-z0-9-]*) echo "usage: gtactive3wifi-switch-ui UI (phosh, gnome)" >&2; exit 1 ;;
 esac
 shift
 
@@ -32,4 +33,6 @@ for f in /usr/lib/sysupdate.d/* /etc/sysupdate.d/*; do
 	sed "s/%W/$ui/g" "$f" > "$defs/${f##*/}"
 done
 echo "switching from $VARIANT_ID to $ui (newest published version)"
-exec /usr/lib/systemd/systemd-sysupdate --definitions="$defs" "$@" update
+/usr/lib/systemd/systemd-sysupdate --definitions="$defs" "$@" update
+# the user asked for this UI: boot it by default from now on
+/usr/libexec/gtactive3wifi/boot-default set "$ui"

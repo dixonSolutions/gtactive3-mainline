@@ -3,7 +3,7 @@ maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
 pkgname=device-samsung-gtactive3wifi
 pkgdesc="Samsung Galaxy Tab Active3 (Wi-Fi)"
 pkgver=2
-pkgrel=37
+pkgrel=38
 url="https://github.com/dixonSolutions/gtactive3-mainline"
 license="MIT"
 arch="aarch64"
@@ -23,6 +23,9 @@ depends="$depends vte3"
 # iw for Wi-Fi diagnostics, debugfs (e2fsprogs-extra) to read the Wi-Fi MAC
 # address from EFS without mounting it
 depends="$depends iw e2fsprogs-extra"
+# gtactive3wifi-claim-android-space (also uses util-linux and e2fsprogs,
+# both in every Duranium image)
+depends="$depends cryptsetup"
 # The Duranium USB debug layer (main/duranium-usb-debug) is not a
 # dependency: development images add it (duranium-usb-debug,
 # duranium-usb-debug-adb; build-image.sh CHANNEL=dev), release images leave
@@ -67,6 +70,8 @@ source="
 	sleep.conf
 	logind.conf
 	suspend-gate.sh
+	boot-default.sh
+	gtactive3wifi-boot-default.service
 	gtactive3wifi-suspend-gate.service
 	system-sleep-usb.sh
 	system-sleep-wifi.sh
@@ -77,6 +82,7 @@ source="
 	libcamera-softisp.yaml
 	sysupdate-retry.conf
 	switch-ui.sh
+	claim-android-space.sh
 	panfrost-environment.conf
 	gdm-panfrost.conf
 	panfrost-profile.sh
@@ -146,6 +152,14 @@ package() {
 	mkdir -p "$pkgdir"/usr/lib/systemd/system/sysinit.target.wants
 	ln -s ../gtactive3wifi-suspend-gate.service \
 		"$pkgdir"/usr/lib/systemd/system/sysinit.target.wants/
+	# boot the owner's UI by default, whatever else is on the ESP
+	install -Dm755 "$srcdir"/boot-default.sh \
+		"$pkgdir"/usr/libexec/gtactive3wifi/boot-default
+	install -Dm644 "$srcdir"/gtactive3wifi-boot-default.service \
+		-t "$pkgdir"/usr/lib/systemd/system/
+	mkdir -p "$pkgdir"/usr/lib/systemd/system/multi-user.target.wants
+	ln -s ../gtactive3wifi-boot-default.service \
+		"$pkgdir"/usr/lib/systemd/system/multi-user.target.wants/
 	# the USB debug link must come back after a sleep
 	install -Dm755 "$srcdir"/system-sleep-usb.sh \
 		"$pkgdir"/usr/lib/systemd/system-sleep/gtactive3wifi-usb
@@ -159,6 +173,10 @@ package() {
 	# another UI (phosh, gnome, ...) through the A/B update
 	install -Dm755 "$srcdir"/switch-ui.sh \
 		"$pkgdir"/usr/bin/gtactive3wifi-switch-ui
+	# opt-in: Android's unused super (and prism) partitions as encrypted
+	# storage, unlocked at boot with a key file on the root
+	install -Dm755 "$srcdir"/claim-android-space.sh \
+		"$pkgdir"/usr/bin/gtactive3wifi-claim-android-space
 	# automatic updates retry a download that broke off
 	install -Dm644 "$srcdir"/sysupdate-retry.conf \
 		"$pkgdir"/usr/lib/systemd/system/systemd-sysupdate.service.d/50-gtactive3wifi-retry.conf
@@ -386,6 +404,8 @@ a775c18d0c38a06a4062a13ea47723c00a13eb7bd88d2b5fb7696998e882981eb0036e8aadc6ed3f
 045877096b97e31ecfccb086f3cbd88d12a52de24e74590ea5cd9e5a6f41254b007756ff71869e3a021712b50a69d452abd060c244f9409f500886d627a6c8b4  sleep.conf
 387945088babde1318d3ef42dd7db7497a8c69dffcf9b016b8366b6ecbdc63c21fe3b82b1ecfa4ee16a4b9451df2cbf47b8d2246737ae3ee3a39f579ca09c407  logind.conf
 b3a054807f4cd896e1a18fdfc90249adc8f7e155012220693e49b1141d10c0c571e784a39da646a35e5b5f916be07a895a575c094e26b680caa6cefee81e85f4  suspend-gate.sh
+de0f4a28f833d9376a09dbb7d249787aa36e868a46978b5c63da63681ffecdd7d0aa93e9d54f3be37d92a543846f3f84bd09c079497ca6619844ffa001ad5cc0  boot-default.sh
+3484d585f5adc408cce9add987c119198cfca7bb8b560df399caef85ef10ab6fec0092eb85ff135e687db5ec2a6dfe94068042b5cf004b80af4e13b38fe034d6  gtactive3wifi-boot-default.service
 4019671d606592d9cf1d5d4abe6fb131c0f270fc2cdb0e946368fc8576043b2b79f631ba8dee4215e00f2997301d83b8268280aadbc8c01d0b6dfb593cb5f9c7  gtactive3wifi-suspend-gate.service
 dd982aead67e3cc4d6b0b128395d21bcbcd4065f3cfd5c1733123813a48169032a499ee8788c1de3e6d7618718688707868c512cb66d349f33e4b4d8c5237dfe  system-sleep-usb.sh
 76077674d4eb9571713f718fd5bf7ea2575b95bd65ba76cf7f48c8dceac50a6dcb6eba7bd2e1914b585ef58749accf96effb5c6b02cd1f5cdc883e0f5188b5f6  system-sleep-wifi.sh
@@ -395,7 +415,8 @@ dd982aead67e3cc4d6b0b128395d21bcbcd4065f3cfd5c1733123813a48169032a499ee8788c1de3
 80f67a6e205e9998eb10797c0fa0bbcca2863559f87551104b5d1d5fc74d5251a7ec8ab6492fe24a8cc35364a9e9e34e779425b280864d4a60c764f78c0108cb  modprobe-gtactive3wifi-camera.conf
 a901cabb56beff176716df29d79a56a2b97e8e36eb6468497d05c2ebf032ac63c310bc554e7a1200355bc25495b9e551c28656296ab5a94987716ad75c38a8d3  libcamera-softisp.yaml
 ee138d47dfd10ccd3864040abbf7838461178194f605430c9a3f1fa5288efb40432e6dda03df1c98c1ceae013d98d706b3d9919a5593b2c30b39a4fb4d872e6e  sysupdate-retry.conf
-ca7c32843e54ca74e6ea1cc6452e43ffdddd22b2aef11b5f8813f8279a53d07f79bfa800c9972f4f20a90c49956bfd5cd910ed380ab76931ec5c1cd9e78d5748  switch-ui.sh
+585042c50b4e2cf8530465c9fbf25cbd832036d6459bf396a43596f4941ce901c344be2f8493c40ce5025f58f8aa9b8afcc64e0d5f81482ef55ee0e7933328d1  switch-ui.sh
+2de64dc82fd39da23dfdfd98f0784e51646e4883975845f62fa33d261c83fc6b9c7fb036a39c79be48fce9dfa2789ed8e88c51d548236c41ae012ccae25b5a1f  claim-android-space.sh
 fa48039f5feea839f0bcfa4101a2a0ea7b988822ebde3cfb4ac632bd4e2962c5d716e15f5091f9f2f1bb1346ebcab94dc840d8e7f36b4f9e5e51cacaacde5d53  panfrost-environment.conf
 28cac460860b0987c4f05bbbf64081a07bbfb4bf6e3a9c9f7eef045442e41491a42466eea29fa3717a76f87d02c55fc24448d24405a00466a37da53d1b2ebf4b  gdm-panfrost.conf
 611a89eac00742d374401fea72c9a38659377b282fc304215531be36bb6b11083b427185d24a70ab5fe4b05ee39c721d6ec9dc86c056c0219e6a41db837fb90d  panfrost-profile.sh
@@ -423,5 +444,5 @@ fb2febe60164d63cb0c02ef81f477fd326f53b9a39bbf9487492c4c6743d0e6d4eec5462ebb0bf94
 1c7dea1fc828d397636ad2cefd59d481c39f8827269498587057bb97d723742738b79f1c9e60bd5d4d732411868507079e8b02c6546f2a5800a75c22118783e3  containers-selftest.sh
 2f58d3af193c441d90b2b2a25d8f7f5db160ab63fb26b1f36bb6ac3db35cd50ab71693c6fa588873000c9d59542d7f91e6e8d58700a60603f01282f201f522f9  gtactive3wifi-container-images.service
 e4f4a34f93f43ff0439299269252cc487fe1fb763b42a51c887685607560e8dcd096e6b7290fab45006fcd76727bdcd467d2626f4545b6e234e48eaf61ee9f28  gtactive3wifi-container-images.user.service
-c1771f526732c0adea11f1d4191e89751d265b5d596711ee7afd8eef98c9af8ccd4e1a782265e14c5c1bac46f462861958937c6da34a946d8c1e3f95d1ebc4c8  README
+03422f1492db2d8e30711b3657345528d572a9e827c048bdd995b2fc5afb0a1a42fc5ba2ba3e6f99cec2cefd6df1fe27fb80c557f24ba7f2a6d5a7728b990d3f  README
 "
