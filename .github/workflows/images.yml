@@ -106,6 +106,13 @@ jobs:
           f=distfiles/linux-${{ steps.kbase.outputs.base }}.tar.gz
           mkdir -p distfiles
           [ -s "$f" ] && { echo "cached: $f"; exit 0; }
+          # first our own "sources" release (byte-identical copies; GitHub's
+          # archive endpoint answers 429 to runners even when authenticated)
+          if gh release download sources -R "$GITHUB_REPOSITORY" -D distfiles \
+            -p "linux-${{ steps.kbase.outputs.base }}.tar.gz" 2>/dev/null; then
+            ls -l "$f"; exit 0
+          fi
+          echo "::warning::linux-${{ steps.kbase.outputs.base }}.tar.gz is not in the sources release: upload it there (gh release upload sources ...)"
           for i in 1 2 3 4 5 6; do
             if curl -fL --retry 3 --retry-delay 20 -H "Authorization: Bearer $GH_TOKEN" \
               -o "$f.part" "https://github.com/torvalds/linux/archive/${{ steps.kbase.outputs.base }}.tar.gz"; then

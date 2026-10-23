@@ -67,12 +67,16 @@ else
 	# GitHub answers anonymous archive downloads from shared runner IPs with
 	# 429: authenticated (GH_TOKEN in CI), with retries
 	t=$W/linux-$KBASE.tar.gz
-	for i in 1 2 3 4 5; do
+	# our own "sources" release first (the archive endpoint answers 429)
+	if [ -n "${GITHUB_REPOSITORY:-}" ] &&
+		gh release download sources -R "$GITHUB_REPOSITORY" -D "$W" -p "linux-$KBASE.tar.gz" 2>/dev/null; then
+		i=0
+	else for i in 1 2 3 4 5; do
 		curl -fsSL --retry 3 --retry-delay 20 ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
 			-o "$t" "https://github.com/torvalds/linux/archive/$KBASE.tar.gz" && break
 		[ "$i" = 5 ] && { echo "cannot download Linux $KBASE" >&2; exit 1; }
 		echo "download attempt $i failed, waiting $((i * 60)) s" >&2; sleep $((i * 60))
-	done
+	done; fi
 	tar -xzf "$t" -C "$K" --strip-components=1
 	rm -f "$t"
 fi
