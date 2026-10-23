@@ -1,0 +1,152 @@
+# The public configuration of this device port (schema of exynos-linux's
+# device template: every key is documented in its docs/CONFIG.md).
+#
+# Everything in this file is public: it is published with every Pages build
+# as device.json, and the exynos-linux site and the installer read it. Never
+# put a secret here: the image signing key is the SYSUPDATE_SIGNING_KEY
+# repository secret (docs/RELEASES.md).
+#
+# Values marked "derived" may be left out; scripts/config fills them in
+# (scripts/config json shows the result). Read it from code with
+# scripts/config, never by parsing it again.
+
+schema = 1
+
+[project]
+template = false
+# owner/name on GitHub. CI uses $GITHUB_REPOSITORY when it is set, so a
+# fork (and this repo until it has moved to exynos-linux) publishes to itself.
+repo = "exynos-linux/gtactive3-mainline"
+title = "Galaxy Tab Active3: mainline Linux"
+maintainers = ["@dixonSolutions"]
+community = "https://discord.gg/exynos-linux"
+license = "GPL-2.0-only"
+
+[device]
+vendor = "samsung"
+codename = "gtactive3wifi"
+name = "Samsung Galaxy Tab Active3 (Wi-Fi)"
+models = ["SM-T570"]
+form_factor = "tablet"
+arch = "aarch64"
+soc = "exynos9810"
+soc_name = "Exynos 9810"
+status = "testing"
+
+[android]
+product_device = "gtactive3wifi"
+firmware_pattern = "T570[A-Z0-9]{8}"
+# The firmware the boot chain was tested on: the installer warns on others.
+tested_firmware = "T570XXSFEYI1"
+tested_bootloader_rev = "F"
+fus_model = "SM-T570"
+
+[kernel]
+# derived: linux-postmarketos-exynos9810
+package = ""
+
+[images]
+release = "edge"
+uis = ["phosh", "gnome"]
+default_ui = "phosh"
+extra_packages = ["postmarketos-base-ui-audio-backend-pipewire"]
+dev_packages = ["duranium-usb-debug", "duranium-usb-debug-adb"]
+debug_package_regex = "^(duranium-usb-debug(-adb|-initramfs)?)$"
+debug_file_regex = "duranium-usb-debug|duranium-debug-"
+
+[ui.phosh]
+title = "Phosh"
+description = "The phone and tablet shell from the GNOME family."
+
+[ui.gnome]
+title = "GNOME"
+description = "The GNOME desktop, with a touch-friendly setup."
+
+[channels]
+dev = true
+release = true
+keep = 2
+
+[upstream]
+duranium_build = "https://gitlab.postmarketos.org/postmarketOS/duranium-build.git"
+pmaports = "https://gitlab.postmarketos.org/postmarketOS/pmaports.git"
+# postmarketOS's newest published Duranium version (their image build):
+# a change here starts a rebuild (ci/state).
+version_url = "https://duranium.nura.eco/images/mkosi.version"
+
+[update]
+# Where tablets fetch updates (systemd-sysupdate) and the installer images.
+# derived: https://github.com/<project.repo>/releases/download/
+base = ""
+# The release records (GitHub Pages of this repo).
+# derived: https://<owner>.github.io/<name>
+pages = ""
+# The public half of the signing key (scripts/new-signing-key makes it).
+public_key = "pmos/sysupdate-public-key.asc"
+# Its fingerprint, for humans and the installer (scripts/new-signing-key).
+fingerprint = "D0FE850AF01A47831B6EF808583161CE787FF5B5"
+
+[bootchain]
+# A boot-chain payload release for the installer (bootchain/, ci/bootchain).
+enabled = true
+# derived: <device.id>_bootchain
+tag = ""
+
+[installer]
+# derived: <device.codename>-setup (state, cache and backup directory names)
+name = "gtactive3-setup"
+# Samsung Download mode USB id (heimdall).
+download_usb = "04e8:685d"
+# Partitions by PIT name that heimdall may ever write. Nothing else, ever.
+flash_allow = ["BOOT", "RECOVERY"]
+boot_partition = "BOOT"
+recovery_partition = "RECOVERY"
+# Size of boot_partition in bytes (PIT: blocks x block size), for the boot
+# images' AVB footer. 0 = unknown: the installer builds no boot image.
+boot_partition_bytes = 0
+# GPT names on the main storage, from the live environment's console.
+userdata_partition = "userdata"
+metadata_partition = "metadata"
+super_partition = "super"
+# The main storage's whole-disk device in the live environment; the
+# installer touches only its partitions.
+main_disk = "sda"
+# Its logical sector size in bytes: 4096 (UFS) or 512 (eMMC); the image's
+# GPT is built for it.
+sector_size = 4096
+# Partitions the full Android backup also copies, read-only, for the
+# user's safety (identity data); never written back.
+backup_readonly = ["efs", "sec_efs"]
+# Partitions that must never be written by anything (lower case GPT/PIT
+# names): identity, keys, the signed boot chain. Extend, never shorten.
+protected = [
+  "bootloader", "bootloader2", "ul_keys", "ddi", "pit", "md5hdr", "efs",
+  "sec_efs", "param", "up_param", "bota", "keystorage", "steady", "uh",
+  "uhcfg", "blcmd", "radio", "cp_debug", "nad_refer", "persistent",
+  "keyrefuge", "keydata", "dqmdbg", "vbmeta", "vbmeta_samsung", "prism",
+  "optics", "omr", "spu", "cpefs", "cm", "misc", "dtbo",
+]
+# Vendor firmware the drivers need: without these the installer stops
+# (paths relative to /lib/firmware). Samsung's files never enter git.
+required_firmware = []
+# Firmware paths (shell globs) left out of the image's firmware bundle.
+firmware_exclude = []
+# Space the first boot adds on top of the image (second /usr slot + root
+# minimum), in MiB.
+first_boot_extra_mib = 6528
+
+[console]
+# The USB debug console (bring-up Linux and dev images), over USB NCM.
+port = 23
+shell_port = 2323
+
+[debug_tool]
+# The shared USB debug tool (root console over USB, the tab CLI):
+# ./setup.sh asks whether to install it (default yes); ask = false installs
+# it without asking. --debug-tools / --no-debug-tools decide on the command line.
+ask = true
+remote = "https://github.com/exynos-linux/usb-debug"
+# a release tag; "" = the newest
+version = ""
+# derived: <remote>/raw/<version, or main>/install.sh
+setup = ""

@@ -126,6 +126,7 @@ ensure_live() {
 stage1() {
 	local w
 	preflight
+	debug_tool_offer
 	step "Find the tablet"
 	w=$(where_is)
 	case $w in

@@ -145,6 +145,26 @@ t_stage1_payload_download_signed() {
 	boot_is linux
 }
 
+t_stage1_offers_debug_tool_default_yes() {
+	new_tablet android; start_console
+	DEBUG_TOOLS= setup live --yes --stock-ap "$AP_TAR"
+	rc_is 0
+	out_has "Install the USB debug tool"
+	out_has "USB debug tool installed"
+	grep -q "^usb-debug-install --yes --device=samsung-gtactive3wifi" "$CASE/state.json.calls" ||
+		fail "the debug tool's install script was not run with --yes --device"
+	# asked once: a second run does not install it again
+	DEBUG_TOOLS= setup live --yes --stock-ap "$AP_TAR"
+	[ "$(grep -c "^usb-debug-install" "$CASE/state.json.calls")" = 1 ] || fail "installed twice"
+}
+
+t_stage1_no_debug_tools() {
+	new_tablet android; start_console
+	DEBUG_TOOLS= setup live --yes --no-debug-tools --stock-ap "$AP_TAR"
+	rc_is 0
+	! grep -q "^usb-debug-install" "$CASE/state.json.calls" 2>/dev/null || fail "installed despite --no-debug-tools"
+}
+
 t_stage1_unauthorized_then_allowed() {
 	new_tablet android; start_console
 	mock 's["adb_auth"] = "unauthorized"; s["events"] = [{"after": 6, "set": {"adb_auth": "device"}}]'

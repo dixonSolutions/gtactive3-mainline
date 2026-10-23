@@ -33,6 +33,8 @@ Commands (default: the guided install, which resumes where it stopped):
   backup-files          copy Android's files to this PC / the microSD card (adb)
   prepare               only build the BOOT images (stock boot image + payload),
                         e.g. after a new boot-chain release; needs no tablet
+  debug-tools           install the shared USB debug tool on this PC
+                        (config.toml [debug_tool]: remote, version)
   status                what is connected, versions, slots
   doctor                status + the PC checks (tools, USB rules, space)
 
@@ -48,6 +50,8 @@ Options:
   --image FILE          a local disk image (.raw / .raw.zst) instead of a download
   --payload DIR|TAR     a local boot-chain payload instead of the published one
   --serial SERIAL       which adb device, if several are connected
+  --debug-tools         install the USB debug tool without asking
+  --no-debug-tools      do not install it (the default is to ask, answer yes)
   --yes                 non-interactive: take the default answers
   --yes-wipe            non-interactive: also accept typed confirmations
   --dry-run             show every action, change nothing
@@ -86,6 +90,8 @@ EOF
 . "$INST/lib/flow.sh"
 # shellcheck source=lib/commands.sh
 . "$INST/lib/commands.sh"
+# shellcheck source=lib/debugtool.sh
+. "$INST/lib/debugtool.sh"
 
 CMD=install-default
 ARGS=()
@@ -102,6 +108,8 @@ while [ $# -gt 0 ]; do
 		--image) OPT_IMAGE=$(realpath "${2:?}"); shift ;;
 		--payload) OPT_PAYLOAD=$(realpath "${2:?}"); shift ;;
 		--serial) ANDROID_SERIAL=${2:?}; export ANDROID_SERIAL; shift ;;
+		--debug-tools) OPT_DEBUG_TOOLS=1 ;;
+		--no-debug-tools) OPT_DEBUG_TOOLS=0 ;;
 		--yes|-y) YES=1 ;;
 		--yes-wipe) YES=1; YES_WIPE=1 ;;
 		--dry-run|-n) DRY_RUN=1 ;;
@@ -152,6 +160,7 @@ case $CMD in
 	update) cmd_update "${ARGS[@]}" ;;
 	firmware) cmd_firmware "${ARGS[@]}" ;;
 	backup-files) adb_connect 300 && backup_files ;;
+	debug-tools) OPT_DEBUG_TOOLS=1 debug_tool_offer ;;
 	prepare)
 		preflight; stock_acquire
 		firmware_acquire android || info "no vendor firmware yet (--stock-ap or --firmware-dir)"

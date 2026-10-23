@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Read the port's public configuration (config.toml) for scripts and CI.
+
+    scripts/config get KEY        one value (dotted: device.id, ui.phosh.title)
+    scripts/config shell          CFG_* assignments for eval (lists: space separated)
+    scripts/config json           everything, derived values filled in
+    scripts/config channels       "ui flavour tag" lines, one per update channel
+    scripts/config matrix         the image job matrix for GitHub Actions (JSON)
+    scripts/config check          validate; non-zero exit on an error
+
+Derived values (left empty or out in config.toml) are filled in here and
+nowhere else, so every consumer agrees. CONFIG=path reads another file;
+GITHUB_REPOSITORY (set in CI) overrides project.repo, so forks publish to
+themselves. Needs Python 3.11+ (tomllib), nothing else.
+"""
+import json
+import os
+import re
+import shlex
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PATH = Path(os.environ.get("CONFIG", ROOT / "config.toml"))
+STATUSES = ("bring-up", "testing", "stable")
+FLAVOURS = ("release", "dev")
+TEMPLATE_VALUES = {"device.vendor": "vendor", "device.codename": "codename", "device.soc": "exynosxxxx"}
+
+
+def load():
+    with open(PATH, "rb") as f:
+        c = tomllib.load(f)
+    for s in ("project", "device", "android", "kernel", "images", "ui", "channels",
+              "upstream", "update", "bootchain", "installer", "console", "debug_tool"):
+        c.setdefault(s, {})
+    p, d, u = c["project"], c["device"], c["update"]
+    if os.environ.get("GITHUB_REPOSITORY"):
+        p["repo"] = os.environ["GITHUB_REPOSITORY"]
+    p.setdefault("template", False)
+    owner, _, name = p.get("repo", "").partition("/")
+    p["owner"], p["name"] = owner, name
+    d["id"] = f"{d.get('vendor', '')}-{d.get('codename', '')}"
+    c["kernel"]["package"] = c["kernel"].get("package") or f"linux-postmarketos-{d.get('soc', '')}"
+    c["kernel"]["aport"] = f"pmos/aports/device/testing/{c['kernel']['package']}"
+    c["device"]["package"] = f"device-{d['id']}"
+    c["device"]["aport"] = f"pmos/aports/device/testing/device-{d['id']}"
+    u["base"] = u.get("base") or f"https://github.com/{p.get('repo', '')}/releases/download/"
+    if not u["base"].endswith("/"):
+        u["base"] += "/"
+    u["pages"] = (u.get("pages") or f"https://{owner.lower()}.github.io/{name}").rstrip("/")
+    u.setdefault("public_key", "pmos/sysupdate-public-key.asc")
+    u.setdefault("fingerprint", "")
+    # where every image says which channel it follows (mkosi.finalize)
+    u["channel_file"] = f"/usr/lib/{d['id']}/update-channel"
+    c["bootchain"].setdefault("enabled", False)
+    c["bootchain"]["tag"] = c["bootchain"].get("tag") or f"{d['id']}_bootchain"
+    c["installer"]["name"] = c["installer"].get("name") or f"{d.get('codename', '')}-setup"
+    im = c["images"]
+    im.setdefault("release", "edge")
+    im.setdefault("uis", [])
+    im.setdefault("extra_packages", [])
+    im.setdefault("dev_packages", [])
+    for ui in im["uis"]:
+        t = c["ui"].setdefault(ui, {})
+        t.setdefault("title", ui.capitalize())
+        t.setdefault("description", "")
+    dt = c["debug_tool"]
+    # setup.sh offers the shared USB debug tool (root console over USB, the
+    # tab CLI) from this remote; ask = false installs it without asking
+    dt.setdefault("ask", True)
+    dt["remote"] = (dt.get("remote") or "https://github.com/exynos-linux/usb-debug").rstrip("/")
+    dt.setdefault("version", "")
+    dt["setup"] = dt.get("setup") or f"{dt['remote']}/raw/{dt['version'] or 'main'}/install.sh"
+    ch = c["channels"]
+    ch.setdefault("dev", True)
+    ch.setdefault("release", True)
+    ch.setdefault("keep", 2)
+    return c
+
+
+def get(c, key):
+    v = c
+    for part in key.split("."):
+        if not isinstance(v, dict) or part not in v:
+            raise KeyError(key)
+        v = v[part]
+    return v
+
+
+def channels(c):
+    """(ui, flavour, tag): the sysupdate source directory %M_%W_%w, + -dev."""
+    out = []
+    for ui in c["images"]["uis"]:
+        for fl in FLAVOURS:
+            if not c["channels"].get(fl):
+                continue
+            tag = f"{c['device']['id']}_{ui}_{c['images']['release']}" + ("-dev" if fl == "dev" else "")
+            out.append((ui, fl, tag))
+    return out
+
+
+def flat(prefix, v, out):
+    if isinstance(v, dict):
+        for k, x in v.items():
+            flat(f"{prefix}_{k}" if prefix else k, x, out)
+    else:
+        if isinstance(v, bool):
+            v = "true" if v else "false"
+        elif isinstance(v, list):
+            v = " ".join(str(x) for x in v)
+        out[re.sub(r"[^A-Za-z0-9]", "_", prefix).upper()] = str(v)
+
+
+def check(c):
+    errs, warns = [], []
+    e, w = errs.append, warns.append
+    p, d, im = c["project"], c["device"], c["images"]
+    if c.get("schema") != 1:
+        e("schema must be 1")
+    if not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", p.get("repo", "")):
+        e("project.repo must be owner/name")
+    for k in ("vendor", "codename"):
+        if not re.fullmatch(r"[a-z0-9]+", d.get(k, "")):
+            e(f"device.{k} must be lower case letters and digits")
+    if not re.fullmatch(r"[a-z0-9]+", d.get("soc", "")):
+        e("device.soc must be lower case letters and digits")
+    if not re.fullmatch(r"https://[^\s]+", c["debug_tool"]["remote"]):
+        e("debug_tool.remote must be an https URL")
+    if not isinstance(c["debug_tool"]["ask"], bool):
+        e("debug_tool.ask must be true or false")
+    if d.get("arch") != "aarch64":
+        e("device.arch: only aarch64 is supported")
+    if d.get("status") not in STATUSES:
+        e(f"device.status must be one of {', '.join(STATUSES)}")
+    if not d.get("models"):
+        e("device.models is empty")
+    if not re.fullmatch(r"edge|v[0-9]{2}\.[0-9]{2}", im["release"]):
+        e("images.release must be edge or vYY.MM")
+    if not im["uis"]:
+        e("images.uis is empty")
+    for ui in im["uis"]:
+        if not re.fullmatch(r"[a-z0-9-]+", ui):
+            e(f"images.uis: bad UI id {ui!r}")
+    if im.get("default_ui") not in im["uis"]:
+        e("images.default_ui must be one of images.uis")
+    for k in ("extra_packages", "dev_packages"):
+        for n in im[k]:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9._+-]*", n):
+                e(f"images.{k}: bad package name {n!r}")
+    for k in ("debug_package_regex", "debug_file_regex"):
+        try:
+            re.compile(im.get(k, ""))
+        except re.error as x:
+            e(f"images.{k}: {x}")
+    try:
+        re.compile(c["android"].get("firmware_pattern", ""))
+    except re.error as x:
+        e(f"android.firmware_pattern: {x}")
+    if not isinstance(c["channels"]["keep"], int) or c["channels"]["keep"] < 1:
+        e("channels.keep must be a positive integer")
+    if not channels(c):
+        e("no update channel: enable channels.dev and/or channels.release")
+    fpr = c["update"]["fingerprint"]
+    if fpr and not re.fullmatch(r"[0-9A-F]{40}", fpr):
+        e("update.fingerprint must be 40 upper case hex digits")
+    inst = c["installer"]
+    prot = inst.get("protected", [])
+    if not prot:
+        e("installer.protected is empty (the installer then refuses every write)")
+    for n in prot:
+        if n != n.lower():
+            e(f"installer.protected: {n!r} must be lower case")
+    for n in inst.get("flash_allow", []):
+        if n.lower() in prot:
+            e(f"installer.flash_allow: {n} is a protected partition")
+    if not re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{4}", inst.get("download_usb", "")):
+        e("installer.download_usb must be vvvv:pppp (hex)")
+    # the installer's guard limits console writes to this disk's partitions
+    if not re.fullmatch(r"[a-z]+[0-9]*", inst.get("main_disk", "")):
+        e("installer.main_disk must be a whole-disk name like sda or mmcblk0")
+    bpb = inst.get("boot_partition_bytes", 0)
+    if not isinstance(bpb, int) or isinstance(bpb, bool) or bpb < 0 or bpb % 512:
+        e("installer.boot_partition_bytes must be 0 or a positive multiple of 512")
+    if inst.get("sector_size", 4096) not in (512, 4096):
+        e("installer.sector_size must be 512 or 4096")
+    for n in inst.get("backup_readonly", []):
+        if not re.fullmatch(r"[a-z0-9_]+", n):
+            e(f"installer.backup_readonly: {n!r} must be a lower case partition name")
+    a = c["android"]
+    opts, feat = a.get("userdata_f2fs_options", ""), a.get("userdata_f2fs_features", "")
+    if bool(opts) != bool(feat):
+        e("android.userdata_f2fs_options and userdata_f2fs_features: set both or neither")
+    if len(opts.split()) > 5:
+        e("android.userdata_f2fs_options: at most 5 words (the console runs at most 7 arguments)")
+    if feat and not re.fullmatch(r"0x[0-9a-f]+", feat):
+        e("android.userdata_f2fs_features must be lower case hex like 0x499")
+    if not p["template"]:
+        for k, v in TEMPLATE_VALUES.items():
+            if get(c, k) == v:
+                e(f"{k} still has the template value {v!r} (scripts/init-device)")
+        if not fpr:
+            w("update.fingerprint is empty: run scripts/new-signing-key before publishing")
+        if not (ROOT / c["kernel"]["aport"] / "APKBUILD").is_file():
+            w(f"no kernel aport {c['kernel']['aport']}")
+        if not (ROOT / c["device"]["aport"] / "APKBUILD").is_file():
+            w(f"no device aport {c['device']['aport']}")
+    return errs, warns
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    cmd, args = sys.argv[1], sys.argv[2:]
+    c = load()
+    if cmd == "get":
+        try:
+            v = get(c, args[0])
+        except (KeyError, IndexError):
+            sys.exit(f"scripts/config: no key {args[0] if args else ''!r}")
+        if isinstance(v, list):
+            print("\n".join(str(x) for x in v))
+        elif isinstance(v, bool):
+            print("true" if v else "false")
+        elif isinstance(v, dict):
+            print(json.dumps(v, indent=2))
+        else:
+            print(v)
+    elif cmd == "shell":
+        out = {}
+        flat("cfg", c, out)
+        for k, v in out.items():
+            print(f"{k}={shlex.quote(v)}")
+    elif cmd == "json":
+        print(json.dumps(c, indent=2))
+    elif cmd == "channels":
+        for ui, fl, tag in channels(c):
+            print(ui, fl, tag)
+    elif cmd == "matrix":
+        print(json.dumps({"include": [{"ui": ui, "channel": fl, "tag": tag} for ui, fl, tag in channels(c)]}))
+    elif cmd == "check":
+        errs, warns = check(c)
+        for x in warns:
+            print(f"warning: {x}", file=sys.stderr)
+        for x in errs:
+            print(f"error: {x}", file=sys.stderr)
+        if errs:
+            sys.exit(1)
+        print(f"{PATH.name}: ok ({c['device']['id']}, {len(channels(c))} channels)")
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

@@ -164,6 +164,12 @@ build_fixtures() {
 		echo "duranium-update V=$1 UI=$UI EXTENSIONS=[$EXTENSIONS] files=$(ls "$OUT" | tr '\n' ' ')" >> "$MOCK_STATE.calls"
 	EOF
 	chmod +x "$RUN/bin/fake-fw-to-tablet" "$RUN/bin/fake-duranium-update"
+	# the shared USB debug tool's remote install script (config.toml [debug_tool])
+	mkdir -p "$RUN/srv/usb-debug"
+	cat > "$RUN/srv/usb-debug/install.sh" <<-'EOF'
+		echo "usb-debug-install $*" >> "$MOCK_STATE.calls"
+		echo "usb-debug test installed"
+	EOF
 	python3 -u -m http.server 0 --bind 127.0.0.1 --directory "$RUN/srv" > "$RUN/http.log" 2>&1 &
 	HTTP_PID=$!
 	for t in $(seq 50); do
@@ -271,6 +277,8 @@ setup() {
 		GTA3_FIRMWARE_TO_TABLET="$RUN/bin/fake-fw-to-tablet" \
 		GTA3_DURANIUM_UPDATE="$RUN/bin/fake-duranium-update" \
 		GTA3_OS_RELEASE="${OS_RELEASE:-/etc/os-release}" GTA3_ALLOW_DEVD=1 \
+		GTA3_DEBUG_TOOLS="${DEBUG_TOOLS-0}" \
+		GTA3_DEBUG_TOOL_SETUP="http://127.0.0.1:$HTTP_PORT/usb-debug/install.sh" \
 		${EXTRA_ENV:-} \
 		"$REPO/setup.sh" "$@" > "$CASE/out" 2>&1 < /dev/null || rc=$?
 	echo "$rc" > "$CASE/rc"
