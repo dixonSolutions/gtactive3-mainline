@@ -1,0 +1,146 @@
+#
+# For a description of the syntax of this configuration file,
+# see Documentation/kbuild/kconfig-language.txt.
+#
+mainmenu "uniLoader Configuration"
+
+source "arch/Kconfig"
+
+menu "Building options"
+	config CROSS_COMPILE
+		string "Cross-compiler tool prefix"
+		help
+		  Same as running 'make CROSS_COMPILE=prefix-' but stored for
+		  default make runs in this kernel build directory.  You don't
+		  need to set this unless you want the configured kernel build
+		  directory to select the cross-compiler automatically.
+
+	config LOGLEVEL
+		int "Verbosity of logs"
+		default 7
+
+	config COMPRESS_GZIP
+		bool "Compress the uniLoader image with gzip"
+		default y
+		help
+		  Select this if you want to use gzip to compress the final uniLoader image.
+
+	config COMPRESS_LZ4
+		bool "Compress the uniLoader image with lz4"
+		default n
+		help
+		  Select this if you want to use lz4 to compress the final uniLoader image.
+		  This is required on some new MediaTek devices.
+
+	config EMBED_LINUX
+		bool "Embed linux kernel and device tree"
+		default y
+		help
+		  Select this if you want uniLoader to load a linux kernel and device tree
+
+	config KERNEL_PATH
+		string "Path to kernel image"
+		depends on EMBED_LINUX
+		default blob/Image
+		help
+		  Path to the kernel, which is going to get embedded to uniLoader
+
+	config DT_PATH
+		string "Path to device tree image"
+		depends on EMBED_LINUX
+		default blob/dtb
+		help
+		  Path to the device tree, which is going to get embedded to uniLoader
+
+	config RAMDISK_PATH
+		string "Path to ramdisk image"
+		depends on EMBED_LINUX
+		default blob/ramdisk
+		help
+		  Path to the ramdisk, which is going to get embedded to uniLoader
+	
+	config RAMDISK_NO_COPY
+		bool "Do not copy ramdisk"
+		depends on EMBED_LINUX
+		default n
+		help
+		  Select this if the bootloader copies the ramdisk itself
+
+	config CHAINLOAD
+		bool "Dual payload: chain-load a bootloader, Linux as fallback"
+		depends on EMBED_LINUX && LIBFDT
+		default n
+		help
+		  Embed a second payload (an arm64 Image, for example U-Boot) next
+		  to Linux. The board decides at boot which one runs: the chained
+		  bootloader normally, the embedded Linux after a watchdog reset
+		  or when a key is held.
+
+	config CHAINLOAD_PATH
+		string "Path to the chained bootloader image"
+		depends on CHAINLOAD
+		default blob/u-boot.bin
+
+	config CHAINLOAD_ENTRY
+		hex "Load and entry address of the chained bootloader"
+		depends on CHAINLOAD
+		default 0xa0000000
+
+	config CHAINLOAD_FDT_ADDR
+		hex "Where the previous bootloader's FDT is copied for it"
+		depends on CHAINLOAD
+		default 0xa8000000
+		help
+		  The chained bootloader gets the FDT that the previous bootloader
+		  passed in x0 (memory layout, command line), copied here so it
+		  cannot be overwritten. Must lie above CHAINLOAD_ENTRY plus the
+		  size of the chained image.
+
+	config CHAINLOAD_FDT_MAX
+		hex "Largest previous-bootloader FDT that is copied"
+		depends on CHAINLOAD
+		default 0x200000
+
+	config CHAINLOAD_PREV_FDT_LO
+		hex "Lowest address accepted for the previous bootloader's FDT"
+		depends on CHAINLOAD
+		default 0x80000000
+
+	config CHAINLOAD_PREV_FDT_HI
+		hex "End of the range accepted for the previous bootloader's FDT"
+		depends on CHAINLOAD
+		default 0x100000000
+
+	config CHAINLOAD_HANDOFF_ADDR
+		hex "Address of the boot decision record"
+		depends on CHAINLOAD
+		default 0x0
+		help
+		  If set, a small record of the boot decision (reset status, keys,
+		  previous bootloader FDT, ...) is written here, for the next OS
+		  to read. Use memory that survives a reset and that the OS does
+		  not map. 0 disables it.
+
+	config CHAINLOAD_DEFAULT
+		int "Default payload (0 chained, 1 Linux, 2 watchdog test)"
+		depends on CHAINLOAD
+		range 0 2
+		default 0
+		help
+		  0: boot the chained bootloader unless the board asks for the
+		     fallback.
+		  1: always boot the embedded Linux (records the decision only).
+		  2: watchdog test: arm the board watchdog as for the chained
+		     bootloader and wait for it to reset the SoC (board
+		     wdt_test hook); the next boot then picks the embedded Linux.
+		     If no reset comes, boot the embedded Linux at once.
+
+endmenu
+
+source "drivers/Kconfig"
+
+source "lib/Kconfig"
+
+source "soc/Kconfig"
+
+source "board/Kconfig"

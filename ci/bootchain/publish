@@ -1,6 +1,6 @@
 #!/bin/bash
 # Publish a boot-chain payload (ci/bootchain/build) to the GitHub release
-# samsung-gtactive3wifi_bootchain, where ./setup.sh fetches it:
+# bootchain.tag (config.toml), where ./setup.sh fetches it:
 #
 #   ci/bootchain/publish TARBALL
 #
@@ -10,20 +10,21 @@
 # Needs: GH_TOKEN, GITHUB_REPOSITORY, GNUPGHOME with the signing key.
 set -euo pipefail
 TAR=${1:?usage: ci/bootchain/publish TARBALL}
-TAG=samsung-gtactive3wifi_bootchain
+eval "$("$(dirname "$0")/../../scripts/config" shell)"
+TAG=$CFG_BOOTCHAIN_TAG
 REPO=${GITHUB_REPOSITORY:?}
 KEEP=${KEEP:-2}
 HERE=$(cd "$(dirname "$0")" && pwd)
-PUB=$HERE/../../pmos/sysupdate-public-key.asc
+PUB=$HERE/../../$CFG_UPDATE_PUBLIC_KEY
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 NAME=$(basename "$TAR")
-[[ $NAME =~ ^gtactive3wifi-bootchain_[0-9.]+\.tar\.gz$ ]] || { echo "unexpected name $NAME" >&2; exit 1; }
+[[ $NAME =~ ^${CFG_DEVICE_CODENAME}-bootchain_[0-9.]+\.tar\.gz$ ]] || { echo "unexpected name $NAME" >&2; exit 1; }
 
 if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
 	gh release create "$TAG" -R "$REPO" --target "${GITHUB_SHA:-main}" --prerelease --latest=false \
 		--title "Boot chain payload (uniLoader + U-Boot + bring-up Linux)" \
-		--notes "GPL boot chain for the SM-T570 installer (./setup.sh). No Samsung files: the installer adds your stock DTB. Sources: MANIFEST in the tarball. Signed SHA256SUMS: project key, see docs/RELEASES.md."
+		--notes "GPL boot chain for the $CFG_DEVICE_MODELS installer (./setup.sh). No Samsung files: the installer adds your stock DTB. Sources: MANIFEST in the tarball. Signed SHA256SUMS: project key, see docs/RELEASES.md."
 fi
 
 : > "$W/old"

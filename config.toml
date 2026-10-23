@@ -114,6 +114,18 @@ fingerprint = "D0FE850AF01A47831B6EF808583161CE787FF5B5"
 enabled = true
 # derived: <device.id>_bootchain
 tag = ""
+# The board in the vendored trees (bootchain/build.sh).
+# derived: <codename>_defconfig (bootchain/u-boot/configs/)
+u_boot_defconfig = ""
+# derived: <codename>_chain_defconfig (bootchain/uniLoader/configs/)
+uniloader_defconfig = ""
+# derived: exynos/<soc>-<codename>.dtb (the bring-up Linux's DTB)
+dtb = ""
+# The bring-up kernel's config fragment (merged onto allnoconfig); also
+# what scripts/build.sh builds the development bring-up image with.
+bringup_config = "configs/gtactive3-bringup.config"
+# mkfs.f2fs (Alpine aarch64) in the bring-up initramfs, for restore-android.
+f2fs = true
 
 [installer]
 # derived: <device.codename>-setup (state, cache and backup directory names)

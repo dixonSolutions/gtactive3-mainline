@@ -1,0 +1,36 @@
+if TARGET_EXYNOS_MOBILE
+
+config ENV_SOURCE_FILE
+	default "exynos-mobile"
+
+config LNX_KRNL_IMG_TEXT_OFFSET_BASE
+	default TEXT_BASE
+
+config SYS_BOARD
+	default "exynos-mobile"
+
+config SYS_CONFIG_NAME
+	default "exynos-mobile"
+
+config SYS_VENDOR
+	default "samsung"
+
+config EXYNOS9810_EARLY_SAFETY
+	bool "Arm Download-mode reboot reason and watchdog at entry (Exynos 9810)"
+	help
+	  For bring-up: right at entry, make any reset land in Download mode
+	  and start the cluster 0 watchdog (~82 s), so a hang recovers
+	  without touching the device.
+
+config EXYNOS_MOBILE_RAMLOG
+	bool "Copy console output to RAM"
+	help
+	  Keep everything printed on the console in a RAM buffer at
+	  EXYNOS_MOBILE_RAMLOG_ADDR, so the next OS can read it after a reset.
+
+config EXYNOS_MOBILE_RAMLOG_ADDR
+	hex "RAM console log address"
+	depends on EXYNOS_MOBILE_RAMLOG
+	default 0x8ff100000
+
+endif # TARGET_EXYNOS_MOBILE

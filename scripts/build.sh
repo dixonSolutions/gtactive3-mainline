@@ -14,7 +14,7 @@ MK="flock $P/build/kbuild.lock nice -n 5 make -j12 -s ARCH=arm64 CROSS_COMPILE=a
 MODS="drivers/phy/samsung/phy-exynos5-usbdrd drivers/usb/dwc3/dwc3 drivers/usb/dwc3/dwc3-exynos drivers/i2c/busses/i2c-exynos5 drivers/ufs/core/ufshcd-core drivers/ufs/host/ufshcd-pltfrm drivers/ufs/host/ufs-exynos drivers/phy/samsung/phy-exynos-ufs drivers/soc/samsung/exynos-usi drivers/video/backlight/exynos9810-dsim-bl"
 
 gen_list() {
-	sed "s|@P@|$P|g" "$P/configs/initramfs.list.in" > "$P/build/initramfs.list"
+	sed "s|@P@|$P|g" "$P/bootchain/initramfs.list.in" > "$P/build/initramfs.list"
 	for f in "$P"/build/initramfs/modules/*.ko; do
 		[ -e "$f" ] && echo "file /lib/modules/$(basename "$f") $f 0644 0 0"
 	done >> "$P/build/initramfs.list"

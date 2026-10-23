@@ -1,0 +1,345 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Tab Active3 Wi-Fi (gtactive3wifi/SM-T570) device tree source
+ *
+ * Based on exynos9810-starlte.dts:
+ * Copyright (c) 2024 Markuss Broks <markuss.broks@gmail.com>
+ * Copyright (c) 2024 Maksym Holovach <nergzd@nergzd723.xyz>
+ *
+ * Framebuffer base and key GPIOs are taken from the stock T570XXSFEYI1 DTBO
+ * (hw_rev 5+). TODO: the memory map is still copied from starlte and must be
+ * checked against /proc/iomem on the device.
+ */
+
+/dts-v1/;
+#include "exynos9810.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "Samsung Galaxy Tab Active3 (SM-T570)";
+	compatible = "samsung,gtactive3wifi", "samsung,exynos9810";
+	chassis-type = "tablet";
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges;
+
+		framebuffer@ca000000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xca000000 (1200 * 1920 * 4)>;
+			width = <1200>;
+			height = <1920>;
+			stride = <(1200 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&key_power &key_voldown &key_volup &key_home &key_hot
+			     &key_back &key_recent>;
+		pinctrl-names = "default";
+
+		power-key {
+			label = "Power";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpa2 4 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
+
+		voldown-key {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			gpios = <&gpa0 4 GPIO_ACTIVE_LOW>;
+		};
+
+		volup-key {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&gpa0 3 GPIO_ACTIVE_LOW>;
+		};
+
+		home-key {
+			label = "Home";
+			linux,code = <KEY_HOMEPAGE>;
+			gpios = <&gpa3 5 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
+
+		/* "Active key" on the side, user-programmable in stock firmware */
+		hot-key {
+			label = "Active";
+			linux,code = <KEY_PROG1>;
+			gpios = <&gpa0 5 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
+
+		back-key {
+			label = "Back";
+			linux,code = <KEY_BACK>;
+			gpios = <&gpg3 0 GPIO_ACTIVE_LOW>;
+		};
+
+		recent-key {
+			label = "Recent apps";
+			linux,code = <KEY_APPSELECT>;
+			gpios = <&gpg3 1 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x3c800000>,
+		      <0x0 0xc0000000 0x20000000>,
+		      <0x0 0xe1900000 0x1e700000>,
+		      <0x8 0x80000000 0x80000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges;
+
+		framebuffer@ca000000 {
+			reg = <0x0 0xca000000 (1200 * 1920 * 4)>;
+			no-map;
+		};
+
+		/* bring-up: keep the previous boot's kernel log across resets */
+		ramoops@8ff000000 {
+			compatible = "ramoops";
+			reg = <0x8 0xff000000 0x100000>;
+			console-size = <0x80000>;
+			record-size = <0x20000>;
+			pmsg-size = <0x10000>;
+		};
+
+		/*
+		 * bring-up: U-Boot's console log (CONFIG_EXYNOS_MOBILE_RAMLOG);
+		 * the last 4 KiB hold uniLoader's boot decision record.
+		 */
+		uboot-log@8ff100000 {
+			reg = <0x8 0xff100000 0x100000>;
+			no-map;
+		};
+	};
+};
+
+&oscclk {
+	clock-frequency = <26000000>;
+};
+
+&pinctrl_alive {
+	key_power: key-power-pins {
+		samsung,pins = "gpa2-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_voldown: key-voldown-pins {
+		samsung,pins = "gpa0-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_volup: key-volup-pins {
+		samsung,pins = "gpa0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_home: key-home-pins {
+		samsung,pins = "gpa3-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_hot: key-hot-pins {
+		samsung,pins = "gpa0-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+};
+
+&pinctrl_peric1 {
+	key_back: key-back-pins {
+		samsung,pins = "gpg3-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_recent: key-recent-pins {
+		samsung,pins = "gpg3-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+};
+
+&pmu_system_controller {
+	/* Boot reason for S-Boot, values from Samsung's sec_reboot.c */
+	reboot-mode {
+		compatible = "syscon-reboot-mode";
+		offset = <0x080c>; /* INFORM3 */
+		mode-normal = <0x12345670>;
+		mode-download = <0x12345671>;
+		mode-recovery = <0x12345674>;
+		mode-bootloader = <0x1234567d>;
+	};
+};
+
+&soc {
+	/*
+	 * USB 2.0 device mode. There is no Exynos9810 clock driver yet: the
+	 * bootloader leaves CMU_FSYS0 running (UFS lives there too) and init
+	 * forces the two USB gates on before loading these drivers, so the
+	 * 26 MHz oscillator stands in for every clock here.
+	 */
+	usbdrd: usb@10c00000 {
+		compatible = "samsung,exynos9810-dwusb3", "samsung,exynos850-dwusb3";
+		ranges = <0x0 0x10c00000 0x10000>;
+		clocks = <&oscclk>, <&oscclk>;
+		clock-names = "bus_early", "ref";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		usbdrd_dwc3: usb@0 {
+			compatible = "snps,dwc3";
+			reg = <0x0 0x10000>;
+			interrupts = <GIC_SPI 244 IRQ_TYPE_LEVEL_HIGH>;
+			phys = <&usbdrd_phy 0>;
+			phy-names = "usb2-phy";
+			dr_mode = "peripheral";
+			maximum-speed = "high-speed";
+		};
+	};
+
+	usbdrd_phy: phy@11100000 {
+		compatible = "samsung,exynos9810-usbdrd-phy";
+		reg = <0x11100000 0x200>;
+		clocks = <&oscclk>, <&oscclk>;
+		clock-names = "phy", "ref";
+		samsung,pmu-syscon = <&pmu_system_controller>;
+		#phy-cells = <1>;
+	};
+};
+
+/ {
+	/*
+	 * HSI2C_40 IP clock. The real rate depends on the CMGP mux/divider init
+	 * prints; declaring it high only makes the bus slower than 100 kHz.
+	 */
+	clk_hsi2c40: clock-hsi2c40 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <400000000>;
+	};
+};
+
+&pinctrl_cmgp {
+	hsi2c40_bus: hsi2c40-bus-pins {
+		samsung,pins = "gpm14-0", "gpm15-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+};
+
+&gpg3 {
+	/* USB D+/D- mux: low = USB-C port, high = pogo connector */
+	usb-mux-sel-hog {
+		gpio-hog;
+		gpios = <2 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "usb-mux-sel";
+	};
+};
+
+&soc {
+	/* MAX77705 (charger / fuel gauge / USB-C) and SM5504 (pogo MUIC) */
+	hsi2c_40: i2c@14360000 {
+		compatible = "samsung,exynos8895-hsi2c";
+		reg = <0x14360000 0x1000>;
+		interrupts = <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk_hsi2c40>;
+		clock-names = "hsi2c";
+		clock-frequency = <100000>;
+		pinctrl-0 = <&hsi2c40_bus>;
+		pinctrl-names = "default";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+};
+
+/ {
+	/*
+	 * UFS clocks as programmed by the bootloader (no clock driver yet):
+	 * PLL_SHARED4 = 26 MHz * 205 / 8 = 666.25 MHz;
+	 * FSYS0 bus = PLL_SHARED4 / 2, UFS_EMBD (UniPro) = PLL_SHARED4 / 2 / 2.
+	 */
+	ufs_core_clk: clock-ufs-core {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <333125000>;
+	};
+
+	ufs_unipro_clk: clock-ufs-unipro {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <166562500>;
+	};
+};
+
+&soc {
+	ufs_phy: phy@11124000 {
+		compatible = "samsung,exynos9810-ufs-phy";
+		reg = <0x11124000 0x800>;
+		reg-names = "phy-pma";
+		samsung,pmu-syscon = <&pmu_system_controller>;
+		clocks = <&oscclk>;
+		clock-names = "ref_clk";
+		#phy-cells = <0>;
+	};
+
+	ufs: ufs@11120000 {
+		compatible = "samsung,exynos9810-ufs";
+		reg = <0x11120000 0x200>,
+		      <0x11121100 0x200>,
+		      <0x11110000 0x8000>,
+		      <0x11130000 0x100>;
+		reg-names = "hci", "vs_hci", "unipro", "ufsp";
+		interrupts = <GIC_SPI 242 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&ufs_core_clk>, <&ufs_unipro_clk>;
+		clock-names = "core_clk", "sclk_unipro_main";
+		freq-table-hz = <0 0>, <0 0>;
+		phys = <&ufs_phy>;
+		phy-names = "ufs-phy";
+	};
+};
+
+&soc {
+	/*
+	 * Cluster 0 (A55) watchdog, as in the stock DT (watchdog_cl0@10050000).
+	 * uniLoader arms it before starting U-Boot; U-Boot kicks it and hands
+	 * it to Linux running (see wdt_handover in gtactive3wifi.env).
+	 */
+	watchdog_cl0: watchdog@10050000 {
+		compatible = "samsung,exynos9810-wdt";
+		reg = <0x10050000 0x100>;
+		interrupts = <GIC_SPI 464 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&oscclk>;
+		clock-names = "watchdog";
+		samsung,syscon-phandle = <&pmu_system_controller>;
+		samsung,cluster-index = <0>;
+		timeout-sec = <60>;
+	};
+};

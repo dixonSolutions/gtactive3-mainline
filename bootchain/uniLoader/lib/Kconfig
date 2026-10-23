@@ -1,0 +1,38 @@
+menu "Libraries"
+	config SIMPLE_FB
+		bool "Support for Simple Framebuffer"
+		default y
+		help
+		  Say Y if you want to have Framebuffer output.
+
+	config EARLYCON
+		bool "Support for UART early console"
+		default n
+		help
+		  Say Y if you want to have UART early console output. Keep
+		  in mind that your board files need to provide uart_puts
+		  functionality in order for this to work.
+
+	config LIBFDT
+		bool "Support for libfdt"
+		default y
+		help
+		  Say Y if you want to have libfdt features.
+
+	config FDT_BUF_SIZE
+		int "Size of the static buffer for the Flattened Device Tree"
+		default 500000
+		depends on LIBFDT
+		help
+		  This option specifies the size (in bytes) of the buffer used for DTB modifying. The default value of 500 KB should be sufficient even for downstream device trees.
+
+	config FDT_BUF_ADDR
+		hex "Address of the buffer for the Flattened Device Tree"
+		default 0x0
+		depends on LIBFDT
+		help
+		  If set, the patched DTB is placed at this address instead of a
+		  static buffer inside uniLoader. Use this if the kernel overwrites
+		  uniLoader before reading the DTB, like an ARMv7 zImage that
+		  decompresses over it.
+endmenu

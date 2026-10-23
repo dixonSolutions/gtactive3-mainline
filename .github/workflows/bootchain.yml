@@ -1,29 +1,27 @@
-# Build (and on request publish) the boot-chain payload for the installer:
-# uniLoader + U-Boot + the bring-up Linux, from public GPL sources
-# (ci/bootchain/build). ./setup.sh downloads it from the release
-# samsung-gtactive3wifi_bootchain, checks the signed SHA256SUMS and packs it
-# with the owner's stock DTB into their BOOT image.
+# Build (and on request publish) the boot-chain payload for the installer
+# (ci/bootchain/build, device part in bootchain/build.sh), from public GPL
+# sources. ./setup.sh downloads it from the bootchain.tag release, checks
+# the signed SHA256SUMS and packs it with the owner's stock DTB into their
+# BOOT image. Off unless bootchain.enabled = true in config.toml.
 #
 # A push builds and keeps the payload as a workflow artifact. Publishing is
 # manual ("Run workflow", publish = true), after the payload passed the
-# on-device installer test (docs/INSTALL.md, the test plan in the report).
+# on-device installer test (docs/TESTPLAN.md).
 name: bootchain
 
 on:
   push:
     branches: [main]
     paths:
-      - "patches/u-boot/**"
-      - "patches/uniLoader/**"
+      - "bootchain/**"
       - "initramfs/**"
-      - "configs/**"
-      - "pmos/aports/device/testing/linux-postmarketos-exynos9810/**"
+      - "pmos/aports/device/testing/linux-*/**"
       - "ci/bootchain/**"
       - ".github/workflows/bootchain.yml"
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish to the samsung-gtactive3wifi_bootchain release"
+        description: "Publish to the bootchain.tag release"
         type: boolean
         default: false
 
@@ -39,20 +37,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - id: cfg
+        run: |
+          echo "enabled=$(scripts/config get bootchain.enabled)" >> "$GITHUB_OUTPUT"
+          echo "codename=$(scripts/config get device.codename)" >> "$GITHUB_OUTPUT"
       - name: Toolchain
+        if: steps.cfg.outputs.enabled == 'true'
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq --no-install-recommends gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             make bc bison flex libssl-dev libelf-dev libgnutls28-dev uuid-dev device-tree-compiler \
             swig python3-dev python3-setuptools python3-pyelftools cpio kmod patch
       - name: Build
-        run: |
-          ci/bootchain/build out "$(date -u +%Y%m%d).${{ github.run_number }}"
-      - uses: actions/upload-artifact@v4
+        if: steps.cfg.outputs.enabled == 'true'
+        run: ci/bootchain/build out "$(date -u +%Y%m%d).${{ github.run_number }}"
+      - uses: actions/upload-artifact@v6
+        if: steps.cfg.outputs.enabled == 'true'
         with:
           name: bootchain-payload
-          path: out/gtactive3wifi-bootchain_*.tar.gz
+          path: out/${{ steps.cfg.outputs.codename }}-bootchain_*.tar.gz
           retention-days: 30
 
   publish:
@@ -60,8 +64,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           name: bootchain-payload
           path: out
@@ -74,4 +78,4 @@ jobs:
           [ -n "$SYSUPDATE_SIGNING_KEY" ] || { echo "::error::no SYSUPDATE_SIGNING_KEY secret"; exit 1; }
           export GNUPGHOME=$(mktemp -d)
           printf '%s\n' "$SYSUPDATE_SIGNING_KEY" | gpg --batch --import
-          ci/bootchain/publish out/gtactive3wifi-bootchain_*.tar.gz
+          ci/bootchain/publish out/*-bootchain_*.tar.gz

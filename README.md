@@ -22,7 +22,9 @@ Exynos 9810), with the goal of running postmarketOS Duranium.
 
 ## Layout
 
-- `patches/linux`, `patches/uniLoader`: our commits as patch series (base in `BASE`)
+- `patches/linux`: our kernel commits as a patch series (base in `BASE`)
+- `bootchain/`: the boot chain the installer flashes (vendored U-Boot and
+  uniLoader from exynos-linux/device-template, `build.sh`)
 - `configs/`: kernel config fragment and initramfs list template
 - `initramfs/init.c`: bring-up init (kernel nolibc): USB gadget, debug console
 - `scripts/`: build, package, flash loop (`devd.sh`), console client (`tab`)
