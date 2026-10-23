@@ -65,6 +65,30 @@ split 0x01400140 and with 0x01300150, matrix 0.
 Packed RAW10 (DMA packet mode, af43155fa) is the format to use where a
 line is long: 5/8 of the 16-bit size, and libcamera's SoftISP takes it.
 
+## Lag, focus, contrast (2026-10-23 evening, compile-tested, device test pending)
+
+User feedback on 26102302: both cameras work in Snapshot, "extremely laggy",
+rear focus off, contrast off. Causes and fixes on drv/cam
+(aaa174c78..4eac5df1c):
+
+- Lag: libcamera 0.7.2's GPU debayer (debayer_egl.cpp) takes only 8-bit
+  and CSI-2 packed Bayer; with RAW10 in 16-bit words the SoftISP falls
+  back to the CPU debayer (the log saying so is demoted by pmaports'
+  0004). The receiver now offers MIPI-packed RAW10 only (63d1d586e,
+  unpacked16=1 for the old formats), and the sensor modes are 4096x3072 /
+  2048x1536 (S5K3L6) and 2560x1920 / 1280x960 (GC5035), so packed lines
+  are multiples of 64 bytes and the GPU can import the uncached raw
+  buffers without a CPU copy.
+- Focus: the DW9808 gets the stock ringing control and starts at the
+  module's pan focus code (EEPROM 0x3314, s32; nvmem cell "af-pan"),
+  fallback 450; libcamera's simple pipeline has no autofocus.
+- Contrast/colour: tuning file with a generic CCM and Adjust contrast 1.15,
+  saturation 1.1 (build/scratch/camera/deliver/libcamera-softisp.yaml, for
+  the device package); the Adjust defaults need libcamera patch 0003.
+- libcamera: patches/libcamera 0001-0003 as temp/libcamera r5 patches
+  0007-0009 (build/scratch/camera/deliver/libcamera-aport, compile-tested);
+  CI needs a native arm64 job (deliver/libcamera-ci-job.yml).
+
 ## Design
 
 Raw Bayer straight from the MIPI receiver to memory, image processing in
