@@ -15,6 +15,19 @@ Rule for every test: a failure must come back to the USB console without anyone
 touching the tablet (reset → Download mode → automatic reflash, or watchdog reset
 → BOOT). No boot stages on RECOVERY.
 
+## Next three steps (2026-10-24)
+
+1. Wi-Fi recovery after a BCM4375 firmware crash (driver reload or PCIe
+   power cycle) so the tablet stays reachable; session "BCM4375 Wi-Fi
+   firmware crash after boot".
+2. Device-verify the cand/1031 (r22) export in the booted UI's image and
+   record it with `scripts/pmos-verify`, so release channels get a build.
+3. Battery life: C2 residency in long idle (r41), deep sleep
+   (drv/deepsleep), then a cable-out drain measurement with the owner.
+
+The layer lists below are the original bring-up plan; docs/STATUS.md says
+what is verified today.
+
 ## Done
 - [x] Bootloader unlock, KnoxGuard cleared, stock firmware T570XXSFEYI1 downloaded
 - [x] S-Boot → uniLoader (BOOT) → mainline Linux 7.3, automated flash/boot loop (~33 s)

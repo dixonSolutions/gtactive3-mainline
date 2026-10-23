@@ -5,6 +5,36 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-24 09:30 (coordinator "PostmarketOS duranium bootloader unlock")
+
+- Repo: exynos-linux/samsung-gtactive3wifi, values in config.toml
+  (scripts/config), device-template skills and rules (be17aaf).
+  scripts/notify-user is silent by default now (0b9a46d; `--sound` only if
+  the user asks again).
+- Kernel exports since the entry below (pmos/, newest last): cand/1028 r19
+  (panel powered down on blank), cand/1029 r20 (all eight CPUs:
+  drv/bigcores-b), cand/1030 r21 + device r44 (camera fixes and tuning),
+  cand/1031 r22 (panfrost gpu_busy_percent). Device r39 (Phosh suspend,
+  blank 3 min, suspend 10 min), r41 (C2 idle on by default). Local image
+  version in build/wt/duranium: 26102219~test4. pmos/VERIFIED does not
+  exist yet: release channels get nothing until an on-device pass of an
+  export (scripts/pmos-verify).
+- Tablet: on the dock, charging. Unreachable from the laptop at 09:30: no
+  USB gadget link (only the dock's LAN adapter enumerates) and the BCM4375
+  firmware crashed at 08:51 (session "BCM4375 Wi-Fi firmware crash after
+  boot"), so Tailscale is down too. Which version is booted is not
+  confirmed this morning.
+- In flight: the Wi-Fi session has the coordinator's go to reload
+  brcmfmac + pcie_exynos9810 under build/device.lock once it has a console
+  route (remove paths read first, dmesg into
+  logs/test-runs/2026-10-24-wifi-reload/). "Suspend, updates, cores" is
+  asked to hold suspend/Wi-Fi tests until then.
+- Next three steps (same as PLAN.md): see PLAN.md "Next three steps".
+- Waits for the owner: a console route (USB cable to the laptop, or the
+  tablet back on Wi-Fi) when the Wi-Fi session needs it; charging current
+  3.1 A (stage 2) yes/no; Night Light toggle in Settings -> Displays;
+  power-key wake from suspend; battery drain with the cable out.
+
 ## State 2026-10-23 00:40 (lead: test campaign session "Camera firmware drivers and OS setup")
 
 - Tablet: slot A = GNOME 26102218 (CI, gnome_edge-dev, installed by the
