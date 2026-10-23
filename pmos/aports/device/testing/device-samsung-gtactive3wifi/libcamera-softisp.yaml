@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: CC0-1.0
-# SoftISP tuning for the SM-T570 cameras (S5K3L6 rear, GC5035 front): black
-# level 64 at 10 bits (16-bit scale), libcamera's default algorithms.
+# SoftISP tuning for the SM-T570 cameras (S5K3L6 rear, GC5035 front).
+# Black level 64 at 10 bits (16-bit scale), measured with the lens covered.
+# The colour matrices are a generic sensor-to-sRGB correction (rows sum to
+# 1), not a chart calibration of these modules; they need the GPU debayer
+# (MIPI-packed RAW10, drv/cam 63d1d586e), on the CPU they cost frame rate.
+# Adjust: contrast/saturation defaults need libcamera patch 0009
+# (patches/libcamera/0003); an older libcamera ignores them.
 %YAML 1.1
 ---
 version: 1
@@ -8,6 +13,18 @@ algorithms:
   - BlackLevel:
       blackLevel: 4096
   - Awb:
+  - Ccm:
+      ccms:
+        - ct: 2800
+          ccm: [ 1.60, -0.40, -0.20,
+                -0.40,  1.70, -0.30,
+                -0.10, -0.80,  1.90 ]
+        - ct: 6500
+          ccm: [ 1.70, -0.50, -0.20,
+                -0.30,  1.60, -0.30,
+                 0.00, -0.50,  1.50 ]
   - Adjust:
+      contrast: 1.15
+      saturation: 1.1
   - Agc:
 ...

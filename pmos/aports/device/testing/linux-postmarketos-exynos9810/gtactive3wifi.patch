@@ -934,10 +934,10 @@ index c109c1f7af244daf1538fa2ccbb69e52234df222..2feaad65f55e0dad5ba16cbbb3965027
    reg:
      maxItems: 1
 diff --git a/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9807-vcm.yaml b/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9807-vcm.yaml
-index aae246ca3fcf530967c14364df5da4112b657ab8..9022a8e42c40535f7e2703a50b639cc881cb1f92 100644
+index aae246ca3fcf530967c14364df5da4112b657ab8..8a33fee6a007f016bf9875f58e0a4b11a4859ff5 100644
 --- a/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9807-vcm.yaml
 +++ b/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9807-vcm.yaml
-@@ -12,15 +12,26 @@ maintainers:
+@@ -12,15 +12,35 @@ maintainers:
  
  description: |
    DW9807 is a 10-bit DAC with current sink capability. It is intended for
@@ -962,6 +962,15 @@ index aae246ca3fcf530967c14364df5da4112b657ab8..9022a8e42c40535f7e2703a50b639cc8
 +
 +  vio-supply:
 +    description: I/O supply of the I2C interface.
++
++  nvmem-cells:
++    maxItems: 1
++    description:
++      The camera module's pan focus (hyperfocal) DAC code, a 32-bit little
++      endian value, typically in the module EEPROM. The lens starts there.
++
++  nvmem-cell-names:
++    const: af-pan
 +
  required:
    - compatible
@@ -2532,10 +2541,10 @@ index 0000000000000000000000000000000000000000..768acdadfe3958c7452e8cd3b4bda0d9
 +};
 diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c5f4af5e52a3cba764c9fb51ea85f607e5bc96bf
+index 0000000000000000000000000000000000000000..b583081ff8611f7f33868943fc49dc8d1af3aea9
 --- /dev/null
 +++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
-@@ -0,0 +1,2176 @@
+@@ -0,0 +1,2189 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/*
 + * Samsung Galaxy Tab Active3 Wi-Fi (gtactive3wifi/SM-T570) device tree source
@@ -3353,6 +3362,8 @@ index 0000000000000000000000000000000000000000..c5f4af5e52a3cba764c9fb51ea85f607
 +		reg = <0x0c>;
 +		vdd-supply = <&s2mps18_ldo45>;
 +		vio-supply = <&s2mps18_ldo44>;
++		nvmem-cells = <&rear_af_pan>;
++		nvmem-cell-names = "af-pan";
 +	};
 +
 +	/*
@@ -3365,6 +3376,17 @@ index 0000000000000000000000000000000000000000..c5f4af5e52a3cba764c9fb51ea85f607
 +		reg = <0x58>;
 +		vcc-supply = <&s2mps18_ldo44>;
 +		read-only;
++
++		nvmem-layout {
++			compatible = "fixed-layout";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			/* stock rom_af_cal_pan_addr: pan focus DAC code, s32 */
++			rear_af_pan: af-pan@3314 {
++				reg = <0x3314 0x4>;
++			};
++		};
 +	};
 +};
 +
@@ -17065,18 +17087,23 @@ index d04bd5724552e88fc2ad39f9bbaf9b4ce1763939..1bdf74d18a47cdf16ef588010dfe821f
  obj-$(CONFIG_VIDEO_S5K5BAF) += s5k5baf.o
  obj-$(CONFIG_VIDEO_S5K6A3) += s5k6a3.o
 diff --git a/drivers/media/i2c/dw9807-vcm.c b/drivers/media/i2c/dw9807-vcm.c
-index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a3228b52e571 100644
+index 4148009e0e0170caeec6d1b820ef13a09842d7bd..82ff8099caa81aae67075a5924fa8c7fd0662654 100644
 --- a/drivers/media/i2c/dw9807-vcm.c
 +++ b/drivers/media/i2c/dw9807-vcm.c
-@@ -7,6 +7,7 @@
+@@ -6,7 +6,12 @@
+ #include <linux/i2c.h>
  #include <linux/iopoll.h>
  #include <linux/module.h>
++#include <linux/nvmem-consumer.h>
++#include <linux/of.h>
  #include <linux/pm_runtime.h>
 +#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
++#include <linux/unaligned.h>
  #include <media/v4l2-ctrls.h>
  #include <media/v4l2-device.h>
  
-@@ -38,9 +39,18 @@
+@@ -38,9 +43,43 @@
  
  #define MAX_RETRY		10
  
@@ -17088,14 +17115,69 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
 +	"vio",	/* I2C I/O */
 +};
 +
++/*
++ * DW9808 (Samsung modules): ringing control as the stock driver sets it
++ * up, SAC3 with Tvib x1 (MODE 0x61) and a 6.3 + 5.4 ms period
++ * (RESONANCE 0x36), and a start position: the module's pan focus
++ * (hyperfocal) code from the EEPROM (nvmem cell "af-pan", s32 little
++ * endian), or the stock default.
++ */
++struct dw9807_cfg {
++	bool ringing;
++	u8 mode;
++	u8 resonance;
++	u16 default_pos;
++};
++
++static const struct dw9807_cfg dw9807_cfg = { };
++
++static const struct dw9807_cfg dw9808_cfg = {
++	.ringing = true,
++	.mode = 0x61,
++	.resonance = 0x36,
++	.default_pos = 450,
++};
++
  struct dw9807_device {
  	struct v4l2_ctrl_handler ctrls_vcm;
  	struct v4l2_subdev sd;
 +	struct regulator_bulk_data supplies[ARRAY_SIZE(dw9807_supply_names)];
++	const struct dw9807_cfg *cfg;
++	u16 default_pos;
  	u16 current_val;
  };
  
-@@ -116,9 +126,15 @@ static int dw9807_set_ctrl(struct v4l2_ctrl *ctrl)
+@@ -73,7 +112,20 @@ static int dw9807_i2c_check(struct i2c_client *client)
+ 	return status_result;
+ }
+ 
++/* a SAC move keeps the DW9808 busy for its whole period (~12 ms) */
++#define DW9808_BUSY_TIMEOUT_US	40000
++
++static int dw9807_set_dac_timeout(struct i2c_client *client, u16 data,
++				  unsigned int timeout_us);
++
+ static int dw9807_set_dac(struct i2c_client *client, u16 data)
++{
++	return dw9807_set_dac_timeout(client, data,
++				      MAX_RETRY * DW9807_CTRL_DELAY_US);
++}
++
++static int dw9807_set_dac_timeout(struct i2c_client *client, u16 data,
++				  unsigned int timeout_us)
+ {
+ 	const char tx_data[3] = {
+ 		DW9807_MSB_ADDR, ((data >> 8) & 0x03), (data & 0xff)
+@@ -86,7 +138,7 @@ static int dw9807_set_dac(struct i2c_client *client, u16 data)
+ 	 * into the register
+ 	 */
+ 	ret = readx_poll_timeout(dw9807_i2c_check, client, val, val <= 0,
+-			DW9807_CTRL_DELAY_US, MAX_RETRY * DW9807_CTRL_DELAY_US);
++			DW9807_CTRL_DELAY_US, timeout_us);
+ 
+ 	if (ret || val < 0) {
+ 		if (ret) {
+@@ -116,9 +168,18 @@ static int dw9807_set_ctrl(struct v4l2_ctrl *ctrl)
  
  	if (ctrl->id == V4L2_CID_FOCUS_ABSOLUTE) {
  		struct i2c_client *client = v4l2_get_subdevdata(&dev_vcm->sd);
@@ -17106,13 +17188,63 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
 +		/* powered down: the position is set on the next power-up */
 +		if (!pm_runtime_get_if_in_use(&client->dev))
 +			return 0;
-+		ret = dw9807_set_dac(client, ctrl->val);
++		ret = dw9807_set_dac_timeout(client, ctrl->val,
++					     dev_vcm->cfg->ringing ?
++					     DW9808_BUSY_TIMEOUT_US :
++					     MAX_RETRY * DW9807_CTRL_DELAY_US);
 +		pm_runtime_put(&client->dev);
 +		return ret;
  	}
  
  	return -EINVAL;
-@@ -178,6 +194,7 @@ static int dw9807_init_controls(struct dw9807_device *dev_vcm)
+@@ -163,7 +224,8 @@ static int dw9807_init_controls(struct dw9807_device *dev_vcm)
+ 	v4l2_ctrl_handler_init(hdl, 1);
+ 
+ 	v4l2_ctrl_new_std(hdl, ops, V4L2_CID_FOCUS_ABSOLUTE,
+-			  0, DW9807_MAX_FOCUS_POS, DW9807_FOCUS_STEPS, 0);
++			  0, DW9807_MAX_FOCUS_POS, DW9807_FOCUS_STEPS,
++			  dev_vcm->default_pos);
+ 
+ 	dev_vcm->sd.ctrl_handler = hdl;
+ 	if (hdl->error) {
+@@ -175,9 +237,44 @@ static int dw9807_init_controls(struct dw9807_device *dev_vcm)
+ 	return 0;
+ }
+ 
++static int dw9807_get_default_pos(struct device *dev,
++				  struct dw9807_device *dw9807_dev)
++{
++	struct nvmem_cell *cell;
++	size_t len;
++	void *buf;
++	s32 pan;
++
++	dw9807_dev->default_pos = dw9807_dev->cfg->default_pos;
++
++	cell = nvmem_cell_get(dev, "af-pan");
++	if (IS_ERR(cell)) {
++		if (PTR_ERR(cell) == -EPROBE_DEFER)
++			return -EPROBE_DEFER;
++		return 0;
++	}
++	buf = nvmem_cell_read(cell, &len);
++	nvmem_cell_put(cell);
++	if (IS_ERR(buf)) {
++		dev_warn(dev, "cannot read the pan focus code: %ld\n",
++			 PTR_ERR(buf));
++		return 0;
++	}
++	if (len >= sizeof(pan)) {
++		pan = get_unaligned_le32(buf);
++		if (pan > 0 && pan <= DW9807_MAX_FOCUS_POS)
++			dw9807_dev->default_pos = pan;
++		dev_info(dev, "pan focus code %d, start position %u\n", pan,
++			 dw9807_dev->default_pos);
++	}
++	kfree(buf);
++	return 0;
++}
++
  static int dw9807_probe(struct i2c_client *client)
  {
  	struct dw9807_device *dw9807_dev;
@@ -17120,7 +17252,7 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
  	int rval;
  
  	dw9807_dev = devm_kzalloc(&client->dev, sizeof(*dw9807_dev),
-@@ -185,6 +202,15 @@ static int dw9807_probe(struct i2c_client *client)
+@@ -185,6 +282,21 @@ static int dw9807_probe(struct i2c_client *client)
  	if (dw9807_dev == NULL)
  		return -ENOMEM;
  
@@ -17133,10 +17265,16 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
 +		return dev_err_probe(&client->dev, rval,
 +				     "failed to get supplies\n");
 +
++	dw9807_dev->cfg = of_device_get_match_data(&client->dev) ?: &dw9807_cfg;
++	rval = dw9807_get_default_pos(&client->dev, dw9807_dev);
++	if (rval)
++		return rval;
++	dw9807_dev->current_val = dw9807_dev->default_pos;
++
  	v4l2_i2c_subdev_init(&dw9807_dev->sd, client, &dw9807_ops);
  	dw9807_dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
  	dw9807_dev->sd.internal_ops = &dw9807_int_ops;
-@@ -203,6 +229,15 @@ static int dw9807_probe(struct i2c_client *client)
+@@ -203,6 +315,15 @@ static int dw9807_probe(struct i2c_client *client)
  	if (rval < 0)
  		goto err_cleanup;
  
@@ -17152,7 +17290,7 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
  	pm_runtime_set_active(&client->dev);
  	pm_runtime_enable(&client->dev);
  	pm_runtime_idle(&client->dev);
-@@ -222,6 +257,10 @@ static void dw9807_remove(struct i2c_client *client)
+@@ -222,6 +343,10 @@ static void dw9807_remove(struct i2c_client *client)
  	struct dw9807_device *dw9807_dev = sd_to_dw9807_vcm(sd);
  
  	pm_runtime_disable(&client->dev);
@@ -17163,8 +17301,29 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
  
  	dw9807_subdev_cleanup(dw9807_dev);
  }
-@@ -249,12 +288,11 @@ static int __maybe_unused dw9807_vcm_suspend(struct device *dev)
+@@ -239,6 +364,17 @@ static int __maybe_unused dw9807_vcm_suspend(struct device *dev)
+ 	const char tx_data[2] = { DW9807_CTL_ADDR, 0x01 };
+ 	int ret, val;
  
++	if (dw9807_dev->cfg->ringing) {
++		/* the SAC moves smoothly: land near the end stop, then off */
++		ret = dw9807_set_dac_timeout(client,
++					     min_t(u16, dw9807_dev->current_val, 100),
++					     DW9808_BUSY_TIMEOUT_US);
++		if (ret)
++			dev_err_once(dev, "%s I2C failure: %d", __func__, ret);
++		msleep(20);
++		goto power_down;
++	}
++
+ 	for (val = dw9807_dev->current_val & ~(DW9807_CTRL_STEPS - 1);
+ 	     val >= 0; val -= DW9807_CTRL_STEPS) {
+ 		ret = dw9807_set_dac(client, val);
+@@ -247,14 +383,14 @@ static int __maybe_unused dw9807_vcm_suspend(struct device *dev)
+ 		usleep_range(DW9807_CTRL_DELAY_US, DW9807_CTRL_DELAY_US + 10);
+ 	}
+ 
++power_down:
  	/* Power down */
  	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
 -	if (ret < 0) {
@@ -17179,7 +17338,7 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
  }
  
  /*
-@@ -271,10 +309,18 @@ static int  __maybe_unused dw9807_vcm_resume(struct device *dev)
+@@ -271,13 +407,41 @@ static int  __maybe_unused dw9807_vcm_resume(struct device *dev)
  	const char tx_data[2] = { DW9807_CTL_ADDR, 0x00 };
  	int ret, val;
  
@@ -17198,7 +17357,40 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
  		return ret;
  	}
  
-@@ -300,7 +346,8 @@ static const struct of_device_id dw9807_of_table[] = {
++	if (dw9807_dev->cfg->ringing) {
++		const char ring[][2] = {
++			{ DW9807_CTL_ADDR, 0x02 },	/* ringing control on */
++			{ DW9807_MODE_ADDR, dw9807_dev->cfg->mode },
++			{ DW9807_RESONANCE_ADDR, dw9807_dev->cfg->resonance },
++		};
++		unsigned int i;
++
++		for (i = 0; i < ARRAY_SIZE(ring); i++)
++			if (i2c_master_send(client, ring[i], 2) < 0)
++				dev_err_ratelimited(dev, "ringing setup failed\n");
++
++		/* the SAC moves smoothly: no ramp, straight to the position */
++		ret = dw9807_set_dac_timeout(client, dw9807_dev->current_val,
++					     DW9808_BUSY_TIMEOUT_US);
++		if (ret)
++			dev_err_ratelimited(dev, "%s I2C failure: %d", __func__, ret);
++		return 0;
++	}
++
+ 	for (val = dw9807_dev->current_val % DW9807_CTRL_STEPS;
+ 	     val < dw9807_dev->current_val + DW9807_CTRL_STEPS - 1;
+ 	     val += DW9807_CTRL_STEPS) {
+@@ -292,7 +456,8 @@ static int  __maybe_unused dw9807_vcm_resume(struct device *dev)
+ }
+ 
+ static const struct of_device_id dw9807_of_table[] = {
+-	{ .compatible = "dongwoon,dw9807-vcm" },
++	{ .compatible = "dongwoon,dw9807-vcm", .data = &dw9807_cfg },
++	{ .compatible = "dongwoon,dw9808-vcm", .data = &dw9808_cfg },
+ 	/* Compatibility for older firmware, NEVER USE THIS IN FIRMWARE! */
+ 	{ .compatible = "dongwoon,dw9807" },
+ 	{ /* sentinel */ }
+@@ -300,7 +465,8 @@ static const struct of_device_id dw9807_of_table[] = {
  MODULE_DEVICE_TABLE(of, dw9807_of_table);
  
  static const struct dev_pm_ops dw9807_pm_ops = {
@@ -17210,10 +17402,10 @@ index 4148009e0e0170caeec6d1b820ef13a09842d7bd..d8bb7110c216825e4e0015db54e5a322
  
 diff --git a/drivers/media/i2c/gc5035.c b/drivers/media/i2c/gc5035.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e1961d8b450
+index 0000000000000000000000000000000000000000..bcf45b0e0962b4624c9eab8bf9453bfad5c4d3db
 --- /dev/null
 +++ b/drivers/media/i2c/gc5035.c
-@@ -0,0 +1,1130 @@
+@@ -0,0 +1,1184 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * GalaxyCore GC5035 5 MP image sensor (2576x1932, 2-lane MIPI CSI-2, RAW10)
@@ -17296,6 +17488,8 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	u64 pixel_rate;
 +	const struct cci_reg_sequence *regs;
 +	unsigned int num_regs;
++	/* page 1 output window (0x91-0x98) written over the table's, or NULL */
++	const u8 *window;
 +};
 +
 +static const s64 gc5035_link_freq_menu[] = {
@@ -17330,6 +17524,7 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	struct v4l2_ctrl *exposure;
 +
 +	const struct gc5035_mode *mode;
++	const struct gc5035_mode *modes;	/* GC5035_NUM_MODES of them */
 +};
 +
 +static const struct cci_reg_sequence gc5035_init_regs[] = {
@@ -17452,7 +17647,7 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	{ CCI_REG8(0xfe), 0x00 },
 +};
 +
-+static const struct cci_reg_sequence gc5035_2576x1932_regs[] = {
++static const struct cci_reg_sequence gc5035_2560x1920_regs[] = {
 +	{ CCI_REG8(0xfc), 0x01 },
 +	{ CCI_REG8(0xf4), 0x40 },
 +	{ CCI_REG8(0xf5), 0xe9 },
@@ -17526,14 +17721,15 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	{ CCI_REG8(0x4e), 0x3c },
 +	{ CCI_REG8(0x44), 0x08 },
 +	{ CCI_REG8(0x48), 0x02 },
++	/* output window 2560x1920: rows from 0x14, columns from 0x17 */
 +	{ CCI_REG8(0x91), 0x00 },
-+	{ CCI_REG8(0x92), 0x0e },
++	{ CCI_REG8(0x92), 0x14 },
 +	{ CCI_REG8(0x93), 0x00 },
-+	{ CCI_REG8(0x94), 0x0f },
++	{ CCI_REG8(0x94), 0x17 },
 +	{ CCI_REG8(0x95), 0x07 },
-+	{ CCI_REG8(0x96), 0x8c },
++	{ CCI_REG8(0x96), 0x80 },
 +	{ CCI_REG8(0x97), 0x0a },
-+	{ CCI_REG8(0x98), 0x10 },
++	{ CCI_REG8(0x98), 0x00 },
 +	{ CCI_REG8(0x99), 0x00 },
 +	{ CCI_REG8(0xfe), 0x02 },
 +	{ CCI_REG8(0x91), 0x00 },
@@ -17566,7 +17762,7 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	{ CCI_REG8(0x3e), 0x91 },
 +};
 +
-+static const struct cci_reg_sequence gc5035_1288x966_regs[] = {
++static const struct cci_reg_sequence gc5035_1280x960_regs[] = {
 +	{ CCI_REG8(0xfc), 0x01 },
 +	{ CCI_REG8(0xf4), 0x40 },
 +	{ CCI_REG8(0xf5), 0xe4 },
@@ -17650,14 +17846,15 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	{ CCI_REG8(0x4e), 0x06 },
 +	{ CCI_REG8(0x44), 0x02 },
 +	{ CCI_REG8(0x48), 0x02 },
++	/* output window 1280x960: rows from 0x0a, columns from 0x0b */
 +	{ CCI_REG8(0x91), 0x00 },
-+	{ CCI_REG8(0x92), 0x08 },
++	{ CCI_REG8(0x92), 0x0a },
 +	{ CCI_REG8(0x93), 0x00 },
-+	{ CCI_REG8(0x94), 0x07 },
++	{ CCI_REG8(0x94), 0x0b },
 +	{ CCI_REG8(0x95), 0x03 },
-+	{ CCI_REG8(0x96), 0xc6 },
++	{ CCI_REG8(0x96), 0xc0 },
 +	{ CCI_REG8(0x97), 0x05 },
-+	{ CCI_REG8(0x98), 0x08 },
++	{ CCI_REG8(0x98), 0x00 },
 +	{ CCI_REG8(0x99), 0x00 },
 +	{ CCI_REG8(0xfe), 0x02 },
 +	{ CCI_REG8(0x91), 0x00 },
@@ -17690,7 +17887,43 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	{ CCI_REG8(0x3e), 0x91 },
 +};
 +
-+static const struct gc5035_mode gc5035_supported_modes[] = {
++/* the stock output windows (2576x1932, 1288x966), for comparison */
++static const u8 gc5035_window_2576x1932[8] = {
++	0x00, 0x0e, 0x00, 0x0f, 0x07, 0x8c, 0x0a, 0x10,
++};
++static const u8 gc5035_window_1288x966[8] = {
++	0x00, 0x08, 0x00, 0x07, 0x03, 0xc6, 0x05, 0x08,
++};
++
++static bool crop = true;
++module_param(crop, bool, 0444);
++MODULE_PARM_DESC(crop, "2560x1920/1280x960 (default) or the stock 2576x1932/1288x966");
++
++#define GC5035_NUM_MODES	2
++
++static const struct gc5035_mode gc5035_supported_modes[2 * GC5035_NUM_MODES] = {
++	{
++		.width = 2560,
++		.height = 1920,
++		.hts = 2936,
++		.vts = 2036,
++		.exposure = 2000,
++		.link_freq_index = 0,
++		.pixel_rate = 179400000,
++		.regs = gc5035_2560x1920_regs,
++		.num_regs = ARRAY_SIZE(gc5035_2560x1920_regs),
++	},
++	{
++		.width = 1280,
++		.height = 960,
++		.hts = 2936,
++		.vts = 1000,
++		.exposure = 960,
++		.link_freq_index = 1,
++		.pixel_rate = 89700000,
++		.regs = gc5035_1280x960_regs,
++		.num_regs = ARRAY_SIZE(gc5035_1280x960_regs),
++	},
 +	{
 +		.width = 2576,
 +		.height = 1932,
@@ -17699,8 +17932,9 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +		.exposure = 2000,
 +		.link_freq_index = 0,
 +		.pixel_rate = 179400000,
-+		.regs = gc5035_2576x1932_regs,
-+		.num_regs = ARRAY_SIZE(gc5035_2576x1932_regs),
++		.regs = gc5035_2560x1920_regs,
++		.num_regs = ARRAY_SIZE(gc5035_2560x1920_regs),
++		.window = gc5035_window_2576x1932,
 +	},
 +	{
 +		.width = 1288,
@@ -17710,8 +17944,9 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +		.exposure = 960,
 +		.link_freq_index = 1,
 +		.pixel_rate = 89700000,
-+		.regs = gc5035_1288x966_regs,
-+		.num_regs = ARRAY_SIZE(gc5035_1288x966_regs),
++		.regs = gc5035_1280x960_regs,
++		.num_regs = ARRAY_SIZE(gc5035_1280x960_regs),
++		.window = gc5035_window_1288x966,
 +	},
 +};
 +
@@ -17927,6 +18162,15 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	if (!ret)
 +		ret = cci_multi_reg_write(gc5035->regmap, mode->regs,
 +					  mode->num_regs, NULL);
++	if (!ret && mode->window) {
++		unsigned int i;
++
++		cci_write(gc5035->regmap, GC5035_REG_PAGE, 1, &ret);
++		for (i = 0; i < 8; i++)
++			cci_write(gc5035->regmap, CCI_REG8(0x91 + i),
++				  mode->window[i], &ret);
++		cci_write(gc5035->regmap, GC5035_REG_PAGE, 0, &ret);
++	}
 +	if (ret)
 +		goto error;
 +
@@ -17985,8 +18229,7 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	const struct gc5035_mode *mode;
 +	s64 hblank, vblank;
 +
-+	mode = v4l2_find_nearest_size(gc5035_supported_modes,
-+				      ARRAY_SIZE(gc5035_supported_modes),
++	mode = v4l2_find_nearest_size(gc5035->modes, GC5035_NUM_MODES,
 +				      width, height,
 +				      fmt->format.width, fmt->format.height);
 +	gc5035_update_pad_format(mode, &fmt->format);
@@ -18035,13 +18278,15 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +				  struct v4l2_subdev_state *sd_state,
 +				  struct v4l2_subdev_frame_size_enum *fse)
 +{
-+	if (fse->index >= ARRAY_SIZE(gc5035_supported_modes) ||
++	struct gc5035 *gc5035 = to_gc5035(sd);
++
++	if (fse->index >= GC5035_NUM_MODES ||
 +	    fse->code != MEDIA_BUS_FMT_SRGGB10_1X10)
 +		return -EINVAL;
 +
-+	fse->min_width = gc5035_supported_modes[fse->index].width;
++	fse->min_width = gc5035->modes[fse->index].width;
 +	fse->max_width = fse->min_width;
-+	fse->min_height = gc5035_supported_modes[fse->index].height;
++	fse->min_height = gc5035->modes[fse->index].height;
 +	fse->max_height = fse->min_height;
 +	return 0;
 +}
@@ -18057,8 +18302,8 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	case V4L2_SEL_TGT_NATIVE_SIZE:
 +		sel->r.left = 0;
 +		sel->r.top = 0;
-+		sel->r.width = gc5035_supported_modes[0].width;
-+		sel->r.height = gc5035_supported_modes[0].height;
++		sel->r.width = to_gc5035(sd)->modes[0].width;
++		sel->r.height = to_gc5035(sd)->modes[0].height;
 +		return 0;
 +	default:
 +		return -EINVAL;
@@ -18258,7 +18503,8 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +	if (ret)
 +		goto power_off;
 +
-+	gc5035->mode = &gc5035_supported_modes[0];
++	gc5035->modes = &gc5035_supported_modes[crop ? 0 : GC5035_NUM_MODES];
++	gc5035->mode = &gc5035->modes[0];
 +	ret = gc5035_init_controls(gc5035);
 +	if (ret) {
 +		dev_err_probe(dev, ret, "failed to init controls\n");
@@ -18346,10 +18592,10 @@ index 0000000000000000000000000000000000000000..40505abdd3259254eb1b35377f756e19
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/media/i2c/s5k3l6.c b/drivers/media/i2c/s5k3l6.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe51528e118
+index 0000000000000000000000000000000000000000..1752887ca682329189f6a6c14882f3d5190c22ab
 --- /dev/null
 +++ b/drivers/media/i2c/s5k3l6.c
-@@ -0,0 +1,947 @@
+@@ -0,0 +1,1003 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Samsung S5K3L6 13 MP image sensor (4128x3096, 4-lane MIPI CSI-2, RAW10)
@@ -18378,13 +18624,15 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +#define S5K3L6_MCLK_FREQ		(26 * HZ_PER_MHZ)
 +#define S5K3L6_DATA_LANES		4
 +
-+/* pixel array, and the analogue window of all modes (x/y_addr_start/end) */
++/*
++ * Pixel array. The full mode reads the stock 4128x3096 window less 16
++ * columns and 12 rows on each side (4096x3072), so that its MIPI-packed
++ * lines are a multiple of 64 bytes and the GPU can import the raw
++ * buffers as they are; even offsets keep GRBG. The binned mode's window
++ * is chosen with bin_crop (below).
++ */
 +#define S5K3L6_NATIVE_WIDTH		4208
 +#define S5K3L6_NATIVE_HEIGHT		3120
-+#define S5K3L6_CROP_LEFT		48
-+#define S5K3L6_CROP_TOP			20
-+#define S5K3L6_CROP_WIDTH		4128
-+#define S5K3L6_CROP_HEIGHT		3096
 +
 +#define S5K3L6_REG_CHIP_ID		CCI_REG16(0x0000)
 +#define S5K3L6_CHIP_ID			0x30c6
@@ -18433,6 +18681,11 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	u32 exposure;
 +	const struct cci_reg_sequence *regs;
 +	unsigned int num_regs;
++	/* written after regs: another window for the same mode table */
++	const struct cci_reg_sequence *fix;
++	unsigned int num_fix;
++	/* analogue crop rectangle (V4L2_SEL_TGT_CROP) */
++	struct v4l2_rect crop;
 +};
 +
 +static const char * const s5k3l6_test_pattern_menu[] = {
@@ -18473,6 +18726,7 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	struct v4l2_ctrl *hflip;
 +
 +	const struct s5k3l6_mode *mode;
++	const struct s5k3l6_mode *modes;	/* S5K3L6_NUM_MODES of them */
 +};
 +
 +static const struct cci_reg_sequence s5k3l6_init_regs[] = {
@@ -18500,7 +18754,7 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	{ CCI_REG16(0x3c08), 0xffff },
 +};
 +
-+static const struct cci_reg_sequence s5k3l6_4128x3096_regs[] = {
++static const struct cci_reg_sequence s5k3l6_4096x3072_regs[] = {
 +	{ CCI_REG16(0x314a), 0x5f00 },
 +	{ CCI_REG16(0x3064), 0xffcf },
 +	{ CCI_REG16(0x3066), 0x7e00 },
@@ -18513,12 +18767,12 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	{ CCI_REG16(0x3090), 0x8800 },
 +	{ CCI_REG16(0x3238), 0x000c },
 +	{ CCI_REG16(0x0100), 0x0000 },
-+	{ CCI_REG16(0x0344), 0x0030 },
-+	{ CCI_REG16(0x0348), 0x104f },
-+	{ CCI_REG16(0x0346), 0x0014 },
-+	{ CCI_REG16(0x034a), 0x0c2b },
-+	{ CCI_REG16(0x034c), 0x1020 },
-+	{ CCI_REG16(0x034e), 0x0c18 },
++	{ CCI_REG16(0x0344), 0x0040 },
++	{ CCI_REG16(0x0348), 0x103f },
++	{ CCI_REG16(0x0346), 0x0020 },
++	{ CCI_REG16(0x034a), 0x0c1f },
++	{ CCI_REG16(0x034c), 0x1000 },
++	{ CCI_REG16(0x034e), 0x0c00 },
 +	{ CCI_REG16(0x0202), 0x03de },
 +	{ CCI_REG16(0x3400), 0x0000 },
 +	{ CCI_REG16(0x3402), 0x4e42 },
@@ -18555,7 +18809,7 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	{ CCI_REG16(0x3892), 0x3600 },
 +};
 +
-+static const struct cci_reg_sequence s5k3l6_2064x1548_regs[] = {
++static const struct cci_reg_sequence s5k3l6_2048x1536_regs[] = {
 +	{ CCI_REG16(0x314a), 0x5f02 },
 +	{ CCI_REG16(0x3064), 0xffcf },
 +	{ CCI_REG16(0x3066), 0x7e00 },
@@ -18568,12 +18822,12 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	{ CCI_REG16(0x3090), 0x8000 },
 +	{ CCI_REG16(0x3238), 0x000b },
 +	{ CCI_REG16(0x0100), 0x0000 },
-+	{ CCI_REG16(0x0344), 0x0030 },
-+	{ CCI_REG16(0x0348), 0x104f },
-+	{ CCI_REG16(0x0346), 0x0014 },
-+	{ CCI_REG16(0x034a), 0x0c2b },
-+	{ CCI_REG16(0x034c), 0x0810 },
-+	{ CCI_REG16(0x034e), 0x060c },
++	{ CCI_REG16(0x0344), 0x0040 },
++	{ CCI_REG16(0x0348), 0x103f },
++	{ CCI_REG16(0x0346), 0x0020 },
++	{ CCI_REG16(0x034a), 0x0c1f },
++	{ CCI_REG16(0x034c), 0x0800 },
++	{ CCI_REG16(0x034e), 0x0600 },
 +	{ CCI_REG16(0x0202), 0x0656 },
 +	{ CCI_REG16(0x3400), 0x0000 },
 +	{ CCI_REG16(0x3402), 0x4e46 },
@@ -18610,26 +18864,75 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	{ CCI_REG16(0x3892), 0x3600 },
 +};
 +
-+static const struct s5k3l6_mode s5k3l6_supported_modes[] = {
-+	{
-+		.width = 4128,
-+		.height = 3096,
-+		.hts = 0x1320,
-+		.vts = 0x0cc1,
-+		.exposure = 0x03de,
-+		.regs = s5k3l6_4128x3096_regs,
-+		.num_regs = ARRAY_SIZE(s5k3l6_4128x3096_regs),
-+	},
-+	{
-+		.width = 2064,
-+		.height = 1548,
-+		.hts = 0x1320,
-+		.vts = 0x0cc1,
-+		.exposure = 0x03de,
-+		.regs = s5k3l6_2064x1548_regs,
-+		.num_regs = ARRAY_SIZE(s5k3l6_2064x1548_regs),
-+	},
++/*
++ * Binned mode windows, chosen with bin_crop (the analogue crop to 2048x1536
++ * gave about 740 lost-frame-start receiver errors per frame on the SM-T570,
++ * 2026-10-23):
++ *  0: stock 2064x1548 (x 0x30-0x104f, y 0x14-0xc2b), the default
++ *  1: 2048x1536 from a 4096x3072 analogue window
++ *  2: 2048x1536 output size from the stock window (the sensor drops the
++ *     last 16 columns and 12 rows)
++ */
++static int bin_crop;
++module_param(bin_crop, int, 0444);
++MODULE_PARM_DESC(bin_crop, "binned mode: 0 stock 2064x1548, 1 analogue 2048x1536, 2 output-size 2048x1536");
++
++static const struct cci_reg_sequence s5k3l6_bin_stock_fix[] = {
++	{ CCI_REG16(0x0344), 0x0030 },
++	{ CCI_REG16(0x0348), 0x104f },
++	{ CCI_REG16(0x0346), 0x0014 },
++	{ CCI_REG16(0x034a), 0x0c2b },
++	{ CCI_REG16(0x034c), 0x0810 },
++	{ CCI_REG16(0x034e), 0x060c },
 +};
++
++static const struct cci_reg_sequence s5k3l6_bin_outsize_fix[] = {
++	{ CCI_REG16(0x0344), 0x0030 },
++	{ CCI_REG16(0x0348), 0x104f },
++	{ CCI_REG16(0x0346), 0x0014 },
++	{ CCI_REG16(0x034a), 0x0c2b },
++	{ CCI_REG16(0x034c), 0x0800 },
++	{ CCI_REG16(0x034e), 0x0600 },
++};
++
++#define S5K3L6_FULL_MODE {						\
++	.width = 4096, .height = 3072,					\
++	.hts = 0x1320, .vts = 0x0cc1, .exposure = 0x03de,		\
++	.regs = s5k3l6_4096x3072_regs,					\
++	.num_regs = ARRAY_SIZE(s5k3l6_4096x3072_regs),			\
++	.crop = { 64, 32, 4096, 3072 },					\
++}
++
++/* [bin_crop][full, binned] */
++static const struct s5k3l6_mode s5k3l6_modes[3][2] = {
++	{ S5K3L6_FULL_MODE, {
++		.width = 2064, .height = 1548,
++		.hts = 0x1320, .vts = 0x0cc1, .exposure = 0x03de,
++		.regs = s5k3l6_2048x1536_regs,
++		.num_regs = ARRAY_SIZE(s5k3l6_2048x1536_regs),
++		.fix = s5k3l6_bin_stock_fix,
++		.num_fix = ARRAY_SIZE(s5k3l6_bin_stock_fix),
++		.crop = { 48, 20, 4128, 3096 },
++	} },
++	{ S5K3L6_FULL_MODE, {
++		.width = 2048, .height = 1536,
++		.hts = 0x1320, .vts = 0x0cc1, .exposure = 0x03de,
++		.regs = s5k3l6_2048x1536_regs,
++		.num_regs = ARRAY_SIZE(s5k3l6_2048x1536_regs),
++		.crop = { 64, 32, 4096, 3072 },
++	} },
++	{ S5K3L6_FULL_MODE, {
++		.width = 2048, .height = 1536,
++		.hts = 0x1320, .vts = 0x0cc1, .exposure = 0x03de,
++		.regs = s5k3l6_2048x1536_regs,
++		.num_regs = ARRAY_SIZE(s5k3l6_2048x1536_regs),
++		.fix = s5k3l6_bin_outsize_fix,
++		.num_fix = ARRAY_SIZE(s5k3l6_bin_outsize_fix),
++		.crop = { 48, 20, 4096, 3072 },
++	} },
++};
++
++#define S5K3L6_NUM_MODES	2
 +
 +static int s5k3l6_set_ctrl(struct v4l2_ctrl *ctrl)
 +{
@@ -18793,6 +19096,8 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	ret = cci_multi_reg_write(s5k3l6->regmap, s5k3l6_init_regs,
 +				  ARRAY_SIZE(s5k3l6_init_regs), NULL);
 +	cci_multi_reg_write(s5k3l6->regmap, mode->regs, mode->num_regs, &ret);
++	if (mode->fix)
++		cci_multi_reg_write(s5k3l6->regmap, mode->fix, mode->num_fix, &ret);
 +	if (ret)
 +		goto error;
 +
@@ -18875,8 +19180,7 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	s64 hblank, vblank, exposure_max;
 +	const struct s5k3l6_mode *mode;
 +
-+	mode = v4l2_find_nearest_size(s5k3l6_supported_modes,
-+				      ARRAY_SIZE(s5k3l6_supported_modes),
++	mode = v4l2_find_nearest_size(s5k3l6->modes, S5K3L6_NUM_MODES,
 +				      width, height,
 +				      fmt->format.width, fmt->format.height);
 +
@@ -18933,15 +19237,15 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +{
 +	struct s5k3l6 *s5k3l6 = to_s5k3l6(sd);
 +
-+	if (fse->index >= ARRAY_SIZE(s5k3l6_supported_modes))
++	if (fse->index >= S5K3L6_NUM_MODES)
 +		return -EINVAL;
 +
 +	if (fse->code != s5k3l6_get_format_code(s5k3l6))
 +		return -EINVAL;
 +
-+	fse->min_width = s5k3l6_supported_modes[fse->index].width;
++	fse->min_width = s5k3l6->modes[fse->index].width;
 +	fse->max_width = fse->min_width;
-+	fse->min_height = s5k3l6_supported_modes[fse->index].height;
++	fse->min_height = s5k3l6->modes[fse->index].height;
 +	fse->max_height = fse->min_height;
 +
 +	return 0;
@@ -18962,10 +19266,7 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +	case V4L2_SEL_TGT_CROP:
 +	case V4L2_SEL_TGT_CROP_DEFAULT:
 +		/* every mode reads (or bins) the same analogue window */
-+		sel->r.left = S5K3L6_CROP_LEFT;
-+		sel->r.top = S5K3L6_CROP_TOP;
-+		sel->r.width = S5K3L6_CROP_WIDTH;
-+		sel->r.height = S5K3L6_CROP_HEIGHT;
++		sel->r = to_s5k3l6(sd)->mode->crop;
 +		return 0;
 +	default:
 +		return -EINVAL;
@@ -19195,7 +19496,8 @@ index 0000000000000000000000000000000000000000..353b6a9110821e5032de37ad6303fbe5
 +		goto power_off;
 +	}
 +
-+	s5k3l6->mode = &s5k3l6_supported_modes[0];
++	s5k3l6->modes = s5k3l6_modes[clamp(bin_crop, 0, 2)];
++	s5k3l6->mode = &s5k3l6->modes[0];
 +	ret = s5k3l6_init_controls(s5k3l6);
 +	if (ret) {
 +		dev_err_probe(s5k3l6->dev, ret, "failed to init controls\n");
@@ -19354,10 +19656,10 @@ index 0000000000000000000000000000000000000000..00e017b5106771ad6f842ec1b9320f91
 +obj-$(CONFIG_VIDEO_EXYNOS9810_CSIS) += exynos9810-csis.o
 diff --git a/drivers/media/platform/samsung/exynos9810-csis/exynos9810-csis.c b/drivers/media/platform/samsung/exynos9810-csis/exynos9810-csis.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc3553f82a002
+index 0000000000000000000000000000000000000000..e8dab7c87df34ce06ee40958120bf416b3fda158
 --- /dev/null
 +++ b/drivers/media/platform/samsung/exynos9810-csis/exynos9810-csis.c
-@@ -0,0 +1,1199 @@
+@@ -0,0 +1,1301 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Samsung Exynos9810 MIPI CSI-2 receiver (CSIS v5.1) with its VC DMA
@@ -19417,6 +19719,12 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +static uint cdma_split = 640 << 16 | 640;
 +module_param(cdma_split, uint, 0644);
 +MODULE_PARM_DESC(cdma_split, "COMMON_DMA_SRAM_SPLIT value (SRAM1 entries << 16 | SRAM0 entries)");
++static uint dvfs_settle_ms = 10;
++module_param(dvfs_settle_ms, uint, 0644);
++MODULE_PARM_DESC(dvfs_settle_ms, "wait after the streaming DVFS request before the receiver starts");
++static bool cdma_init = true;
++module_param(cdma_init, bool, 0444);
++MODULE_PARM_DESC(cdma_init, "reset and set up the common DMA at probe");
 +static int cdma_matrix = -1;
 +module_param(cdma_matrix, int, 0644);
 +MODULE_PARM_DESC(cdma_matrix, "COMMON_DMA_MATRIX value (0, 2, 5, 14, 16, 17, 22, 23), -1: the streaming receiver on SRAM0_0");
@@ -19493,6 +19801,7 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +#define CDMA_ARB_PRI		0x00
 +#define CDMA_CTRL		0x08
 +#define  CDMA_CTRL_IP_PROCESSING	BIT(1)
++#define  CDMA_CTRL_SW_RESET		BIT(0)
 +#define CDMA_SRAM_SPLIT		0x0c
 +#define  CDMA_SRAM_ENTRIES		640	/* 16 bytes each, per bank */
 +#define CDMA_MATRIX		0x10
@@ -19552,6 +19861,7 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	u32 fourcc;
 +	u8 dt;
 +	u8 bpp;		/* bits per pixel on the bus */
++	bool packed;	/* DMA packet mode: the CSI-2 payload as received */
 +};
 +
 +/*
@@ -19567,6 +19877,14 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	{ MEDIA_BUS_FMT_SGBRG10_1X10, V4L2_PIX_FMT_SGBRG10, MIPI_CSI2_DT_RAW10, 10 },
 +	{ MEDIA_BUS_FMT_SGRBG10_1X10, V4L2_PIX_FMT_SGRBG10, MIPI_CSI2_DT_RAW10, 10 },
 +	{ MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_PIX_FMT_SRGGB10, MIPI_CSI2_DT_RAW10, 10 },
++	/*
++	 * DMA packet storage mode stores the CSI-2 payload bytes unchanged:
++	 * MIPI RAW10 packed, 4 pixels in 5 bytes (stride to be confirmed).
++	 */
++	{ MEDIA_BUS_FMT_SBGGR10_1X10, V4L2_PIX_FMT_SBGGR10P, MIPI_CSI2_DT_RAW10, 10, true },
++	{ MEDIA_BUS_FMT_SGBRG10_1X10, V4L2_PIX_FMT_SGBRG10P, MIPI_CSI2_DT_RAW10, 10, true },
++	{ MEDIA_BUS_FMT_SGRBG10_1X10, V4L2_PIX_FMT_SGRBG10P, MIPI_CSI2_DT_RAW10, 10, true },
++	{ MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_PIX_FMT_SRGGB10P, MIPI_CSI2_DT_RAW10, 10, true },
 +};
 +
 +struct csis_buffer {
@@ -19634,12 +19952,38 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	writel((readl(base + off) & ~mask) | (val & mask), base + off);
 +}
 +
++/*
++ * Only MIPI-packed RAW10 by default: libcamera's GPU debayer (SoftISP with
++ * EGL) takes 8-bit and CSI-2 packed Bayer only. With 16-bit words the
++ * SoftISP falls back to debayering on the CPU, which the A55 cores do at a
++ * few frames per second, and the lines are 8/5 the size.
++ */
++static bool unpacked16;
++module_param(unpacked16, bool, 0444);
++MODULE_PARM_DESC(unpacked16, "also offer RAW10 in 16-bit words");
++
++static bool csis_format_usable(const struct csis_format *fmt)
++{
++	return fmt->packed || unpacked16;
++}
++
++static const struct csis_format *csis_default_format(void)
++{
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(csis_formats); i++)
++		if (csis_format_usable(&csis_formats[i]))
++			return &csis_formats[i];
++	return &csis_formats[0];
++}
++
 +static const struct csis_format *csis_find_code(u32 code)
 +{
 +	unsigned int i;
 +
 +	for (i = 0; i < ARRAY_SIZE(csis_formats); i++)
-+		if (csis_formats[i].code == code)
++		if (csis_formats[i].code == code &&
++		    csis_format_usable(&csis_formats[i]))
 +			return &csis_formats[i];
 +	return NULL;
 +}
@@ -19649,7 +19993,8 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	unsigned int i;
 +
 +	for (i = 0; i < ARRAY_SIZE(csis_formats); i++)
-+		if (csis_formats[i].fourcc == fourcc)
++		if (csis_formats[i].fourcc == fourcc &&
++		    csis_format_usable(&csis_formats[i]))
 +			return &csis_formats[i];
 +	return NULL;
 +}
@@ -19732,6 +20077,53 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +		writel(lower_32_bits(addr), csis->vcdma + DMA_ADDR(i));
 +}
 +
++static void csis_cdma_setup(struct csis_device *csis)
++{
++	csis_rmw(csis->cdma, CDMA_ARB_PRI, 0xf, 1 << 2 | 2);
++	csis_rmw(csis->cdma, CDMA_CTRL, CDMA_CTRL_IP_PROCESSING,
++		 CDMA_CTRL_IP_PROCESSING);
++	writel(cdma_split, csis->cdma + CDMA_SRAM_SPLIT);
++	writel(cdma_matrix >= 0 ? cdma_matrix : csis->matrix,
++	       csis->cdma + CDMA_MATRIX);
++}
++
++/*
++ * The first stream after the common DMA is set up loses every frame
++ * (DMA_OTF_OVERLAP), later ones work: set the line buffer up at probe,
++ * after a reset of the block, so that no stream starts on the reset split.
++ */
++static void csis_cdma_init(struct csis_device *csis)
++{
++	csis_rmw(csis->cdma, CDMA_CTRL, CDMA_CTRL_SW_RESET, CDMA_CTRL_SW_RESET);
++	udelay(10);
++	csis_rmw(csis->cdma, CDMA_CTRL, CDMA_CTRL_SW_RESET, 0);
++	csis_cdma_setup(csis);
++}
++
++/*
++ * Stop the VC DMA for good. Turning DMA_CTRL off only takes effect at the
++ * next frame start; a stream stopped in the middle of a frame left the DMA
++ * busy, and the next stream on it got DMA_OTF_OVERLAP on every frame
++ * without one DMA start (SM-T570, camt6, 2026-10-23). Cancel it as the
++ * stock driver does a failed DMA, and wait until it is idle.
++ */
++static int csis_dma_abort(struct csis_device *csis)
++{
++	u32 act;
++	int ret;
++
++	writel(0, csis->vcdma + DMA_CTRL);
++	writel(DMA_CMN_CTRL_ABORT_REQ, csis->dmacmn + DMA_CMN_CTRL);
++	ret = readl_poll_timeout(csis->vcdma + DMA_ACT_CTRL, act,
++				 !(act & DMA_CTRL_ENABLE), 100, 40000);
++	writel(0, csis->dmacmn + DMA_CMN_CTRL);
++	writel(DMA_INT_ABORT_DONE, csis->dmacmn + DMA_INT_SRC);
++	if (ret)
++		dev_warn(csis->dev, "VC DMA still active after abort (%08x)\n",
++			 act);
++	return ret;
++}
++
 +static void csis_hw_start(struct csis_device *csis)
 +{
 +	u32 w = csis->pix.width, h = csis->pix.height;
@@ -19752,8 +20144,9 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	       FIELD_PREP(ISP_CONFIG_VC, 0), csis->regs + CSIS_ISP_CONFIG(0));
 +	writel(h << 16 | w, csis->regs + CSIS_ISP_RESOL(0));
 +
-+	/* VC0 DMA: 2D, legacy storage, RAW10 in 16-bit words */
-+	writel(FIELD_PREP(DMA_FMT_DATAFORMAT, 0), csis->vcdma + DMA_FMT);
++	/* VC0 DMA: 2D; legacy storage (RAW10 in 16-bit words) or packets */
++	writel(csis->fmt->packed ? DMA_FMT_PACKET_MODE :
++	       FIELD_PREP(DMA_FMT_DATAFORMAT, 0), csis->vcdma + DMA_FMT);
 +	writel(w, csis->vcdma + DMA_RESOL);
 +	writel(0, csis->dmacmn + DMA_OTF_FORMAT);
 +	writel(0, csis->dmacmn + DMA_DATA_CTRL);	/* input: OTF */
@@ -19768,12 +20161,7 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	 * split counts is not known. The streaming receiver gets SRAM0_0
 +	 * through the matrix; one receiver streams at a time.
 +	 */
-+	csis_rmw(csis->cdma, CDMA_ARB_PRI, 0xf, 1 << 2 | 2);
-+	csis_rmw(csis->cdma, CDMA_CTRL, CDMA_CTRL_IP_PROCESSING,
-+		 CDMA_CTRL_IP_PROCESSING);
-+	writel(cdma_split, csis->cdma + CDMA_SRAM_SPLIT);
-+	writel(cdma_matrix >= 0 ? cdma_matrix : csis->matrix,
-+	       csis->cdma + CDMA_MATRIX);
++	csis_cdma_setup(csis);
 +
 +	/* interrupts: frame start/end per VC and errors */
 +	writel(0xffffffff, csis->regs + CSIS_INT_SRC0);
@@ -20040,6 +20428,8 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	ret = csis_dvfs(csis, true);
 +	if (ret)
 +		dev_warn(csis->dev, "camera DVFS request failed: %d\n", ret);
++	/* the camera bus has to be at the streaming level before data comes */
++	msleep(dvfs_settle_ms);
 +
 +	csis->sequence = 0;
 +	csis->cnt_fs = 0;
@@ -20072,6 +20462,9 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	csis_program_next(csis);
 +	spin_unlock_irqrestore(&csis->slock, flags);
 +
++	/* a DMA left busy by an earlier stream never starts a frame */
++	if (readl(csis->vcdma + DMA_ACT_CTRL) & DMA_CTRL_ENABLE)
++		csis_dma_abort(csis);
 +	csis_hw_start(csis);
 +
 +	ret = v4l2_subdev_enable_streams(csis->sensor, csis->sensor_pad, BIT(0));
@@ -20102,11 +20495,11 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +{
 +	struct csis_device *csis = vb2_get_drv_priv(vq);
 +
-+	/* DMA off first so nothing lands in a returned buffer */
-+	writel(0, csis->vcdma + DMA_CTRL);
-+	/* a DMA that failed frames may still be busy: cancel it (stock) */
-+	if (csis->err_dma)
-+		writel(DMA_CMN_CTRL_ABORT_REQ, csis->dmacmn + DMA_CMN_CTRL);
++	/*
++	 * DMA off and idle first, so nothing lands in a returned buffer and
++	 * the next stream starts on an idle DMA
++	 */
++	csis_dma_abort(csis);
 +	v4l2_subdev_disable_streams(csis->sensor, csis->sensor_pad, BIT(0));
 +	csis_hw_stop(csis);
 +	csis_phy_reset(csis, false);
@@ -20149,7 +20542,8 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	pix->height = clamp_t(u32, pix->height, CSIS_MIN_SIZE, CSIS_MAX_HEIGHT);
 +	pix->pixelformat = fmt->fourcc;
 +	pix->field = V4L2_FIELD_NONE;
-+	pix->bytesperline = ALIGN(pix->width * 2, 16);
++	pix->bytesperline = ALIGN(fmt->packed ? pix->width * 5 / 4 :
++				  pix->width * 2, 16);
 +	pix->sizeimage = pix->bytesperline * pix->height;
 +	pix->colorspace = V4L2_COLORSPACE_RAW;
 +	pix->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
@@ -20172,6 +20566,8 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	for (i = 0; i < ARRAY_SIZE(csis_formats); i++) {
 +		if (f->mbus_code && csis_formats[i].code != f->mbus_code)
 +			continue;
++		if (!csis_format_usable(&csis_formats[i]))
++			continue;
 +		if (n++ == f->index) {
 +			f->pixelformat = csis_formats[i].fourcc;
 +			return 0;
@@ -20192,7 +20588,7 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +{
 +	const struct csis_format *fmt = csis_find_fourcc(f->fmt.pix.pixelformat);
 +
-+	csis_fill_pix(&f->fmt.pix, fmt ?: &csis_formats[0]);
++	csis_fill_pix(&f->fmt.pix, fmt ?: csis_default_format());
 +	return 0;
 +}
 +
@@ -20267,7 +20663,7 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +		return ret;
 +
 +	fmt = csis_find_code(sfmt.format.code);
-+	if (!fmt || fmt != csis->fmt ||
++	if (!fmt || fmt->code != csis->fmt->code ||
 +	    sfmt.format.width != csis->pix.width ||
 +	    sfmt.format.height != csis->pix.height) {
 +		dev_dbg(csis->dev, "sensor %ux%u %04x, video node %ux%u %p4cc\n",
@@ -20448,6 +20844,12 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +	if (IS_ERR(csis->dvfs_intcam))
 +		return PTR_ERR(csis->dvfs_intcam);
 +	csis->soc = device_get_match_data(dev);
++	/*
++	 * Leave the boot level of the camera DVFS domains (ISPPRE bus at
++	 * 25 MHz) for the floor right away, so that no stream starts from it.
++	 */
++	if (csis_dvfs(csis, false))
++		dev_warn(dev, "camera DVFS floor request failed\n");
 +
 +	/* which CSIS this is, for its SRAM matrix */
 +	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "csis");
@@ -20480,12 +20882,14 @@ index 0000000000000000000000000000000000000000..29485d82232ea26b6c50ec60f75cc355
 +		return ret;
 +
 +	/* default format: the sensor's usual binned mode */
-+	csis->pix.width = 2064;
-+	csis->pix.height = 1548;
-+	csis->fmt = &csis_formats[0];
++	csis->pix.width = 2048;
++	csis->pix.height = 1536;
++	csis->fmt = csis_default_format();
 +	csis_fill_pix(&csis->pix, csis->fmt);
 +
 +	dev_info(dev, "CSIS version %08x\n", readl(csis->regs + CSIS_VERSION));
++	if (cdma_init)
++		csis_cdma_init(csis);
 +
 +	csis->mdev.dev = dev;
 +	strscpy(csis->mdev.model, "Exynos9810 CSIS", sizeof(csis->mdev.model));
@@ -24267,6 +24671,46 @@ index 0fb54617b8a7d6abe59e95cddf467419605d28aa..9050f37e1c02e1679922f1af52e99569
 -MODULE_DESCRIPTION("Samsung S2MPS11/14/15/S2MPU02/05 Regulator Driver");
 +MODULE_DESCRIPTION("Samsung S2MPS11/14/15/18/S2MPU02/05 Regulator Driver");
  MODULE_LICENSE("GPL");
+diff --git a/drivers/rtc/rtc-s3c.c b/drivers/rtc/rtc-s3c.c
+index 291c0ccb0acd259a0222bf4e60f5bb7fe6cf1baf..ab92258b7d9b43c14c9e768362c8146fda7dc83c 100644
+--- a/drivers/rtc/rtc-s3c.c
++++ b/drivers/rtc/rtc-s3c.c
+@@ -323,6 +323,26 @@ static int s3c_rtc_setalarm(struct device *dev, struct rtc_wkalrm *alrm)
+ 	return 0;
+ }
+ 
++/*
++ * An RTC that lost its time reads as an invalid date (the Exynos9810 one
++ * comes up cleared at every boot): every read and every alarm then fails
++ * with -EINVAL until user space sets the time, so rtcwake cannot work.
++ * Start such an RTC at the beginning of its range; relative alarms work
++ * at once and the real time can be written later.
++ */
++static void s3c_rtc_init_time(struct s3c_rtc *info)
++{
++	struct rtc_time tm;
++
++	if (!s3c_rtc_gettime(info->dev, &tm) && !rtc_valid_tm(&tm))
++		return;
++
++	rtc_time64_to_tm(RTC_TIMESTAMP_BEGIN_2000, &tm);
++	if (s3c_rtc_settime(info->dev, &tm))
++		return;
++	dev_warn(info->dev, "invalid time, starting at %ptR\n", &tm);
++}
++
+ static const struct rtc_class_ops s3c_rtcops = {
+ 	.read_time	= s3c_rtc_gettime,
+ 	.set_time	= s3c_rtc_settime,
+@@ -440,6 +460,8 @@ static int s3c_rtc_probe(struct platform_device *pdev)
+ 	if (info->data->enable)
+ 		info->data->enable(info);
+ 
++	s3c_rtc_init_time(info);
++
+ 	dev_dbg(&pdev->dev, "s3c2410_rtc: RTCCON=%02x\n",
+ 		readw(info->base + S3C2410_RTCCON));
+ 
 diff --git a/drivers/soc/samsung/Kconfig b/drivers/soc/samsung/Kconfig
 index 1a5dfdc978dc4069eb71c4e8eada7ff1913b86b3..2646d49dedbfdaeb2ede154eb99f54ce43507332 100644
 --- a/drivers/soc/samsung/Kconfig

@@ -12,8 +12,8 @@
 maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
 pkgname=linux-postmarketos-exynos9810
 pkgver=7.3.0_git20261021
-pkgrel=20
-_commit="47a93753167d4a614a239f8a748c53a72f11e1b3"
+pkgrel=21
+_commit="fc0c0c79fdf0d7a65022bebbe473a56b0e686866"
 # torvalds/linux commit that gtactive3wifi.patch applies to; base + patch
 # is the tree of _commit in the gtactive3-mainline kernel (scripts/pmos-export)
 _base="f47d223627f80cb7a1eb14c585fe6cb35de5e984"
@@ -114,6 +114,6 @@ package() {
 
 sha512sums="
 4cc471f94509680acb6f55e5c14babab5bf2a60edf014bcc48b55da8cb96dbd262645a82c81e9e2108d01d2eda59dae1844c797475a9691c7e43a43d53ff0917  linux-f47d223627f80cb7a1eb14c585fe6cb35de5e984.tar.gz
-d46181a5acafa771eddff64177c7f82f101f6b6deff7bd8b67378a027eecde95b4d1167212cfc98770062303809f9f6c09ffce65cbe01d769e2ec4aa8947246b  gtactive3wifi.patch
-0402088aaf882452446809b2b278b8b8282b7a09a638267ac77e652e41a8b4af36efc6863ce0f6ffdddbc1d93b78c820a25ca849d2aefa1e9f8f5dbb39ae65a2  config-postmarketos-exynos9810.aarch64
+87c0491b73b8cae62d9c8ea0e954b3f020d149524e54e6ac4c26f66e243c3c90b9a28cbc729ba71ff6c0396536b70110e69e7538efba14ded691d2f721bef801  gtactive3wifi.patch
+7febe22ac7430db0bffe71cb5b70e0ef7828a4cfc8a66d7091dcce66e7a6aae96dd5666a75d2e228c299c345c9ad6f6981146a670b715a084efeb0343b0fa254  config-postmarketos-exynos9810.aarch64
 "
