@@ -11296,11 +11296,126 @@ index 0000000000000000000000000000000000000000..61581255a2c62594a8c4abcf4bf94506
 +
 +MODULE_DESCRIPTION("Exynos9810 DPU bootloader-takeover KMS driver");
 +MODULE_LICENSE("GPL");
+diff --git a/drivers/gpu/drm/panfrost/panfrost_devfreq.c b/drivers/gpu/drm/panfrost/panfrost_devfreq.c
+index b51c307788110b4871fdaddf946858c0ce3b910a..5a621526e7c76d3e5330c87574ab9286e2eea7b5 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_devfreq.c
++++ b/drivers/gpu/drm/panfrost/panfrost_devfreq.c
+@@ -20,9 +20,10 @@ static void panfrost_devfreq_update_utilization(struct panfrost_devfreq *pfdevfr
+ 	now = ktime_get();
+ 	last = pfdevfreq->time_last_update;
+ 
+-	if (pfdevfreq->busy_count > 0)
++	if (pfdevfreq->busy_count > 0) {
+ 		pfdevfreq->busy_time += ktime_sub(now, last);
+-	else
++		pfdevfreq->busy_total += ktime_sub(now, last);
++	} else
+ 		pfdevfreq->idle_time += ktime_sub(now, last);
+ 
+ 	pfdevfreq->time_last_update = now;
+@@ -162,6 +163,7 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
+ 	spin_lock_init(&pfdevfreq->lock);
+ 
+ 	panfrost_devfreq_reset(pfdevfreq);
++	pfdevfreq->sample_time = pfdevfreq->time_last_update;
+ 
+ 	cur_freq = clk_get_rate(pfdev->clock);
+ 
+@@ -286,3 +288,35 @@ void panfrost_devfreq_record_idle(struct panfrost_devfreq *pfdevfreq)
+ 
+ 	spin_unlock_irqrestore(&pfdevfreq->lock, irqflags);
+ }
++
++/*
++ * GPU load in percent since the previous call (amdgpu's gpu_busy_percent
++ * ABI, read by system monitors such as Resources). The first call reports
++ * the load since probe.
++ */
++int panfrost_devfreq_busy_percent(struct panfrost_devfreq *pfdevfreq)
++{
++	unsigned long irqflags;
++	s64 busy, total;
++	ktime_t now;
++
++	if (!pfdevfreq->devfreq)
++		return -ENODEV;
++
++	spin_lock_irqsave(&pfdevfreq->lock, irqflags);
++
++	panfrost_devfreq_update_utilization(pfdevfreq);
++
++	now = pfdevfreq->time_last_update;
++	busy = ktime_to_ns(ktime_sub(pfdevfreq->busy_total, pfdevfreq->sample_busy));
++	total = ktime_to_ns(ktime_sub(now, pfdevfreq->sample_time));
++	pfdevfreq->sample_busy = pfdevfreq->busy_total;
++	pfdevfreq->sample_time = now;
++
++	spin_unlock_irqrestore(&pfdevfreq->lock, irqflags);
++
++	if (total <= 0)
++		return 0;
++
++	return min_t(s64, div64_s64(busy * 100, total), 100);
++}
+diff --git a/drivers/gpu/drm/panfrost/panfrost_devfreq.h b/drivers/gpu/drm/panfrost/panfrost_devfreq.h
+index 48dbe185f2061f4ac17d12968326c61a851b9217..1c804cc4950e052487074e7d21fe9d42c65b6019 100644
+--- a/drivers/gpu/drm/panfrost/panfrost_devfreq.h
++++ b/drivers/gpu/drm/panfrost/panfrost_devfreq.h
+@@ -27,8 +27,16 @@ struct panfrost_devfreq {
+ 	ktime_t time_last_update;
+ 	int busy_count;
+ 	/*
+-	 * Protect busy_time, idle_time, time_last_update and busy_count
+-	 * because these can be updated concurrently between multiple jobs.
++	 * Busy time since probe (never reset, also kept across runtime
++	 * suspend) and the gpu_busy_percent reader's last sample of it.
++	 */
++	ktime_t busy_total;
++	ktime_t sample_busy;
++	ktime_t sample_time;
++	/*
++	 * Protect busy_time, idle_time, time_last_update, busy_count and the
++	 * busy_total/sample fields because these can be updated concurrently
++	 * between multiple jobs.
+ 	 */
+ 	spinlock_t lock;
+ };
+@@ -42,4 +50,6 @@ void panfrost_devfreq_suspend(struct panfrost_device *pfdev);
+ void panfrost_devfreq_record_busy(struct panfrost_devfreq *devfreq);
+ void panfrost_devfreq_record_idle(struct panfrost_devfreq *devfreq);
+ 
++int panfrost_devfreq_busy_percent(struct panfrost_devfreq *devfreq);
++
+ #endif /* __PANFROST_DEVFREQ_H__ */
 diff --git a/drivers/gpu/drm/panfrost/panfrost_drv.c b/drivers/gpu/drm/panfrost/panfrost_drv.c
-index 36cc2e67a3080b689bb7f88eb9480c90eb3089c5..de32ceae5b62cd8fc1d897b49a8aea4e28188adf 100644
+index 36cc2e67a3080b689bb7f88eb9480c90eb3089c5..8bdb0e6833ccf608c539680bbd751863aa672357 100644
 --- a/drivers/gpu/drm/panfrost/panfrost_drv.c
 +++ b/drivers/gpu/drm/panfrost/panfrost_drv.c
-@@ -1092,6 +1092,18 @@ static const struct panfrost_compatible amlogic_data = {
+@@ -1059,8 +1059,23 @@ static ssize_t profiling_store(struct device *dev,
+ 
+ static DEVICE_ATTR_RW(profiling);
+ 
++static ssize_t gpu_busy_percent_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct panfrost_device *pfdev = dev_get_drvdata(dev);
++	int busy = panfrost_devfreq_busy_percent(&pfdev->pfdevfreq);
++
++	if (busy < 0)
++		return busy;
++
++	return sysfs_emit(buf, "%d\n", busy);
++}
++
++static DEVICE_ATTR_RO(gpu_busy_percent);
++
+ static struct attribute *panfrost_attrs[] = {
+ 	&dev_attr_profiling.attr,
++	&dev_attr_gpu_busy_percent.attr,
+ 	NULL,
+ };
+ 
+@@ -1092,6 +1107,18 @@ static const struct panfrost_compatible amlogic_data = {
  	.vendor_quirk = panfrost_gpu_amlogic_quirk,
  };
  
@@ -11319,7 +11434,7 @@ index 36cc2e67a3080b689bb7f88eb9480c90eb3089c5..de32ceae5b62cd8fc1d897b49a8aea4e
  static const char * const mediatek_pm_domains[] = { "core0", "core1", "core2",
  						    "core3", "core4" };
  /*
-@@ -1160,6 +1172,7 @@ static const struct of_device_id dt_match[] = {
+@@ -1160,6 +1187,7 @@ static const struct of_device_id dt_match[] = {
  	{ .compatible = "amlogic,meson-g12a-mali",
  	  .data = &amlogic_data, },
  	{ .compatible = "renesas,r9a08g046-mali", .data = &default_pm_rt_data },
