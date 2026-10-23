@@ -4,11 +4,12 @@
     ci/pages OUT
 
 Writes OUT/releases.json (schema 1, below), OUT/channels/<id>.json (one
-channel each, same fields plus schema/generated/repo), OUT/index.html (the
-same data for humans) and OUT/sysupdate-public-key.asc.
+channel each, same fields plus schema/generated/repo), OUT/device.json (the
+resolved config.toml plus "generated": what the exynos-linux site reads),
+OUT/index.html (the same data for humans) and OUT/sysupdate-public-key.asc.
 
 Only what a tablet would accept is listed: for every channel (ci/channels)
-the release's SHA256SUMS must verify against pmos/sysupdate-public-key.asc
+the release's SHA256SUMS must verify against update.public_key
 (gpgv), and the versions, files and sha256 values come from it. Sizes and
 URLs come from the GitHub release assets. A channel without a valid manifest
 is left out (with a warning). Installers still verify the signature
@@ -34,18 +35,21 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = os.environ.get("GITHUB_REPOSITORY") or subprocess.run(
-    [str(Path(__file__).resolve().parent.parent / "scripts" / "config"), "get", "project.repo"],
-    check=True, capture_output=True, text=True).stdout.strip()
-KEY = HERE.parent / "pmos" / "sysupdate-public-key.asc"
-BOOTCHAIN_TAG = "samsung-gtactive3wifi_bootchain"
-TITLES = {"phosh": "Phosh", "gnome": "GNOME"}
+CFG = json.loads(subprocess.run([str(HERE.parent / "scripts" / "config"), "json"],
+                                check=True, capture_output=True, text=True).stdout)
+REPO = CFG["project"]["repo"]
+KEY = HERE.parent / CFG["update"]["public_key"]
+BOOTCHAIN_TAG = CFG["bootchain"]["tag"]
+TITLES = {ui: CFG["ui"][ui]["title"] for ui in CFG["images"]["uis"]}
+DEVICE = CFG["device"]["name"]
+MODELS = ", ".join(CFG["device"]["models"])
 DESCRIPTIONS = {
-    "release": "{title} for everyone: postmarketOS Duranium with the gtactive3-mainline kernel and drivers.",
+    "release": "{title} for everyone: postmarketOS Duranium with the " + CFG["project"]["name"] + " kernel and drivers.",
     "dev": "{title} development build: adds the USB debug layer (root shell, ssh and adb over USB "
            "without a password). For development tablets only.",
 }
@@ -56,7 +60,7 @@ def warn(msg):
 
 
 def fetch(url, api=False):
-    req = urllib.request.Request(url, headers={"User-Agent": "gtactive3-mainline-pages"})
+    req = urllib.request.Request(url, headers={"User-Agent": CFG["project"]["name"] + "-pages"})
     if api:
         req.add_header("Accept", "application/vnd.github+json")
         if os.environ.get("GH_TOKEN"):
@@ -68,7 +72,14 @@ def fetch(url, api=False):
 def releases():
     out, page = [], 1
     while True:
-        batch = json.loads(fetch(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}", api=True))
+        try:
+            raw = fetch(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}", api=True)
+        except urllib.error.HTTPError as x:
+            if x.code != 404:
+                raise
+            warn(f"{REPO}: no releases (HTTP 404)")
+            return {}
+        batch = json.loads(raw)
         out += batch
         if len(batch) < 100:
             return {r["tag_name"]: r for r in out}
@@ -76,7 +87,8 @@ def releases():
 
 
 def channels():
-    lines = subprocess.run(["sh", str(HERE / "channels")], check=True, capture_output=True, text=True).stdout
+    lines = subprocess.run([str(HERE.parent / "scripts" / "config"), "channels"],
+                           check=True, capture_output=True, text=True).stdout
     return [line.split() for line in lines.splitlines() if line.strip()]
 
 
@@ -226,10 +238,10 @@ def page(data, fpr):
     e = html.escape
     out = [f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SM-T570 Duranium releases</title><style>{CSS}</style></head><body><main>
-<h1>Galaxy Tab Active3 (SM-T570) releases</h1>
+<title>{e(MODELS)} Duranium releases</title><style>{CSS}</style></head><body><main>
+<h1>{e(DEVICE)} ({e(MODELS)}) releases</h1>
 <p class="muted">postmarketOS Duranium images with the
-<a href="https://github.com/{e(REPO)}">gtactive3-mainline</a> kernel and drivers.
+<a href="https://github.com/{e(REPO)}">{e(REPO)}</a> kernel and drivers.
 Official record, generated {e(data['generated'])} from the GitHub releases.</p>
 <nav><a href="releases.json">releases.json</a><a href="sysupdate-public-key.asc">signing key</a>
 <a href="https://github.com/{e(REPO)}/blob/main/docs/INSTALL.md">install instructions</a>
@@ -308,6 +320,7 @@ def main():
         (out / "channels" / f"{c['id']}.json").write_text(
             json.dumps({"schema": 1, "generated": now, "repo": REPO, **c}, indent=2) + "\n")
     (out / "sysupdate-public-key.asc").write_bytes(KEY.read_bytes())
+    (out / "device.json").write_text(json.dumps({**CFG, "generated": now}, indent=2) + "\n")
     (out / "index.html").write_text(page(data, fpr))
     print(f"{len(chans)} channels: " + ", ".join(f"{c['id']} {c['latest']}" for c in chans))
 
