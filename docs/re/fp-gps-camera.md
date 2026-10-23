@@ -7,7 +7,7 @@ vendor partition (`firmware/fs/vendor`) and the REA/Ghidra inventory in
 `firmware/re-targets/`. So far REA has only binary overviews (procedure and
 string counts) for these blobs, so nothing below depends on decompiled code.
 
-## Fingerprint: Egis ET510 (not feasible)
+## Fingerprint: Egis ET510 (no own driver; possible only via Samsung's TEE stack)
 
 Full evidence and the (A)/(B)/(C) analysis: [fingerprint.md](fingerprint.md).
 
@@ -75,6 +75,6 @@ Full evidence and the (A)/(B)/(C) analysis: [fingerprint.md](fingerprint.md).
 
 | block | verdict | blocker |
 |---|---|---|
-| fingerprint ET510 | not feasible | SPI1 owned by TEEGRIS (TZPC abort confirmed), matching in TA |
+| fingerprint ET510 | own driver: no; via Samsung's TEEGRIS stack: maybe (6-8 weeks, go/no-go test first) | SPI1 owned by TEEGRIS (TZPC abort confirmed), matching in TA; see fingerprint.md "Path via Samsung's TEE stack" |
 | GNSS (BCM4775) | later, large | needs sensor-hub transport first, then GNSS RPC RE (no GPL reference) |
 | cameras | raw capture feasible, large | CSIS/DMA driver + 2 sensor drivers + soft ISP; vendor ISP DDK unusable |
