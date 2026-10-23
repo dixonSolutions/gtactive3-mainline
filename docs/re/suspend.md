@@ -152,10 +152,14 @@ suspend to idle. In s2idle:
 
 - tasks are frozen, every device runs its suspend callbacks (noirq
   included), non-wake interrupts are disabled;
-- the CPUs stay online and sit in the cpuidle default idle, **WFI**: psci
-  cpuidle states have no `enter_s2idle` hook without OSI/power domains, so
-  **s2idle never uses C2**, whatever the cpuidle DT says. The C2 wake-up
-  problem (cores in C2 not woken by IPIs, STATUS.md) does not affect it;
+- the CPUs stay online and idle in the deepest *enabled* cpuidle state:
+  without an `enter_s2idle` hook the idle loop falls back to
+  `cpuidle_find_deepest_state()` through the normal enter path (tick
+  stopped, timekeeping running). With C2 gated off (default,
+  `exynos9810_c2=`) that is **WFI**; with C2 enabled s2idle would use C2.
+  drv/deepsleep adds the hook (C2 then entered with the tick frozen) and
+  stops exynos-pmu from dropping the C2 hints during s2idle (its noirq
+  `sys_insuspend` flag used to suppress them for any suspend);
 - when the last CPU enters, timekeeping and the clockevents are suspended:
   only a wake-armed interrupt (GIC SPI, alive EINT chained through the
   per-pin GIC lines) ends the sleep;
@@ -192,29 +196,115 @@ stays up (see below), which is the main remaining consumer.
 | cpufreq-dt | – | LITTLE cluster parked at the 1053 MHz `opp-suspend` |
 | pinctrl | – | register save/restore; "No retention data configured" warning on the alive controller is harmless in s2idle |
 
-## 4. Deep sleep (not implemented)
+## 4. Deep sleep (drv/deepsleep, off by default)
 
-A real SoC sleep would follow section 1: offline CPUs 1-3, program the PMU
-masks, CPU_INFORM = 4, the pmu-intr-gen/0x7f08 bits, CPU_SUSPEND
-0x03000000, then the exit sequence with the pad retention release, behind a
-switch so that s2idle stays the default. It is not implemented, because:
+Kernel branch `drv/deepsleep` (from cand/1027) implements section 1 as
+platform suspend ops, **only registered with `exynos9810_pm.deep=1`**
+(command line, or written to `/sys/module/exynos9810_pm/parameters/deep`
+at runtime). Then `/sys/power/mem_sleep` shows `s2idle [deep]`; the
+device package keeps systemd on `SuspendState=freeze`, so only an explicit
+`echo mem > /sys/power/state` uses it. Test plan with exact commands,
+expected messages and recovery: `build/scratch/deepsleep/test-plan.txt`
+(helper `deepsleep-test.sh` next to it). Nothing has run on the device yet.
 
-- the APM powers off every power domain except ALIVE: DECON/DSIM/panel
-  (S-Boot-initialised, no init code in Linux), the A-Box, G3D... After
-  wake-up the screen would stay dark until a real DSIM/DECON/panel driver
-  exists;
-- C2 shows that the flexpmu wake-up handshake does not work yet with our
-  hints (cores not woken). A sleep that cannot wake strands the tablet
-  until a human holds Power + Vol Down;
-- whether the firmware even accepts the system state from a mainline
-  kernel is unknown (no way to test now).
+### Flow (drivers/soc/samsung/exynos9810-pm.c, called from exynos-pmu)
 
-First steps when this is picked up: PSCI_VERSION/FEATURES (section 1), then
-C2 wake-up working (same handshake), then deep sleep in the bring-up kernel
-only (no display needed, USB console comes back through DWC3 resume), with
-`s3c2410_wdt.run_in_suspend=1` as the dead man's switch. The pinctrl side
-would then also need the PMU regmap for `EINT_WAKEUP_MASK`
-(`retention_data` on the 9810 alive controller).
+1. `.begin`: optional RTC timer (`test_wake_sec`) on the SoC RTC as a
+   dead man's switch.
+2. devices suspend; the DPU blanks with `EXYNOS9810_PANEL_FORCE` (panel
+   rails off, lanes in ULPS, DECON stopped) whatever `power_off_level`
+   is; pinctrl (late) saves the banks and writes `EINT_WAKEUP_MASK`.
+3. `.prepare_late` (after noirq suspend): every local power domain that is
+   still on (DPU, AUD, G3D, DCF/DCPOST/DCRD, ISP, ... - Samsung's runtime
+   PM has them all off at this point) is powered off like exynos-pd: CMU
+   and SYSREG save, D-TZPC save SMC (0x82000410, 0), CONFIGURATION = 0,
+   for G3D the oscillator switch. `domains_off=0` skips this.
+4. CPUs 1-3 offline (generic; the CPU-off hints are the exynos-pmu
+   hotplug ones), syscore (GIC distributor and CPU interface through the
+   `cpu_pm` syscore, timekeeping).
+5. `.enter`: save the always-on CMU/SYSREG list, program the DT wake-up
+   masks (RTC alarm bit 1 cleared unless `rtc_alarm_wake=0`), CPU_INFORM
+   = 4, GRP2 enable + EVENT_INTERRUPT_ENABLE_GRP2 bit 4, GRP1 pending
+   clear, `cpu_suspend(0x03000000)` with `cpu_resume` as entry. Early
+   return = firmware refused or saw a pending interrupt: early wake-up
+   sequence, -EBUSY. `dry_run`/`test_abort` exercise this path.
+6. Wake-up: exit sequence, CMU/SYSREG restore, masks back, wake-up reason
+   (WAKEUP_STAT, EINT pending, APM SRAM sleep/MIF-down counters) to dmesg
+   and `.../14060000.system-controller/sleep/result`.
+7. `.wake` (before noirq resume): domains on again, D-TZPC restore SMC,
+   CMU/SYSREG restore. Pinctrl (early resume) restores the banks and,
+   once the last controller is done, sets PAD_RETENTION_*_CONFIGURATION
+   bit 0 for TOP/SPI/BOOTLDO_0/1/PCIE/UART; `.finish` releases any group
+   still retained.
+
+Register lists: Samsung's `save_sleep` and the local `*_save` tables
+(user muxes, dividers, PLL_AUD/G3D, clock-out, controller options,
+Q-channels, DRCG), plus what Linux needs and stock does not save: the
+gate registers of TOP/PERIS/PERIC/FSYS/CMGP/CHUB/DPU/AUD (user space and
+`manual_gates` force gates on), the PERIC0/1 dividers and CMU_TOP PERIC
+dividers (Linux uses fixed USI clocks), the CMU_TOP SD clock. Blocks of a
+domain that is off are skipped (PMU STATUS checked at save and restore).
+
+### Per block: what is lost, what restores it
+
+| block | in SLEEP | restored by |
+|---|---|---|
+| ALIVE: PMU, GPIO_ALIVE/EINT, RTC, mailbox, CMU_APM/CMGP | kept (APM moves APM/CMGP bus muxes to OSC) | PM driver restores CMU_APM/CMGP muxes |
+| CPU context, GIC-400 | lost | `cpu_suspend`/`cpu_resume`; `cpu_pm` syscore saves/restores the GIC distributor and CPU interface |
+| arch timer | counter may restart (unknown) | timekeeping resume resets `cycle_last`; arch timer `cpu_pm` notifier; logged as "counter reset" |
+| CMUs (TOP reset by the APM; leaf CMUs) | lost; TOP re-initialised by the warm-boot firmware (assumed, as stock never saves TOP) | PM driver save lists |
+| local domains (DPU, AUD, G3D, ...) | must be off at entry (stock) | PM driver power off/on with D-TZPC SMCs |
+| pads (TOP etc.) | retained until released | pinctrl after restoring the banks (shared count) |
+| DECON/DPP/IDMA/DMA, DPU sysreg | lost | DPU driver: probe-time snapshot written back when DECON has no window enabled, D-PHY isolation bypass (PMU 0x70c/0x710) |
+| DSIM links, M4S4 D-PHYs | lost | dsim-bl `restore` hook: Samsung's `_dsim_enable()` order from a probe snapshot, then full panel power-up and init |
+| panel, touch (TDDI) | rails off by the forced blank | panel init sequence; touch follows the panel notifier |
+| UFS host + PHY | lost | spm level 5 (already): host reset, PHY init, link startup, FMP SMCs |
+| DWC3 + USB DRD PHY | lost | `dwc3_core_init` on resume (phy_init/power_on incl. PMU 0x72c), gadget re-enumerates |
+| PCIe RC + PHY, BCM4375 | lost; chip powered (WLAN_REG_ON retained) | **not yet**: the driver refuses deep sleep (-EBUSY) while bound; unload pcie_exynos9810 after brcmfmac and reload after |
+| HSI2C/USI/SPI/UART | lost | existing resume paths (USI SW_CONF, HSI2C init, s3c64xx hwinit, UART port restart); clocks from the PERIC divider restore |
+| A-Box | lost (AUD domain) | A-Box suspend/resume (new): pad retention release, GPIO mode, MISC_CON, stream registers; codec regcache |
+| G3D (panfrost) | lost | runtime PM resume does a full GPU reset/MMU init; PM driver handles G3D clocks + D-TZPC |
+| TMU | lost (PERIS) | TMU driver (new): saved CONTROL/thresholds written back, enable last |
+| watchdog | lost (PERIS), restarts with reset values | s3c2410_wdt noirq resume re-arms it (new) |
+| CSIS (camera) | lost (ISP domains) | new streams program everything; deep sleep refused while streaming |
+| SD (dw_mmc) | lost | runtime resume re-init; HS400_DQS_EN bit not restored (SD does not use HS400) |
+| S2MPS18/MAX77705/codecs | on battery; PWREN-controlled LDOs go off | unknown which boot-on LDOs are PWREN-controlled (check LCTRL bits 7:6) |
+
+### Unknown until run on the device
+
+- Whether the EL3 monitor and the APM accept the system state from Linux
+  (PSCI 0.1 firmware; `debugfs exynos9810-pm/psci` asks VERSION/FEATURES on
+  read), and whether the CPU_INFORM/GRP2 hints suffice (APM sleep counter
+  and MIF-down counter in the log tell).
+- Whether CMU_TOP comes back as S-Boot set it (stock assumes so).
+- Whether the SoC RTC alarm is a working PMU wake-up source (WAKEUP_MASK
+  bit 1; stock masks it and wakes through the S2MPS18 RTC on EINT 1).
+- Spurious wake-ups from the unmasked WAKEUP_MASK bits 7, 8, 15, 20-27, 29.
+- Whether the arch counter survives, the watchdog reset defaults after
+  wake-up, and which external supplies drop with PWREN.
+- The DSIM/DECON restart and the A-Box restore have only been reasoned
+  out from Samsung's sequences: `pm_test=platform` with mem_sleep deep
+  cycles the local domains without a SoC sleep and tests them first.
+
+### Suspend-to-idle improvements, in order of value
+
+1. **C2 in s2idle** once per-core C2 is proven (`exynos9810_c2=1`): with
+   drv/deepsleep s2idle enters C2 with the tick frozen and keeps the
+   flexpmu hints. Cheap, no new risk beyond C2 itself.
+2. **Panel/DECON off on blank** (`exynos9810_dsim_bl.power_off_level=3`,
+   drv/blank): the largest screen-off consumer; no SoC sleep needed.
+3. **MIF floor**: `exynos9810_pm.s2idle_mif_khz=421000` asks the APM for
+   the lowest MIF level during s2idle (MIF runs at 1794 MHz otherwise).
+   Implemented, off by default: MIF DVFS has never been driven from
+   Linux. Try one s2idle cycle with the parameter written at runtime
+   (`/sys/module/exynos9810_pm/parameters/s2idle_mif_khz`) before putting
+   it on the command line.
+4. **Big-cluster rails** (vdd_cpucl1 BUCK2, vdd_cpucl1_m): not worth it
+   now. The PMIC is read-only except whitelisted LDOs, the APM sets the
+   CPUCL1 voltage itself and powers CPUCL1 up in its SLEEP exit
+   sequence; switching the rail off behind it risks a hang. The cluster
+   is already power-gated (NONCPU off), only leakage at 681 mV remains.
+5. INT floor: no measured need; same unknowns as MIF.
 
 ## 5. Power-off and reboot
 
