@@ -959,7 +959,7 @@ static void serve(int c)
 			}
 			wr(c, "kexec: starting the new kernel\n");
 			close(c);
-			sync();
+			__nolibc_syscall0(__NR_sync);
 			__nolibc_syscall4(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
 					  LINUX_REBOOT_CMD_KEXEC, 0);
 			out("kexec failed\n");
