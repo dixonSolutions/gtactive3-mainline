@@ -8,3 +8,15 @@
 toggle-application-view=['<Super>a', 'XF86HomePage']
 toggle-overview=['<Super>s', 'XF86LaunchA']
 screenshot=['<Shift>Print', 'XF86Launch1']
+
+# Battery: blank after 3 min, suspend after 10 min idle on battery, and show
+# Suspend in Phosh's power menu. systemd still refuses suspend until the
+# wake-up path is proven on the tablet (gtactive3wifi-suspend-gate).
+[org.gnome.desktop.session]
+idle-delay=uint32 180
+
+[org.gnome.settings-daemon.plugins.power]
+sleep-inactive-battery-timeout=600
+
+[sm.puri.phosh]
+enable-suspend=true
