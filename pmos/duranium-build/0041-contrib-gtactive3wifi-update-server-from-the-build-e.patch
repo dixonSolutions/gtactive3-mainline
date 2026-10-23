@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 20:39:04 +1100
+Subject: [PATCH] contrib: gtactive3wifi: update server from the build
+ (exynos-linux)
+
+build-image.sh passes GTA3_UPDATE_BASE through to mkosi, so CI can set
+the update server from gtactive3-mainline's config.toml; without it the
+default is the project's new home, github.com/exynos-linux.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/build-image.sh    | 1 +
+ contrib/samsung-gtactive3wifi/firmware/APKBUILD | 2 +-
+ contrib/samsung-gtactive3wifi/mkosi.finalize    | 7 ++++---
+ 3 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/build-image.sh b/contrib/samsung-gtactive3wifi/build-image.sh
+index 02c0af6..56684bf 100755
+--- a/contrib/samsung-gtactive3wifi/build-image.sh
++++ b/contrib/samsung-gtactive3wifi/build-image.sh
+@@ -95,6 +95,7 @@ for attempt in 1 2 3; do
+ 			--environment=PMOS_DEVICE=samsung-gtactive3wifi \
+ 			--environment=PMOS_VARIANT="$UI" \
+ 			--environment=GTA3_CHANNEL="$GTA3_CHANNEL" \
++			--environment=GTA3_UPDATE_BASE="${GTA3_UPDATE_BASE:-}" \
+ 			--environment=DURANIUM_EXTRA_PACKAGES="$EXTRA" \
+ 			--release="$RELEASE" \
+ 			--package-directory="$PKGS" \
+diff --git a/contrib/samsung-gtactive3wifi/firmware/APKBUILD b/contrib/samsung-gtactive3wifi/firmware/APKBUILD
+index 396e5e1..7af52d3 100644
+--- a/contrib/samsung-gtactive3wifi/firmware/APKBUILD
++++ b/contrib/samsung-gtactive3wifi/firmware/APKBUILD
+@@ -16,7 +16,7 @@ pkgname=firmware-samsung-gtactive3wifi
+ pkgver=20251001
+ pkgrel=0
+ pkgdesc="Samsung Galaxy Tab Active3 vendor firmware (local build, not redistributable)"
+-url="https://github.com/dixonSolutions/gtactive3-mainline"
++url="https://github.com/exynos-linux/gtactive3-mainline"
+ arch="noarch"
+ license="proprietary"
+ options="!check !strip !tracedeps !archcheck"
+diff --git a/contrib/samsung-gtactive3wifi/mkosi.finalize b/contrib/samsung-gtactive3wifi/mkosi.finalize
+index 574eb17..af3248c 100755
+--- a/contrib/samsung-gtactive3wifi/mkosi.finalize
++++ b/contrib/samsung-gtactive3wifi/mkosi.finalize
+@@ -7,7 +7,7 @@
+ # drivers on top of the postmarketOS packages) as GitHub releases, one
+ # release per update channel:
+ #
+-#   https://github.com/dixonSolutions/gtactive3-mainline/releases/download/
++#   https://github.com/exynos-linux/gtactive3-mainline/releases/download/
+ #       samsung-gtactive3wifi_<ui>_<release><suffix>/SHA256SUMS(.gpg)
+ #
+ # so sysupdate here must never fetch postmarketOS's generic images (they
+@@ -20,11 +20,12 @@
+ #
+ # GTA3_CHANNEL: "" (release images) or "dev" (development images with the
+ # USB debug layer, channel tag suffix "-dev"). GTA3_UPDATE_BASE overrides
+-# the server (a fork, a local test server).
++# the server: gtactive3-mainline's CI sets it from its config.toml
++# (update.base); build-image.sh passes it through to mkosi.
+ set -eu
+ 
+ HERE=$(cd "$(dirname "$0")" && pwd)
+-BASE=${GTA3_UPDATE_BASE:-https://github.com/dixonSolutions/gtactive3-mainline/releases/download/}
++BASE=${GTA3_UPDATE_BASE:-https://github.com/exynos-linux/gtactive3-mainline/releases/download/}
+ case "${GTA3_CHANNEL:-}" in
+ 	"") suffix= ;;
+ 	dev) suffix=-dev ;;
