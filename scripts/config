@@ -55,6 +55,12 @@ def load():
     u["channel_file"] = u.get("channel_file") or f"/usr/lib/{d['id']}/update-channel"
     c["bootchain"].setdefault("enabled", False)
     c["bootchain"]["tag"] = c["bootchain"].get("tag") or f"{d['id']}_bootchain"
+    bc = c["bootchain"]
+    bc["u_boot_defconfig"] = bc.get("u_boot_defconfig") or f"{d.get('codename', '')}_defconfig"
+    bc["uniloader_defconfig"] = bc.get("uniloader_defconfig") or f"{d.get('codename', '')}_chain_defconfig"
+    bc["dtb"] = bc.get("dtb") or f"exynos/{d.get('soc', '')}-{d.get('codename', '')}.dtb"
+    bc.setdefault("bringup_config", "bootchain/bringup.config")
+    bc.setdefault("f2fs", True)
     c["installer"]["name"] = c["installer"].get("name") or f"{d.get('codename', '')}-setup"
     im = c["images"]
     im.setdefault("release", "edge")
