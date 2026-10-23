@@ -2262,6 +2262,35 @@ index 54b5106ed4e331040752fd16f453daf76003a816..a9e0dd3daec3815330cea7161a86d3e4
  SAMSUNG S5K3M5 CAMERA DRIVER
  M:	Vladimir Zapolskiy <vladimir.zapolskiy@linaro.org>
  S:	Maintained
+diff --git a/arch/arm64/Kconfig b/arch/arm64/Kconfig
+index cab741a695f5231de63b1f5b03cf5e9403cd9168..f29bb2f5ccc3aca3ba4f35f6de11fd2085cec860 100644
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -546,6 +546,24 @@ config ARM64_ERRATUM_819472
+ 
+ 	  If unsure, say Y.
+ 
++config SAMSUNG_ERRATUM_EXYNOS9810_POU
++	bool "Exynos9810: Mongoose M3: clean the D-cache to PoC for I-cache coherency"
++	default y
++	select ARM64_WORKAROUND_CLEAN_CACHE
++	help
++	  Samsung's kernel for the Exynos9810 uses "dc civac" instead of
++	  "dc cvau" in its I/D cache maintenance (flush_icache_range and
++	  friends), presumably because the big (Samsung Mongoose M3) and
++	  LITTLE (Cortex-A55) clusters do not share a Point of Unification,
++	  so code cleaned to the PoU on one cluster may be fetched stale on
++	  the other.
++
++	  This option does the same, through the alternatives framework,
++	  whenever a Mongoose M3 core is present at boot. Userspace cache
++	  maintenance is trapped and emulated in the same way.
++
++	  If unsure, say Y.
++
+ config ARM64_ERRATUM_832075
+ 	bool "Cortex-A57: 832075: possible deadlock on mixing exclusive memory accesses with device loads"
+ 	default y
 diff --git a/arch/arm64/Kconfig.debug b/arch/arm64/Kconfig.debug
 index 265c4461031f4df457eb782eac820070710c8d06..27170a18e3302bf9b7dd1c9002648d939098080f 100644
 --- a/arch/arm64/Kconfig.debug
@@ -2502,10 +2531,10 @@ index 0000000000000000000000000000000000000000..768acdadfe3958c7452e8cd3b4bda0d9
 +};
 diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f9353e78992c9feab932e5ef241d10e7e1488d00
+index 0000000000000000000000000000000000000000..c5f4af5e52a3cba764c9fb51ea85f607e5bc96bf
 --- /dev/null
 +++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
-@@ -0,0 +1,2129 @@
+@@ -0,0 +1,2176 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/*
 + * Samsung Galaxy Tab Active3 Wi-Fi (gtactive3wifi/SM-T570) device tree source
@@ -3965,10 +3994,18 @@ index 0000000000000000000000000000000000000000..f9353e78992c9feab932e5ef241d10e7
 +};
 +
 +/*
-+ * CPU DVFS through the APM firmware (ACPM DVFS, channel 5). Levels from its
++ * CPU DVFS through the APM firmware (ACPM DVFS, channel 0). Levels from its
 + * fvmap in APM SRAM (domain 2: A55 208-2002 MHz, domain 3: M3 598-2886 MHz);
-+ * the firmware sets the voltages. Capped at the retail clocks: 1.95 GHz
-+ * (A55), 2.7 GHz (M3, the 2.86/2.89 GHz levels are 1-2 core turbo).
++ * the firmware sets the voltages. A55 capped at its retail 1.95 GHz. The
++ * SM-T570 stock kernel limits the M3 cluster to 650-1794 MHz (cpufreq
++ * domain@1 max-freq/policy-max); the levels above that up to the S9's
++ * 2.7 GHz are kept as boost (turbo-mode) OPPs, off unless
++ * /sys/devices/system/cpu/cpufreq/boost is set.
++ *
++ * opp-microwatt (Energy Model for EAS) per core from the stock DT
++ * energy-costs (core busy cost + a quarter of the cluster cost, in mW,
++ * x1000); the A55 208/299 MHz levels, which stock does not use, are
++ * extrapolated linearly from 455 MHz.
 + */
 +/ {
 +	cluster0_opp: opp-table-cluster0-opp {
@@ -3978,36 +4015,43 @@ index 0000000000000000000000000000000000000000..f9353e78992c9feab932e5ef241d10e7
 +		opp-208000000 {
 +			opp-hz = /bits/ 64 <208000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <10000>;
 +		};
 +
 +		opp-299000000 {
 +			opp-hz = /bits/ 64 <299000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <14600>;
 +		};
 +
 +		opp-455000000 {
 +			opp-hz = /bits/ 64 <455000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <22250>;
 +		};
 +
 +		opp-598000000 {
 +			opp-hz = /bits/ 64 <598000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <31750>;
 +		};
 +
 +		opp-715000000 {
 +			opp-hz = /bits/ 64 <715000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <40000>;
 +		};
 +
 +		opp-832000000 {
 +			opp-hz = /bits/ 64 <832000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <52750>;
 +		};
 +
 +		opp-949000000 {
 +			opp-hz = /bits/ 64 <949000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <65250>;
 +		};
 +
 +		/*
@@ -4018,32 +4062,38 @@ index 0000000000000000000000000000000000000000..f9353e78992c9feab932e5ef241d10e7
 +		opp-1053000000 {
 +			opp-hz = /bits/ 64 <1053000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <80000>;
 +			opp-suspend;
 +		};
 +
 +		opp-1248000000 {
 +			opp-hz = /bits/ 64 <1248000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <109500>;
 +		};
 +
 +		opp-1456000000 {
 +			opp-hz = /bits/ 64 <1456000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <155500>;
 +		};
 +
 +		opp-1690000000 {
 +			opp-hz = /bits/ 64 <1690000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <241750>;
 +		};
 +
 +		opp-1794000000 {
 +			opp-hz = /bits/ 64 <1794000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <253250>;
 +		};
 +
 +		opp-1950000000 {
 +			opp-hz = /bits/ 64 <1950000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <264500>;
 +		};
 +	};
 +
@@ -4054,96 +4104,122 @@ index 0000000000000000000000000000000000000000..f9353e78992c9feab932e5ef241d10e7
 +		opp-598000000 {
 +			opp-hz = /bits/ 64 <598000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <230250>;
 +		};
 +
 +		opp-650000000 {
 +			opp-hz = /bits/ 64 <650000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <241000>;
 +		};
 +
 +		opp-741000000 {
 +			opp-hz = /bits/ 64 <741000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <267500>;
 +		};
 +
 +		opp-858000000 {
 +			opp-hz = /bits/ 64 <858000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <308000>;
 +		};
 +
 +		opp-962000000 {
 +			opp-hz = /bits/ 64 <962000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <364250>;
 +		};
 +
 +		opp-1066000000 {
 +			opp-hz = /bits/ 64 <1066000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <461750>;
 +		};
 +
 +		opp-1170000000 {
 +			opp-hz = /bits/ 64 <1170000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <554750>;
 +		};
 +
 +		opp-1261000000 {
 +			opp-hz = /bits/ 64 <1261000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <650250>;
 +		};
 +
 +		opp-1469000000 {
 +			opp-hz = /bits/ 64 <1469000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <933000>;
 +		};
 +
 +		opp-1586000000 {
 +			opp-hz = /bits/ 64 <1586000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <1118250>;
 +		};
 +
 +		opp-1690000000 {
 +			opp-hz = /bits/ 64 <1690000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <1340250>;
 +		};
 +
 +		opp-1794000000 {
 +			opp-hz = /bits/ 64 <1794000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <1567750>;
 +		};
 +
 +		opp-1924000000 {
 +			opp-hz = /bits/ 64 <1924000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <1942750>;
++			turbo-mode;
 +		};
 +
 +		opp-2002000000 {
 +			opp-hz = /bits/ 64 <2002000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <2188500>;
++			turbo-mode;
 +		};
 +
 +		opp-2106000000 {
 +			opp-hz = /bits/ 64 <2106000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <2898250>;
++			turbo-mode;
 +		};
 +
 +		opp-2314000000 {
 +			opp-hz = /bits/ 64 <2314000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <3439750>;
++			turbo-mode;
 +		};
 +
 +		opp-2496000000 {
 +			opp-hz = /bits/ 64 <2496000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <4295500>;
++			turbo-mode;
 +		};
 +
 +		opp-2652000000 {
 +			opp-hz = /bits/ 64 <2652000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <5261000>;
++			turbo-mode;
 +		};
 +
 +		opp-2704000000 {
 +			opp-hz = /bits/ 64 <2704000000>;
 +			clock-latency-ns = <100000>;
++			opp-microwatt = <6086500>;
++			turbo-mode;
 +		};
 +	};
 +};
@@ -4833,7 +4909,7 @@ index 88091bf09e4e91b05801cafe956283984d564449..7f387664a2f05f14623a1c639a1103f6
  
  &pinctrl_vts {
 diff --git a/arch/arm64/boot/dts/exynos/exynos9810.dtsi b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
-index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c2c572822 100644
+index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..25868293db25bee1b0ca07578f786dd0c4c5790c 100644
 --- a/arch/arm64/boot/dts/exynos/exynos9810.dtsi
 +++ b/arch/arm64/boot/dts/exynos/exynos9810.dtsi
 @@ -6,7 +6,11 @@
@@ -5463,7 +5539,7 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
  		};
  
  		pinctrl_cmgp: pinctrl@14220000 {
-@@ -253,10 +749,319 @@ wakeup-interrupt-controller {
+@@ -253,10 +749,400 @@ wakeup-interrupt-controller {
  			};
  		};
  
@@ -5636,8 +5712,9 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
 +	 * probe 2. The 115 C "hot" trip is the last stock trip. The hardware
 +	 * thermal trip set up by the firmware stays the critical protection.
 +	 * The LITTLE cluster is throttled through cpufreq from 86 C (stock
-+	 * LITTLE alert trips: 76-101 C in 5 C steps), the GPU through devfreq
-+	 * from 88 C (stock G3D control temperature).
++	 * LITTLE alert trips: 76-101 C in 5 C steps), the big cluster from
++	 * 83 C on any of its five probes (stock BIG control temperature), the
++	 * GPU through devfreq from 88 C (stock G3D control temperature).
 +	 */
 +	thermal-zones {
 +		cpu_big0_thermal: cpu-big0-thermal {
@@ -5646,10 +5723,26 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
 +			thermal-sensors = <&tmu_top 1>;
 +
 +			trips {
++				cpu_big0_alert: cpu-big0-alert {
++					temperature = <83000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++
 +				cpu_big0_hot: cpu-big0-hot {
 +					temperature = <115000>;
 +					hysteresis = <5000>;
 +					type = "hot";
++				};
++			};
++
++			cooling-maps {
++				map0 {
++					trip = <&cpu_big0_alert>;
++					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 +				};
 +			};
 +		};
@@ -5660,10 +5753,26 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
 +			thermal-sensors = <&tmu_top 2>;
 +
 +			trips {
++				cpu_big1_alert: cpu-big1-alert {
++					temperature = <83000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++
 +				cpu_big1_hot: cpu-big1-hot {
 +					temperature = <115000>;
 +					hysteresis = <5000>;
 +					type = "hot";
++				};
++			};
++
++			cooling-maps {
++				map0 {
++					trip = <&cpu_big1_alert>;
++					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 +				};
 +			};
 +		};
@@ -5674,10 +5783,26 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
 +			thermal-sensors = <&tmu_top 3>;
 +
 +			trips {
++				cpu_big2_alert: cpu-big2-alert {
++					temperature = <83000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++
 +				cpu_big2_hot: cpu-big2-hot {
 +					temperature = <115000>;
 +					hysteresis = <5000>;
 +					type = "hot";
++				};
++			};
++
++			cooling-maps {
++				map0 {
++					trip = <&cpu_big2_alert>;
++					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 +				};
 +			};
 +		};
@@ -5688,10 +5813,26 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
 +			thermal-sensors = <&tmu_top 4>;
 +
 +			trips {
++				cpu_big3_alert: cpu-big3-alert {
++					temperature = <83000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++
 +				cpu_big3_hot: cpu-big3-hot {
 +					temperature = <115000>;
 +					hysteresis = <5000>;
 +					type = "hot";
++				};
++			};
++
++			cooling-maps {
++				map0 {
++					trip = <&cpu_big3_alert>;
++					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 +				};
 +			};
 +		};
@@ -5702,10 +5843,26 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
 +			thermal-sensors = <&tmu_top 6>;
 +
 +			trips {
++				cpu_big4_alert: cpu-big4-alert {
++					temperature = <83000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++
 +				cpu_big4_hot: cpu-big4-hot {
 +					temperature = <115000>;
 +					hysteresis = <5000>;
 +					type = "hot";
++				};
++			};
++
++			cooling-maps {
++				map0 {
++					trip = <&cpu_big4_alert>;
++					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 +				};
 +			};
 +		};
@@ -5783,7 +5940,7 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
  	};
  
  	timer {
-@@ -276,3 +1081,13 @@ timer {
+@@ -276,3 +1162,13 @@ timer {
  
  #include "exynos9810-pinctrl.dtsi"
  #include "arm/samsung/exynos-syscon-restart.dtsi"
@@ -5797,6 +5954,35 @@ index 4f1f1e9a41b24f67204c730eb2722b5681397e4c..e81a24cc6685c2a260d56580a467fd0c
 +	mask = <0x100>;
 +	value = <0x0>;
 +};
+diff --git a/arch/arm64/include/asm/cputype.h b/arch/arm64/include/asm/cputype.h
+index 1fa29616e586e520d5282d0291ebc3fd2382dc15..f86b67366197d9f924f93ea459fffd141b67d049 100644
+--- a/arch/arm64/include/asm/cputype.h
++++ b/arch/arm64/include/asm/cputype.h
+@@ -62,6 +62,7 @@
+ #define ARM_CPU_IMP_APPLE		0x61
+ #define ARM_CPU_IMP_AMPERE		0xC0
+ #define ARM_CPU_IMP_MICROSOFT		0x6D
++#define ARM_CPU_IMP_SAMSUNG		0x53
+ 
+ #define ARM_CPU_PART_AEM_V8		0xD0F
+ #define ARM_CPU_PART_FOUNDATION		0xD00
+@@ -161,6 +162,8 @@
+ 
+ #define MICROSOFT_CPU_PART_AZURE_COBALT_100	0xD49 /* Based on r0p0 of ARM Neoverse N2 */
+ 
++#define SAMSUNG_CPU_PART_MONGOOSE_M3	0x002 /* Exynos 9810 big core */
++
+ #define MIDR_CORTEX_A53 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A53)
+ #define MIDR_CORTEX_A57 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A57)
+ #define MIDR_CORTEX_A72 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A72)
+@@ -253,6 +256,7 @@
+ #define MIDR_AMPERE1 MIDR_CPU_MODEL(ARM_CPU_IMP_AMPERE, AMPERE_CPU_PART_AMPERE1)
+ #define MIDR_AMPERE1A MIDR_CPU_MODEL(ARM_CPU_IMP_AMPERE, AMPERE_CPU_PART_AMPERE1A)
+ #define MIDR_MICROSOFT_AZURE_COBALT_100 MIDR_CPU_MODEL(ARM_CPU_IMP_MICROSOFT, MICROSOFT_CPU_PART_AZURE_COBALT_100)
++#define MIDR_SAMSUNG_MONGOOSE_M3 MIDR_CPU_MODEL(ARM_CPU_IMP_SAMSUNG, SAMSUNG_CPU_PART_MONGOOSE_M3)
+ 
+ /* Fujitsu Erratum 010001 affects A64FX 1.0 and 1.1, (v0r0 and v1r0) */
+ #define MIDR_FUJITSU_ERRATUM_010001		MIDR_FUJITSU_A64FX
 diff --git a/arch/arm64/include/asm/smp.h b/arch/arm64/include/asm/smp.h
 index 10ea4f5430690328d501eb7323e3de5105e0e2d7..91835cb8f21e65d40e044b8b481597fc1592c746 100644
 --- a/arch/arm64/include/asm/smp.h
@@ -5821,6 +6007,30 @@ index 10ea4f5430690328d501eb7323e3de5105e0e2d7..91835cb8f21e65d40e044b8b481597fc
  extern void secondary_entry(void);
  
  extern void arch_send_call_function_single_ipi(int cpu);
+diff --git a/arch/arm64/kernel/cpu_errata.c b/arch/arm64/kernel/cpu_errata.c
+index e0c09402540cecf1311ccb99509fe2cb6cd11606..21082155e9478a30a42b3a1d5cbdb94a03e4cbf9 100644
+--- a/arch/arm64/kernel/cpu_errata.c
++++ b/arch/arm64/kernel/cpu_errata.c
+@@ -459,6 +459,10 @@ static const struct midr_range workaround_clean_cache[] = {
+ #ifdef	CONFIG_ARM64_ERRATUM_819472
+ 	/* Cortex-A53 r0p[01] : ARM errata 819472 */
+ 	MIDR_REV_RANGE(MIDR_CORTEX_A53, 0, 0, 1),
++#endif
++#ifdef CONFIG_SAMSUNG_ERRATUM_EXYNOS9810_POU
++	/* Exynos9810 Mongoose M3: Samsung cleans to PoC, see Kconfig */
++	MIDR_ALL_VERSIONS(MIDR_SAMSUNG_MONGOOSE_M3),
+ #endif
+ 	{},
+ };
+@@ -677,7 +681,7 @@ static const struct midr_range cnp_erratum_cpus[] = {
+ const struct arm64_cpu_capabilities arm64_errata[] = {
+ #ifdef CONFIG_ARM64_WORKAROUND_CLEAN_CACHE
+ 	{
+-		.desc = "ARM errata 826319, 827319, 824069, or 819472",
++		.desc = "ARM errata 826319, 827319, 824069, 819472, or Exynos9810 PoU",
+ 		.capability = ARM64_WORKAROUND_CLEAN_CACHE,
+ 		ERRATA_MIDR_RANGE_LIST(workaround_clean_cache),
+ 		.cpu_enable = cpu_enable_cache_maint_trap,
 diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
 index 87a822e5c4ca83c279c733a54c79e64bb41870db..db3989a8e11768ce9b3a42ced684194bea446ef3 100644
 --- a/arch/arm64/kernel/head.S
@@ -23893,6 +24103,41 @@ index 0fb54617b8a7d6abe59e95cddf467419605d28aa..9050f37e1c02e1679922f1af52e99569
 -MODULE_DESCRIPTION("Samsung S2MPS11/14/15/S2MPU02/05 Regulator Driver");
 +MODULE_DESCRIPTION("Samsung S2MPS11/14/15/18/S2MPU02/05 Regulator Driver");
  MODULE_LICENSE("GPL");
+diff --git a/drivers/soc/samsung/Kconfig b/drivers/soc/samsung/Kconfig
+index 1a5dfdc978dc4069eb71c4e8eada7ff1913b86b3..2646d49dedbfdaeb2ede154eb99f54ce43507332 100644
+--- a/drivers/soc/samsung/Kconfig
++++ b/drivers/soc/samsung/Kconfig
+@@ -7,6 +7,18 @@ menuconfig SOC_SAMSUNG
+ 
+ if SOC_SAMSUNG
+ 
++config EXYNOS9810_CPUCL1
++	bool "Exynos9810 big (Mongoose) cluster bring-up helper"
++	depends on ARCH_EXYNOS && ARM64 && SMP && HOTPLUG_CPU
++	default ARCH_EXYNOS
++	help
++	  Steps the Exynos9810 APM firmware needs before PSCI CPU_ON can
++	  power up the big (Mongoose M3) cores: arm their wake events,
++	  Samsung's cluster-1 lpm_init and the coherent interconnect port.
++	  Nothing is done unless exynos9810_cpucl1.enable= is set on the
++	  kernel command line or in sysfs. It also checks that every CPU's
++	  live MPIDR hashes like its DT reg for CPU suspend.
++
+ # There is no need to enable these drivers for ARMv8
+ config EXYNOS_ASV_ARM
+ 	bool "Exynos ASV ARMv7-specific driver extensions" if COMPILE_TEST
+diff --git a/drivers/soc/samsung/Makefile b/drivers/soc/samsung/Makefile
+index 636a762608c9ba2c22a72d6f9597ceb015f7f36c..00cd0d6bcccfad8eea4386c0433109cc41e5040f 100644
+--- a/drivers/soc/samsung/Makefile
++++ b/drivers/soc/samsung/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_EXYNOS_USI)	+= exynos-usi.o
+ 
+ obj-$(CONFIG_EXYNOS_PMU)	+= exynos_pmu.o
+ exynos_pmu-y			+= exynos-pmu.o gs101-pmu.o
++obj-$(CONFIG_EXYNOS9810_CPUCL1)	+= exynos9810-cpucl1.o
+ 
+ obj-$(CONFIG_EXYNOS_PMU_ARM_DRIVERS)	+= exynos3250-pmu.o exynos4-pmu.o \
+ 					exynos5250-pmu.o exynos5420-pmu.o
 diff --git a/drivers/soc/samsung/exynos-pmu.c b/drivers/soc/samsung/exynos-pmu.c
 index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02064f0de5 100644
 --- a/drivers/soc/samsung/exynos-pmu.c
@@ -24096,6 +24341,443 @@ index fbe381e2a2e1062c318b10b3df171e328901fa7a..d5b471cf907f10f93cd0bfccfec774b2
  
  	void (*pmu_init)(void);
  	void (*powerdown_conf)(enum sys_powerdown);
+diff --git a/drivers/soc/samsung/exynos9810-cpucl1.c b/drivers/soc/samsung/exynos9810-cpucl1.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fb097f8816088d29a00acae65d7db4e4680ae03
+--- /dev/null
++++ b/drivers/soc/samsung/exynos9810-cpucl1.c
+@@ -0,0 +1,431 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Exynos9810 big (Samsung Mongoose M3) cluster bring-up helper.
++ *
++ * On the Exynos9810 the APM firmware (ACPM, flexPMU) owns CPU power. A core
++ * is powered up when its PSCI CPU_ON raises a pmu-intr-gen GRP1 wake event
++ * *and* that core's GRP1 wake enable is set; the APM sets the enable itself
++ * when it powers a core down (C2, hotplug), and clears it when it powers the
++ * core up. S-Boot powers the big cluster off directly (not through the APM)
++ * and leaves GRP1_INTR_BID_ENABLE = 0, so CPU_ON of CPUs 4-7 never reaches
++ * the APM. Arming the wake enable is the missing trigger: measured, the APM
++ * then runs its cluster-1 and core power-up sequences. (EL3's CPU_ON only
++ * sets CLUSTER1_CPUn_CONFIGURATION[3:0]; it never powers the cluster.)
++ *
++ * The cluster's coherent request port on the SCI stays disconnected
++ * (CRP_PM_CC1_0[1:0] = 3, written by S-Boot and by the APM's cluster1_off),
++ * and neither Samsung's kernel nor the APM tables write it back; Samsung's
++ * BTS code shows three CRP ports with 0x28-byte register blocks from 0x188,
++ * so the same PM word of the other two ports is at 0x1cc and 0x1f4, and the
++ * report prints all three for comparison with the working A55 port.
++ *
++ * Samsung's kernel additionally applies its pmucal "lpm_init" sequence at
++ * time_init (cal_if_init(), so before the secondary CPUs are started), which
++ * also programs the CPUCL1 clock unit: CPUCL1_CTRL_EXT_EVENT, SHORTSTOP,
++ * HCHGEN and the CPUCL1 bus dynamic clock gating. Mainline never does.
++ *
++ * Everything here is OFF unless asked for with exynos9810_cpucl1.enable=,
++ * a bit mask (also writable at runtime under /sys/module/.../parameters):
++ *
++ *   BIT(0) ARM_WAKE     arm the GRP1 wake enable of a big core right before
++ *                       its CPU_ON (stale pending bits cleared first)
++ *   BIT(1) LPM_INIT     the cluster-1 subset of Samsung's lpm_init (PMU QCH
++ *                       and memory options, CMU_CPUCL1 setup), once
++ *   BIT(2) SCI_CONNECT  once the APM reports cluster 1 powered, reconnect it
++ *                       to the coherent interconnect (CRP_PM_CC1_0[1:0] = 0;
++ *                       S-Boot and the APM power-down leave it disconnected)
++ *   BIT(3) DEBUG_PCSR   in the report, read the stuck core's external debug
++ *                       EDPRSR/EDPCSR (only while the PMU says it is powered)
++ *   BIT(4) WATCHDOG     before the first big-core CPU_ON, arm the cluster-0
++ *                       watchdog (~82 s) and make any reset enter Download
++ *                       mode, unless the watchdog is already armed (a hang
++ *                       before userspace then still comes back to the host)
++ *
++ * Each armed CPU_ON is followed by a report a few seconds later (PMU core and
++ * cluster status, GRP1 state, CRP_PM_CC1_0, the CPUCL1 PLL). The secondary
++ * boot trace (CONFIG_ARM64_DEBUG_SECONDARY_BOOT) tells how far the core got.
++ *
++ * Independently of enable=, every CPU that comes online is checked against
++ * the MPIDR hash the suspend code uses (arm64 sleep.S drops one affinity
++ * level for MT MPIDRs): a big core whose live MPIDR does not hash like its
++ * DT "reg" would corrupt another core's context in C2.
++ *
++ * Note on cpu4-7 and maxcpus=: the Mongoose cores lack ARMv8.1+ features the
++ * Cortex-A55s have (LSE atomics, PAN, ...). A big core onlined after boot is
++ * therefore rejected by the cpufeature checks even if it starts; for real
++ * use all eight CPUs must be started at boot (no maxcpus=4), so the system
++ * features are the common subset. A late online is still the safest first
++ * test: a core that reaches the kernel says so before it is parked.
++ */
++
++#define pr_fmt(fmt) "exynos9810-cpucl1: " fmt
++
++#include <linux/bits.h>
++#include <linux/cpu.h>
++#include <linux/cpuhotplug.h>
++#include <linux/delay.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/ktime.h>
++#include <linux/moduleparam.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/printk.h>
++#include <linux/workqueue.h>
++
++#include <asm/cputype.h>
++#include <asm/smp_plat.h>
++
++#define CPUCL1_ARM_WAKE		BIT(0)
++#define CPUCL1_LPM_INIT		BIT(1)
++#define CPUCL1_SCI_CONNECT	BIT(2)
++#define CPUCL1_DEBUG_PCSR	BIT(3)
++#define CPUCL1_WATCHDOG		BIT(4)
++
++static unsigned int enable;
++module_param(enable, uint, 0644);
++MODULE_PARM_DESC(enable, "big cluster bring-up steps (bit mask, see source)");
++
++/* PMU (samsung,exynos9810-pmu) */
++#define PMU_WDT_DISABLE			0x0408
++#define PMU_WDT_MASK_RESET		0x040c
++#define PMU_CL0_WDTRESET		BIT(24)
++#define PMU_INFORM2			0x0808
++#define PMU_INFORM3			0x080c
++#define PMU_SEC_POWER_RESET		0x12345678
++#define PMU_SEC_RESET_DOWNLOAD		0x12345671
++#define PMU_CPU_QCH_CL1_NONCPU		0x1088
++#define PMU_CL1_CPU_CONFIG(n)		(0x2000 + 8 * (n))
++#define PMU_CL1_CPU_STATUS(n)		(0x2004 + 8 * (n))
++#define PMU_CL1_NONCPU_CONFIG		0x2040
++#define PMU_CL1_NONCPU_STATUS		0x2044
++#define PMU_PWR_ON			0xf
++
++/* pmu-intr-gen (samsung,exynos9810-pmu-intr-gen): GRP1 = APM core wake */
++#define INTR_GRP1_ENABLE		0x0100
++#define INTR_GRP1_UPEND			0x0108
++#define INTR_GRP1_CLEAR			0x010c
++
++/* Blocks without a DT node (Samsung cmucal-sfr.c / flexpmu tables) */
++#define CMU_CPUCL1_BASE			0x1d100000
++#define CMU_CPUCL1_PLL_CON0		0x0120
++#define CMU_CPUCL1_SHORTSTOP		0x0820
++#define CMU_CPUCL1_CTRL_EXT_EVENT	0x0838
++#define CMU_CPUCL1_HCHGEN_CLKMUX	0x0850
++#define CPUCL1_BUS_BASE			0x1d110000
++#define CPUCL1_BUS_DRCG_EN		0x0104
++#define SCI_BASE			0x1a000000
++#define SCI_CRP_PM_CC1_0		0x01a4
++#define SCI_CRP_PM_PORT1		0x01cc
++#define SCI_CRP_PM_PORT2		0x01f4
++#define SCI_CRP_PM_DISCONNECT		GENMASK(1, 0)
++#define SCI_CRP_PM_ACTIVE		BIT(16)
++/* CoreSight per-core external debug (stock DT coresight@1e000000) */
++#define DBG_CL1_CPU(n)			(0x1e410000 + 0x100000 * (n))
++#define DBG_EDPCSR_LO			0x0a0
++#define DBG_EDPCSR_HI			0x0ac
++#define DBG_EDPRSR			0x314
++
++/* Cluster-0 watchdog (watchdog_cl0@10050000), as uniLoader arms it */
++#define WTCON				0x00
++#define WTDAT				0x04
++#define WTCNT				0x08
++#define WTCON_EN_RST			(BIT(5) | BIT(0))
++#define WTCON_ARMED			((0xff << 8) | (3 << 3) | WTCON_EN_RST)
++
++#define CPUCL1_REPORT_MS		5500
++#define CPUCL1_POLL_MS			4
++
++struct cpucl1 {
++	void __iomem *pmu;
++	void __iomem *intrgen;
++	void __iomem *wdt;
++	void __iomem *cmu;
++	void __iomem *bus;
++	void __iomem *sci;
++	void __iomem *dbg[4];
++	struct mutex lock;		/* armed[], lpm_done, wdt_done */
++	struct delayed_work work;
++	ktime_t armed_at[4];
++	unsigned long armed;		/* big cores waiting for a report */
++	bool lpm_done;
++	bool wdt_done;
++	bool sci_done;
++};
++
++static struct cpucl1 cl1;
++
++/* DT reg of the big cores is 0x100 | core (Samsung's EL3 CPU numbering) */
++static int cpucl1_core(unsigned int cpu)
++{
++	u64 hwid = cpu_logical_map(cpu);
++
++	if (MPIDR_AFFINITY_LEVEL(hwid, 1) != 1)
++		return -1;
++	return MPIDR_AFFINITY_LEVEL(hwid, 0) & 3;
++}
++
++static void cpucl1_rmw(void __iomem *reg, u32 mask, u32 val)
++{
++	writel((readl(reg) & ~mask) | (val & mask), reg);
++}
++
++/* Samsung pmucal lpm_init, the entries that concern cluster 1 */
++static void cpucl1_lpm_init(void)
++{
++	static const u16 mem_opt[] = { 0x2114, 0x2180, 0x21ec, 0x2258, 0x2384 };
++	int i;
++
++	cpucl1_rmw(cl1.pmu + PMU_CPU_QCH_CL1_NONCPU, 0xffU << 24, 0x8dU << 24);
++	for (i = 0; i < ARRAY_SIZE(mem_opt); i++)
++		cpucl1_rmw(cl1.pmu + mem_opt[i], 0x3, 0x2);
++
++	cpucl1_rmw(cl1.cmu + CMU_CPUCL1_HCHGEN_CLKMUX, 0x7f, 0);
++	cpucl1_rmw(cl1.cmu + CMU_CPUCL1_CTRL_EXT_EVENT, 0x3ff, 0x201);
++	writel(0xffffffff, cl1.cmu + CMU_CPUCL1_SHORTSTOP);
++	writel(0xffffffff, cl1.bus + CPUCL1_BUS_DRCG_EN);
++
++	pr_info("lpm_init: QCH %08x EXT_EVENT %08x SHORTSTOP %08x DRCG %08x\n",
++		readl(cl1.pmu + PMU_CPU_QCH_CL1_NONCPU),
++		readl(cl1.cmu + CMU_CPUCL1_CTRL_EXT_EVENT),
++		readl(cl1.cmu + CMU_CPUCL1_SHORTSTOP),
++		readl(cl1.bus + CPUCL1_BUS_DRCG_EN));
++}
++
++static bool cpucl1_wdt_armed(void)
++{
++	u32 wtcon = readl(cl1.wdt + WTCON);
++
++	return (wtcon & WTCON_EN_RST) == WTCON_EN_RST &&
++	       !(readl(cl1.pmu + PMU_WDT_DISABLE) & PMU_CL0_WDTRESET) &&
++	       !(readl(cl1.pmu + PMU_WDT_MASK_RESET) & PMU_CL0_WDTRESET);
++}
++
++/* Same sequence as uniLoader's chain guard: ~82 s, then a reset */
++static void cpucl1_wdt_arm(void)
++{
++	if (!cl1.wdt) {
++		pr_warn("no watchdog node, not arming\n");
++		return;
++	}
++	writel(PMU_SEC_POWER_RESET, cl1.pmu + PMU_INFORM2);
++	writel(PMU_SEC_RESET_DOWNLOAD, cl1.pmu + PMU_INFORM3);
++	if (cpucl1_wdt_armed()) {
++		pr_info("watchdog already armed (WTCON %08x), reset -> Download\n",
++			readl(cl1.wdt + WTCON));
++		return;
++	}
++	writel(0, cl1.wdt + WTCON);
++	writel(0xffff, cl1.wdt + WTDAT);
++	writel(0xffff, cl1.wdt + WTCNT);
++	writel(WTCON_ARMED, cl1.wdt + WTCON);
++	cpucl1_rmw(cl1.pmu + PMU_WDT_DISABLE, PMU_CL0_WDTRESET, 0);
++	cpucl1_rmw(cl1.pmu + PMU_WDT_MASK_RESET, PMU_CL0_WDTRESET, 0);
++	pr_info("watchdog armed (~82 s, WTCON %08x), reset -> Download\n",
++		readl(cl1.wdt + WTCON));
++}
++
++static bool cpucl1_cluster_on(void)
++{
++	return (readl(cl1.pmu + PMU_CL1_NONCPU_STATUS) & PMU_PWR_ON) == PMU_PWR_ON;
++}
++
++/* The APM has powered cluster 1: put it back on the SCI if still detached */
++static void cpucl1_sci_connect(void)
++{
++	void __iomem *reg = cl1.sci + SCI_CRP_PM_CC1_0;
++	u32 before = readl(reg), after;
++	int ret;
++
++	cl1.sci_done = true;
++	if (!(before & SCI_CRP_PM_DISCONNECT)) {
++		pr_info("SCI: CRP_PM_CC1_0 %08x, already connected\n", before);
++		return;
++	}
++	writel(before & ~SCI_CRP_PM_DISCONNECT, reg);
++	ret = readl_poll_timeout_atomic(reg, after, after & SCI_CRP_PM_ACTIVE,
++					1, 1000);
++	pr_info("SCI: CRP_PM_CC1_0 %08x -> %08x%s\n", before, after,
++		ret ? " (no ACTIVE ack)" : "");
++}
++
++static void cpucl1_report(unsigned int core, unsigned int cpu)
++{
++	u32 st = readl(cl1.pmu + PMU_CL1_CPU_STATUS(core));
++	bool cl_on = cpucl1_cluster_on();
++
++	pr_info("cpu%u: %s: CPU cfg %08x st %08x NONCPU cfg %08x st %08x GRP1 en %08x pend %08x\n",
++		cpu, cpu_online(cpu) ? "online" : "NOT online",
++		readl(cl1.pmu + PMU_CL1_CPU_CONFIG(core)), st,
++		readl(cl1.pmu + PMU_CL1_NONCPU_CONFIG),
++		readl(cl1.pmu + PMU_CL1_NONCPU_STATUS),
++		readl(cl1.intrgen + INTR_GRP1_ENABLE),
++		readl(cl1.intrgen + INTR_GRP1_UPEND));
++	pr_info("cpu%u: SCI CRP PM: CC1 %08x, ports +0x28 %08x, +0x50 %08x\n",
++		cpu, readl(cl1.sci + SCI_CRP_PM_CC1_0),
++		readl(cl1.sci + SCI_CRP_PM_PORT1),
++		readl(cl1.sci + SCI_CRP_PM_PORT2));
++
++	/* CMU_CPUCL1 and the core's debug APB sit in the cluster power domain */
++	if (!cl_on)
++		return;
++	pr_info("cpu%u: PLL_CON0_PLL_CPUCL1 %08x\n", cpu,
++		readl(cl1.cmu + CMU_CPUCL1_PLL_CON0));
++
++	if ((READ_ONCE(enable) & CPUCL1_DEBUG_PCSR) && cl1.dbg[core] &&
++	    (st & PMU_PWR_ON) == PMU_PWR_ON) {
++		void __iomem *d = cl1.dbg[core];
++		u32 prsr = readl(d + DBG_EDPRSR);
++		u32 lo = readl(d + DBG_EDPCSR_LO);
++		u32 hi = readl(d + DBG_EDPCSR_HI);
++		u32 lo2 = readl(d + DBG_EDPCSR_LO);
++
++		pr_info("cpu%u: EDPRSR %08x EDPCSR %08x%08x (again %08x)\n",
++			cpu, prsr, hi, lo, lo2);
++	}
++}
++
++static void cpucl1_work_fn(struct work_struct *work)
++{
++	unsigned int cpu, core;
++	bool pending = false;
++	ktime_t now = ktime_get();
++
++	mutex_lock(&cl1.lock);
++	if ((READ_ONCE(enable) & CPUCL1_SCI_CONNECT) && !cl1.sci_done &&
++	    cl1.armed && cpucl1_cluster_on())
++		cpucl1_sci_connect();
++
++	for_each_possible_cpu(cpu) {
++		int c = cpucl1_core(cpu);
++
++		if (c < 0 || !test_bit(c, &cl1.armed))
++			continue;
++		core = c;
++		if (cpu_online(cpu) ||
++		    ktime_ms_delta(now, cl1.armed_at[core]) > CPUCL1_REPORT_MS) {
++			cpucl1_report(core, cpu);
++			clear_bit(core, &cl1.armed);
++		} else {
++			pending = true;
++		}
++	}
++	if (pending)
++		schedule_delayed_work(&cl1.work, msecs_to_jiffies(CPUCL1_POLL_MS));
++	mutex_unlock(&cl1.lock);
++}
++
++/* CPUHP_BP_PREPARE_DYN: on the boot CPU, before PSCI CPU_ON of @cpu */
++static int cpucl1_prepare(unsigned int cpu)
++{
++	unsigned int en = READ_ONCE(enable);
++	int core = cpucl1_core(cpu);
++	u32 bit;
++
++	if (core < 0 || !en)
++		return 0;
++
++	mutex_lock(&cl1.lock);
++	if ((en & CPUCL1_WATCHDOG) && !cl1.wdt_done) {
++		cpucl1_wdt_arm();
++		cl1.wdt_done = true;
++	}
++	if ((en & CPUCL1_LPM_INIT) && !cl1.lpm_done) {
++		cpucl1_lpm_init();
++		cl1.lpm_done = true;
++	}
++	if (en & CPUCL1_ARM_WAKE) {
++		bit = BIT(core);
++		pr_info("cpu%u: arming the APM wake (GRP1 en %08x pend %08x NONCPU st %08x CPU st %08x)\n",
++			cpu, readl(cl1.intrgen + INTR_GRP1_ENABLE),
++			readl(cl1.intrgen + INTR_GRP1_UPEND),
++			readl(cl1.pmu + PMU_CL1_NONCPU_STATUS),
++			readl(cl1.pmu + PMU_CL1_CPU_STATUS(core)));
++		writel(readl(cl1.intrgen + INTR_GRP1_UPEND) & bit,
++		       cl1.intrgen + INTR_GRP1_CLEAR);
++		cpucl1_rmw(cl1.intrgen + INTR_GRP1_ENABLE, bit, bit);
++	}
++	if (!cpucl1_cluster_on())
++		cl1.sci_done = false;
++	cl1.armed_at[core] = ktime_get();
++	set_bit(core, &cl1.armed);
++	schedule_delayed_work(&cl1.work, msecs_to_jiffies(CPUCL1_POLL_MS));
++	mutex_unlock(&cl1.lock);
++
++	return 0;
++}
++
++/* CPUHP_AP_ONLINE_DYN: on the CPU that just came up */
++static int cpucl1_ap_online(unsigned int cpu)
++{
++	u64 mpidr = read_cpuid_mpidr();
++	u64 hashed = (mpidr & MPIDR_MT_BITMASK) ? mpidr >> MPIDR_LEVEL_BITS : mpidr;
++	u64 hwid = cpu_logical_map(cpu);
++	bool ok = !((hashed ^ hwid) & mpidr_hash.mask);
++
++	if (!ok)
++		pr_err("cpu%u: MPIDR %#llx does not hash like DT reg %#llx (mask %#llx): keep C2 off\n",
++		       cpu, mpidr, hwid, mpidr_hash.mask);
++	else if (cpucl1_core(cpu) >= 0)
++		pr_info("cpu%u: MIDR %08x MPIDR %#llx (DT reg %#llx), suspend hash ok\n",
++			cpu, read_cpuid_id(), mpidr, hwid);
++	return 0;
++}
++
++static void __iomem *cpucl1_map_compat(const char *compat)
++{
++	struct device_node *np = of_find_compatible_node(NULL, NULL, compat);
++	void __iomem *base;
++
++	if (!np)
++		return NULL;
++	base = of_iomap(np, 0);
++	of_node_put(np);
++	return base;
++}
++
++/*
++ * early_initcall: before smp_init() starts the secondary CPUs, so the same
++ * callbacks run for a boot without maxcpus=4 and for a later online.
++ */
++static int __init exynos9810_cpucl1_init(void)
++{
++	int i, ret;
++
++	if (!of_machine_is_compatible("samsung,exynos9810"))
++		return 0;
++
++	cl1.pmu = cpucl1_map_compat("samsung,exynos9810-pmu");
++	cl1.intrgen = cpucl1_map_compat("samsung,exynos9810-pmu-intr-gen");
++	cl1.wdt = cpucl1_map_compat("samsung,exynos9810-wdt");
++	cl1.cmu = ioremap(CMU_CPUCL1_BASE, SZ_4K);
++	cl1.bus = ioremap(CPUCL1_BUS_BASE, SZ_4K);
++	cl1.sci = ioremap(SCI_BASE, SZ_4K);
++	for (i = 0; i < ARRAY_SIZE(cl1.dbg); i++)
++		cl1.dbg[i] = ioremap(DBG_CL1_CPU(i), SZ_4K);
++	if (!cl1.pmu || !cl1.intrgen || !cl1.cmu || !cl1.bus || !cl1.sci) {
++		pr_err("cannot map the PMU / CMU_CPUCL1 / SCI\n");
++		return -ENOMEM;
++	}
++
++	mutex_init(&cl1.lock);
++	INIT_DELAYED_WORK(&cl1.work, cpucl1_work_fn);
++
++	ret = cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN,
++					"soc/exynos9810-cpucl1:prepare",
++					cpucl1_prepare, NULL);
++	if (ret < 0)
++		return ret;
++	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN,
++					"soc/exynos9810-cpucl1:online",
++					cpucl1_ap_online, NULL);
++	if (ret < 0)
++		return ret;
++
++	if (enable)
++		pr_info("enable=%#x\n", enable);
++	return 0;
++}
++early_initcall(exynos9810_cpucl1_init);
 diff --git a/drivers/thermal/samsung/Kconfig b/drivers/thermal/samsung/Kconfig
 index e1e8035d24fb22b9c50c5cb6522e38120340f446..697a35532343e113ff441c1755f57ccacefb1952 100644
 --- a/drivers/thermal/samsung/Kconfig

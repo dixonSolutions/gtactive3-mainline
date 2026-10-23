@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 14:36:57 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: big cluster bring-up helper
+ (inert by default)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/bigcores.config      | 6 ++++++
+ contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh | 2 +-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+ create mode 100644 contrib/samsung-gtactive3wifi/kernel/bigcores.config
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/bigcores.config b/contrib/samsung-gtactive3wifi/kernel/bigcores.config
+new file mode 100644
+index 0000000..51f3190
+--- /dev/null
++++ b/contrib/samsung-gtactive3wifi/kernel/bigcores.config
+@@ -0,0 +1,6 @@
++# Big (Mongoose M3) cluster bring-up helper: inert unless
++# exynos9810_cpucl1.enable= is set (cmdline or sysfs); maxcpus=4 stays on the
++# command line until the M3 cores are proven to boot.
++CONFIG_EXYNOS9810_CPUCL1=y
++# report how far a secondary core got when it fails to come online
++CONFIG_ARM64_DEBUG_SECONDARY_BOOT=y
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+index d6504dc..b064960 100755
+--- a/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
++++ b/contrib/samsung-gtactive3wifi/kernel/gen-kernel-config.sh
+@@ -29,7 +29,7 @@ OUTCFG=$APORT/config-postmarketos-exynos9810.aarch64
+ LOCK=$ROOT/build/kbuild.lock
+ BUILDER=${BUILDER:-gta3-pkgbuilder}
+ # device fragments, applied in this order
+-DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config performance.config sensors.config gpu.config"
++DEVFRAGS="gtactive3wifi.config virt.config camera.config pm.config hwgaps.config performance.config sensors.config gpu.config bigcores.config"
+ 
+ podman image exists "$BUILDER" ||
+ 	podman build -t "$BUILDER" -f "$HERE/../pkgbuilder.Containerfile" "$HERE/.."
