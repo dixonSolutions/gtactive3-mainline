@@ -16,6 +16,7 @@ on:
     paths:
       - "ci/pages"
       - "scripts/tablet-remote"
+      - "scripts/tablet-phosh"
       - "ci/channels"
       - "pmos/sysupdate-public-key.asc"
       - ".github/workflows/pages.yml"
@@ -42,6 +43,7 @@ jobs:
           python3 ci/pages site
           # the tablet's one-line remote-access setup (docs/INSTALL.md)
           cp scripts/tablet-remote site/remote
+          cp scripts/tablet-phosh site/phosh
           # and the Tailscale build it installs (pinned in the script), for
           # networks that filter pkgs.tailscale.com
           v=$(sed -n 's/^V=//p' scripts/tablet-remote)

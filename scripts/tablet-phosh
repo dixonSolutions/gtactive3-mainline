@@ -1,0 +1,44 @@
+#!/bin/sh
+# Back to Phosh, with no version numbers to type. Run in the tablet's
+# Console:
+#
+#   wget https://dixonsolutions.github.io/gtactive3-mainline/phosh
+#   sudo sh phosh
+#
+# It makes the newest Phosh image the boot default (and remembers Phosh as
+# this tablet's UI), removes the boot entries of other UIs (only if a Phosh
+# entry exists), brings Tailscale remote access back (scripts/tablet-remote)
+# and reboots. Files and settings are untouched: every image shares the
+# same encrypted root.
+set -eu
+
+[ "$(id -u)" = 0 ] || { echo "run it with sudo: sudo sh phosh" >&2; exit 1; }
+E=/boot/EFI/Linux
+C=/boot/loader/loader.conf
+
+ls "$E"/samsung-gtactive3wifi_phosh_edge_*.efi > /dev/null 2>&1 ||
+	{ echo "there is no Phosh image on this tablet: nothing changed" >&2; exit 1; }
+
+mkdir -p /var/lib/gtactive3wifi
+echo phosh > /var/lib/gtactive3wifi/ui
+{ grep -v '^default' "$C" 2> /dev/null || :; echo 'default samsung-gtactive3wifi_phosh_edge_*'; } > "$C.new"
+mv -f "$C.new" "$C"
+for f in "$E"/*.efi; do
+	case ${f##*/} in
+	samsung-gtactive3wifi_phosh_edge_*) ;;
+	*) rm -f "$f" && echo "removed boot entry ${f##*/}" ;;
+	esac
+done
+sync
+echo "boot default: the newest Phosh image"
+
+echo "setting up Tailscale remote access..."
+if wget -qO /tmp/gta3-remote https://dixonsolutions.github.io/gtactive3-mainline/remote; then
+	sh /tmp/gta3-remote || echo "Tailscale setup failed (see above); Phosh is still the boot default"
+else
+	echo "could not download the Tailscale setup (no internet?); Phosh is still the boot default"
+fi
+
+echo "rebooting into Phosh in 15 seconds (Ctrl+C to stay here)"
+sleep 15
+systemctl reboot
