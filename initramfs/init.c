@@ -949,7 +949,7 @@ static void serve(int c)
 			int fd = open(line + 6, O_RDONLY);
 			long rr = fd < 0 ? -2 :
 				__nolibc_syscall5(294 /* __NR_kexec_file_load */, fd, -1, 1, "",
-						  2 /* KEXEC_FILE_NO_INITRAMFS */);
+						  4 /* KEXEC_FILE_NO_INITRAMFS */);
 
 			if (fd >= 0) close(fd);
 			if (rr) {
