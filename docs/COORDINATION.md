@@ -49,6 +49,9 @@ section 1).
   hand it package/kernel changes instead of building images themselves.
 - The pmaports worktree (build/wt/pmaports-duranium) is shared: commit your
   aport change right away and bump pkgrel; never leave edits uncommitted.
+- The main checkout is shared too: when a push is rejected, `git pull
+  --rebase`, never `git reset` to origin/main (a reset dropped another
+  session's unpushed commits on 2026-10-24).
 
 ## 3. Reporting
 
