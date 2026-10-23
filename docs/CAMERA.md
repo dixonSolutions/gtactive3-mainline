@@ -89,6 +89,22 @@ rear focus off, contrast off. Causes and fixes on drv/cam
   0007-0009 (build/scratch/camera/deliver/libcamera-aport, compile-tested);
   CI needs a native arm64 job (deliver/libcamera-ci-job.yml).
 
+### camt6 (2026-10-23 20:10, 26102304, kernel #19, drv/cam b40280818)
+
+- Stream failures (DMA_OTF_OVERLAP on every frame, 0 DMA starts, or frames
+  without data) follow the previous stream on the same VC DMA, not the
+  mode or format: a stream fails after a clean one and works after a
+  failed one (which was aborted). DMA_CTRL off only applies at the next
+  frame start, so a stop mid-frame leaves the DMA busy: c4fa71896 aborts it
+  at every stop. To be confirmed by camt7 (deliver/camt7.sh).
+- S5K3L6: every 2048-pixel binned output (analogue crop or output size)
+  gives ~760 lost-frame-start errors per frame; the stock 2064x1548 window
+  is clean and is the default (bin_crop=0). 4096x3072 is clean.
+- GC5035: 2560x1920, 1280x960 (packed and 16-bit) and 2576x1932 packed
+  wrote exact frames when the DMA was idle; the one-line overrun of camt5
+  did not recur.
+- DW9808: no busy errors with the direct moves (a87c65235), position 450.
+
 ## Design
 
 Raw Bayer straight from the MIPI receiver to memory, image processing in
