@@ -14,14 +14,16 @@ yourself, autonomously, overnight. Keep going until the mission is met.
 - Kernel exports since the entry below (pmos/, newest last): cand/1028 r19
   (panel powered down on blank), cand/1029 r20 (all eight CPUs:
   drv/bigcores-b), cand/1030 r21 + device r44 (camera fixes and tuning),
-  cand/1031 r22 (panfrost gpu_busy_percent). Device r39 (Phosh suspend,
+  cand/1031 r22 (panfrost gpu_busy_percent), cand/1032 r23 + device r45
+  (suspend on screen off, touch after sleep). Device r39 (Phosh suspend,
   blank 3 min, suspend 10 min), r41 (C2 idle on by default). Local image
   version in build/wt/duranium: 26102219~test4. pmos/VERIFIED does not
   exist yet: release channels get nothing until an on-device pass of an
   export (scripts/pmos-verify).
 - Tablet: on the dock, charging (52 %). The BCM4375 firmware crashed at
   08:51 (session "BCM4375 Wi-Fi firmware crash after boot") and the tablet
-  was unreachable; ~09:40 it had rebooted and the user unlocked it. Booted:
+  was unreachable; at 09:13 it rebooted (a himax touch module swap by
+  "Suspend, updates, cores", not the Wi-Fi crash) and the user unlocked it. Booted:
   Phosh 26102304 (CI), kernel #19 (built 2026-10-23 04:42), `maxcpus=4` on
   the command line (big cores unused in this image). Wi-Fi came back by
   itself after the reboot (brcmfmac at 74 s, firmware 18.41.117), USB
@@ -30,6 +32,12 @@ yourself, autonomously, overnight. Keep going until the mission is met.
 - In flight: the Wi-Fi session works offline on why the firmware crashed
   and on a recovery path that needs no human; its driver-reload test is on
   hold and gets slotted at a quiet moment (with the next A/B reboot).
+  Update 09:55: the user said go; the Wi-Fi session tests its
+  gtactive3wifi-wifi-recover.service (stage A brcmfmac-only reload, stage
+  B controller remove) under build/device.lock. Next: one A/B update
+  straight to r23 (kernel cand/1032 + device r45, CI run 40032957684),
+  skipping r22, so the user types the passphrase once; the user runs
+  `sudo updatectl update` and reboots.
 - Next three steps (same as PLAN.md): see PLAN.md "Next three steps".
 - Waits for the owner: a console route (USB cable to the laptop, or the
   tablet back on Wi-Fi) when the Wi-Fi session needs it; charging current

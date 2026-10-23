@@ -20,7 +20,7 @@ touching the tablet (reset → Download mode → automatic reflash, or watchdog 
 1. Wi-Fi recovery after a BCM4375 firmware crash (driver reload or PCIe
    power cycle) so the tablet stays reachable; session "BCM4375 Wi-Fi
    firmware crash after boot".
-2. Device-verify the cand/1031 (r22) export in the booted UI's image and
+2. Device-verify the cand/1032 (r23) export in the booted UI's image and
    record it with `scripts/pmos-verify`, so release channels get a build.
 3. Battery life: C2 residency in long idle (r41), deep sleep
    (drv/deepsleep), then a cable-out drain measurement with the owner.
