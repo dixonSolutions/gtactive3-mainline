@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""Helpers for the firmware scripts (docs/FIRMWARE.md). Reads Samsung's
+files, writes only under the directory it is given; nothing here talks to a
+device or the network.
+
+    firmware-tool redact [--scrub VALUE]...     stdin -> stdout without serials, MACs, IMEIs
+    firmware-tool dtb FILE... -o DIR            every DTB in boot/dtb/dtbo/vendor_boot images (+ .dts with dtc)
+    firmware-tool ikconfig KERNEL OUT           the kernel's embedded .config (CONFIG_IKCONFIG)
+    firmware-tool summary DIR                   DIR/SUMMARY.md: what a snapshot or stock extract holds
+    firmware-tool targets ROOT... [--match KW,...]   REA targets: "name|path|extra args" lines
+    firmware-tool re-index RE_DIR               RE_DIR/INDEX.md from the REA analysis results
+
+Python 3.11+, standard library only (dtc and lz4 are used when present).
+"""
+import gzip
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# getprop keys / key=value names that identify the device or its owner
+PRIVATE_KEY = re.compile(
+    r"serial|imei|meid|\besn\b|iccid|imsi|msisdn|mac_?addr|wifimac|\bmac\b|bt_?addr|bdaddr|"
+    r"bluetooth\.address|ssid|account|e-?mail|phone_?number|\bnumber\b|em\.did|ap_serial|"
+    r"cpu_?id|chip_?id|unique_?id|android_id|\bdid\b|ril\.[a-z_.]*(?:num|id)\b|sales_code_?id",
+    re.I)
+MAC = re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")
+IMEI = re.compile(r"(?<![0-9])[0-9]{15}(?![0-9])")
+PROP = re.compile(r"^\[([^\]]*)\]: \[(.*)\]$")
+KV = re.compile(r"(?<![\w.])([\w.]+)=(\S+)")
+
+
+def redact_line(line, scrub):
+    m = PROP.match(line.rstrip("\n"))
+    if m and PRIVATE_KEY.search(m.group(1)) and m.group(2):
+        return f"[{m.group(1)}]: [redacted]\n"
+    line = KV.sub(lambda k: f"{k.group(1)}=redacted" if PRIVATE_KEY.search(k.group(1)) else k.group(0), line)
+    for v in scrub:
+        line = line.replace(v, "redacted")
+    line = MAC.sub("xx:xx:xx:xx:xx:xx", line)
+    return IMEI.sub("redacted", line)
+
+
+def cmd_redact(args):
+    scrub = []
+    while args[:1] == ["--scrub"]:
+        if len(args) > 1 and len(args[1]) >= 4:
+            scrub.append(args[1])
+        args = args[2:]
+    for line in sys.stdin:
+        sys.stdout.write(redact_line(line, scrub))
+
+
+# --- device trees ---------------------------------------------------------
+
+FDT_MAGIC = b"\xd0\x0d\xfe\xed"
+DT_TABLE_MAGIC = 0xD7B7AB1E  # dtbo/dtb partitions (system/libufdt dt_table.h)
+
+
+def fdt_root_props(b):
+    """model and compatible of a DTB's root node (no dtc needed)."""
+    try:
+        (_, size, off_struct, off_strings) = struct.unpack_from(">4I", b, 0)
+        pos, depth, out = off_struct, 0, {}
+        while pos < size:
+            tok = struct.unpack_from(">I", b, pos)[0]
+            pos += 4
+            if tok == 1:  # BEGIN_NODE
+                end = b.index(b"\0", pos)
+                pos = (end + 4) & ~3
+                depth += 1
+                if depth > 1:
+                    break
+            elif tok == 3:  # PROP
+                ln, nameoff = struct.unpack_from(">2I", b, pos)
+                pos += 8
+                name = b[off_strings + nameoff:b.index(b"\0", off_strings + nameoff)].decode(errors="replace")
+                if name in ("model", "compatible"):
+                    out[name] = [s.decode(errors="replace") for s in b[pos:pos + ln].split(b"\0") if s]
+                pos = (pos + ln + 3) & ~3
+            elif tok in (2, 9):  # END_NODE, END
+                break
+        return out
+    except (struct.error, ValueError):
+        return {}
+
+
+def carve_dtbs(data):
+    """(offset, bytes) of every DTB: DT table entries, else FDT blobs found by magic."""
+    if len(data) >= 32 and struct.unpack_from(">I", data, 0)[0] == DT_TABLE_MAGIC:
+        _, total, hsize, esize, count, eoff = struct.unpack_from(">6I", data, 0)
+        out = []
+        for i in range(count):
+            size, off = struct.unpack_from(">2I", data, eoff + i * esize)
+            if off + size <= len(data) and data[off:off + 4] == FDT_MAGIC:
+                out.append((off, data[off:off + size]))
+        return out
+    out, pos = [], 0
+    while (pos := data.find(FDT_MAGIC, pos)) >= 0:
+        try:
+            total, off_struct, _, _, version = struct.unpack_from(">5I", data, pos + 4)
+        except struct.error:
+            break
+        if 40 <= total <= 16 << 20 and off_struct < total and 16 <= version <= 17 and pos + total <= len(data):
+            out.append((pos, data[pos:pos + total]))
+            pos += total
+        else:
+            pos += 4
+    return out
+
+
+def cmd_dtb(args):
+    if "-o" not in args:
+        sys.exit(__doc__)
+    i = args.index("-o")
+    files, out = args[:i] + args[i + 2:], Path(args[i + 1])
+    out.mkdir(parents=True, exist_ok=True)
+    dtc = shutil.which("dtc")
+    n = 0
+    for f in files:
+        data = Path(f).read_bytes()
+        for j, (off, blob) in enumerate(carve_dtbs(data)):
+            p = out / f"{Path(f).name.split('.')[0]}-{j:02d}.dtb"
+            p.write_bytes(blob)
+            props = fdt_root_props(blob)
+            print(f"{p.name}\t@0x{off:x}\t{len(blob)}\t{' '.join(props.get('model', []))}\t"
+                  f"{' '.join(props.get('compatible', []))}")
+            if dtc:
+                subprocess.run([dtc, "-q", "-I", "dtb", "-O", "dts", "-o", str(p.with_suffix(".dts")), str(p)],
+                               stderr=subprocess.DEVNULL)
+            n += 1
+    if not n:
+        print("no device tree found", file=sys.stderr)
+    if not dtc:
+        print("dtc is not installed: .dtb files only (install device-tree-compiler / dtc)", file=sys.stderr)
+
+
+def decompress(data):
+    if data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    if data[:4] == b"\x04\x22\x4d\x18" and shutil.which("lz4"):
+        return subprocess.run(["lz4", "-dc"], input=data, capture_output=True, check=True).stdout
+    return data
+
+
+def cmd_ikconfig(args):
+    if len(args) != 2:
+        sys.exit(__doc__)
+    data = decompress(Path(args[0]).read_bytes())
+    s = data.find(b"IKCFG_ST")
+    e = data.find(b"IKCFG_ED", s)
+    if s < 0 or e < 0:
+        sys.exit("no embedded config (the stock kernel was built without CONFIG_IKCONFIG)")
+    Path(args[1]).write_bytes(gzip.decompress(data[s + 8:e]))
+    print(f"{args[1]}: {sum(1 for l in Path(args[1]).read_text().splitlines() if l.startswith('CONFIG_'))} options")
+
+
+# --- what a snapshot / extract holds ------------------------------------------
+
+def is_elf(p):
+    try:
+        with open(p, "rb") as f:
+            h = f.read(20)
+    except OSError:
+        return None
+    if h[:4] != b"\x7fELF" or len(h) < 20:
+        return None
+    return {0xb7: "arm64", 0x28: "arm", 0x3e: "x86_64", 0x03: "x86"}.get(struct.unpack_from("<H", h, 18)[0], "elf")
+
+
+def is_text(p):
+    try:
+        with open(p, "rb") as f:
+            h = f.read(4096)
+    except OSError:
+        return True
+    return not h or b"\0" not in h
+
+
+def props_of(d):
+    """getprop output (snapshot) or the build.prop files (stock tree)."""
+    props = {}
+    p = d / "props.txt"
+    if p.is_file():
+        for line in p.read_text(errors="replace").splitlines():
+            m = PROP.match(line)
+            if m:
+                props[m.group(1)] = m.group(2)
+        return props
+    for bp in sorted(d.glob("*/*/build.prop")) + sorted(d.glob("*/*/etc/build.prop")) + sorted(d.glob("*/*/system/build.prop")):
+        for line in bp.read_text(errors="replace").splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                props.setdefault(k.strip(), v.strip())
+    return props
+
+
+def trees(d):
+    """The partition trees of a snapshot (tree/) or a stock extract (fs/)."""
+    out = {}
+    for base in (d / "tree", d / "fs"):
+        if base.is_dir():
+            for p in sorted(base.iterdir()):
+                if p.is_dir():
+                    out[p.name] = p
+            if (base / "system" / "etc").is_dir():
+                out["system"] = base / "system"
+    return out
+
+
+def first(props, *keys):
+    for k in keys:
+        if props.get(k):
+            return props[k]
+    return ""
+
+
+def read(p, limit=200000):
+    try:
+        return p.read_text(errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+def cmd_summary(args):
+    if len(args) != 1:
+        sys.exit(__doc__)
+    d = Path(args[0])
+    props, tr, L = props_of(d), trees(d), []
+    src = re.search(r"^version: (\S+)", read(d / "SOURCE.txt"), re.M)
+    if src and src.group(1) != "unknown":
+        props.setdefault("ro.build.PDA", src.group(1))
+    a = L.append
+    a(f"# Firmware summary: {d.name}\n")
+    a("Generated by `scripts/firmware-tool summary`. Private (serial-free, but Samsung's data): "
+      "never commit; copy facts into docs/HARDWARE.md with their source.\n")
+    a("## Identity\n\n| | |\n|---|---|")
+    for label, keys in (
+            ("Model", ("ro.product.model", "ro.product.vendor.model", "ro.product.system.model")),
+            ("Device", ("ro.product.device", "ro.product.vendor.device")),
+            ("Firmware (PDA)", ("ro.build.PDA", "ro.vendor.build.PDA")),
+            ("Bootloader", ("ro.bootloader", "ro.boot.bootloader")),
+            ("Hardware", ("ro.hardware", "ro.boot.hardware")),
+            ("Platform", ("ro.board.platform", "ro.hardware.chipname")),
+            ("SoC", ("ro.soc.model",)),
+            ("Android", ("ro.build.version.release", "ro.vendor.build.version.release")),
+            ("First API level", ("ro.product.first_api_level", "ro.board.first_api_level")),
+            ("Security patch", ("ro.build.version.security_patch", "ro.vendor.build.security_patch")),
+            ("Treble / VNDK", ("ro.vndk.version",)),
+            ("Dynamic partitions", ("ro.boot.dynamic_partitions",)),
+            ("A/B slots", ("ro.boot.slot_suffix", "ro.build.ab_update")),
+            ("Fingerprint", ("ro.build.fingerprint", "ro.vendor.build.fingerprint"))):
+        a(f"| {label} | {first(props, *keys) or '?'} |")
+    ver = read(d / "system" / "version.txt").strip() or read(d / "dt" / "kernel-version.txt").strip()
+    a(f"| Kernel | {ver or '?'} |\n")
+
+    cpu = read(d / "system" / "cpuinfo.txt")
+    if cpu:
+        parts = sorted(set(re.findall(r"CPU part\s*:\s*(0x[0-9a-f]+)", cpu)))
+        a(f"CPU: {len(re.findall(r'^processor', cpu, re.M))} cores, parts {', '.join(parts) or '?'} "
+          "(0xd05 A55, 0xd0a A75, 0xd0b A76, 0xd41 A78, 0x0... Samsung M-cores: see /proc/cpuinfo)\n")
+
+    blk = read(d / "system" / "block.txt")
+    if blk.strip():
+        a("## Storage\n\n```\n" + blk.strip() + "\n```\n")
+    byname = read(d / "system" / "by-name.txt")
+    if byname.strip():
+        names = sorted(set(re.findall(r"\s([A-Za-z0-9_]+) -> ", byname)))
+        a(f"## Partitions ({len(names)})\n\n" + ", ".join(f"`{n}`" for n in names) + "\n")
+
+    dts = [p for p in (d / "system" / "device-tree.dts", ) if p.is_file()] + sorted((d / "dt").glob("*.dts"))
+    if dts:
+        compat = {}
+        for p in dts:
+            for m in re.finditer(r'compatible = ((?:"[^"]*",? ?)+);', read(p, 20 << 20)):
+                for c in re.findall(r'"([^"]*)"', m.group(1)):
+                    compat[c] = compat.get(c, 0) + 1
+        a(f"## Device tree compatibles ({len(compat)}, from {', '.join(p.name for p in dts[:6])})\n")
+        a("```\n" + "\n".join(f"{n:4} {c}" for c, n in sorted(compat.items())) + "\n```\n")
+    bi = read(d / "dt" / "boot-info.txt")
+    if bi.strip():
+        a("## Stock boot image header\n\n```\n" + bi.strip() + "\n```\n")
+    dtl = read(d / "dt" / "dtbs.txt")
+    if dtl.strip():
+        a("## DTBs in the boot images\n\n```\n" + dtl.strip() + "\n```\n")
+
+    for name, title in (("input-devices.txt", "Input devices"), ("i2c.txt", "I2C devices"),
+                        ("spi.txt", "SPI devices"), ("power-supply.txt", "Power supplies"),
+                        ("thermal.txt", "Thermal zones"), ("asound.txt", "Sound cards")):
+        t = read(d / "system" / name)
+        if name == "input-devices.txt":
+            t = "\n".join(re.findall(r'^N: Name="([^"]*)"', t, re.M))
+        if t.strip():
+            a(f"## {title}\n\n```\n{t.strip()[:6000]}\n```\n")
+    sens = read(d / "system" / "sensors.txt")
+    rows = re.findall(r"^\s*0x[0-9a-f]+\)\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|", sens, re.M)
+    if rows:
+        a("## Sensors (dumpsys sensorservice)\n\n" + "\n".join(f"- {n} ({v})" for n, v in rows[:80]) + "\n")
+
+    fw, hals, mods, vintf = [], [], [], set()
+    for part, root in tr.items():
+        for sub in ("firmware", "etc/firmware"):
+            fdir = root / sub
+            if fdir.is_dir():
+                for p in sorted(fdir.rglob("*")):
+                    if p.is_file():
+                        fw.append((f"{part}/{p.relative_to(root)}", p.stat().st_size))
+        for pat in ("lib/hw/*.so", "lib64/hw/*.so", "bin/hw/*"):
+            hals += [f"{part}/{p.relative_to(root)}" for p in sorted(root.glob(pat)) if p.is_file()]
+        mods += [f"{part}/{p.relative_to(root)}" for p in sorted(root.rglob("*.ko"))]
+        for man in list(root.glob("etc/vintf/manifest*.xml")) + list(root.glob("etc/vintf/manifest/*.xml")):
+            vintf |= set(re.findall(r"<name>([^<]+)</name>", read(man)))
+    if fw:
+        a(f"## Firmware files ({len(fw)}, {sum(s for _, s in fw) >> 20} MiB)\n\n```\n" +
+          "\n".join(f"{s:>10}  {p}" for p, s in fw) + "\n```\n")
+    if vintf:
+        a(f"## HALs declared (VINTF, {len(vintf)})\n\n```\n" + "\n".join(sorted(vintf)) + "\n```\n")
+    if hals:
+        a(f"## HAL binaries ({len(hals)})\n\n```\n" + "\n".join(hals) + "\n```\n")
+    a(f"## Kernel modules ({len(mods)})\n\n" + ("```\n" + "\n".join(mods) + "\n```\n" if mods
+                                               else "None found: the stock kernel is probably monolithic.\n"))
+    errs = read(d / "errors.txt")
+    if errs.strip():
+        a("## Not collected\n\n```\n" + errs.strip()[:4000] + "\n```\n")
+    (d / "SUMMARY.md").write_text("\n".join(L) + "\n")
+    print(d / "SUMMARY.md")
+
+
+# --- REA targets ----------------------------------------------------------------
+
+GROUPS = [  # (group, path keywords): first match wins
+    ("audio", ("audio", "abox", "calliope", "sound", "dsm", "tfa", "cs35l", "aw88", "rt5", "mixer")),
+    ("camera", ("camera", "cam", "isp", "fimc", "is_lib", "setfile", "sensor_module", "ois")),
+    ("sensors", ("sensor", "shub", "ssp", "chub", "contexthub")),
+    ("gnss", ("gnss", "gps", "lhd", "location")),
+    ("fingerprint", ("fingerprint", "biometrics", "egis", "goodix", "qfp", "fpc")),
+    ("wifi-bt", ("bcm", "wlan", "wifi", "bluetooth", "bt_", "brcm", "dhd", "slsi", "scsc", "nfc", "sec_nfc")),
+    ("modem", ("ril", "modem", "cpboot", "cbd", "radio", "ims")),
+    ("display", ("hwcomposer", "gralloc", "display", "decon", "dpu", "panel", "mdnie")),
+    ("gpu", ("mali", "gpu", "vulkan", "egl")),
+    ("npu-dsp", ("npu", "dsp", "vipx", "score", "eden", "nnapi")),
+    ("media", ("mfc", "codec", "omx", "c2", "media")),
+    ("power", ("power", "thermal", "charger", "battery", "health", "fuel", "pmic", "s2mpb", "vibrator")),
+    ("touch", ("tsp", "touch", "input", "pen", "wacom", "epen")),
+    ("security", ("tee", "tz", "teegris", "keymaster", "keymint", "gatekeeper", "drm", "hdcp", "secure")),
+    ("usb", ("usb", "mtp", "typec", "ccic")),
+]
+
+
+def group_of(path):
+    s = path.lower()
+    for g, kws in GROUPS:
+        if any(k in s for k in kws):
+            return g
+    return "other"
+
+
+def cmd_targets(args):
+    match = []
+    if "--match" in args:
+        i = args.index("--match")
+        match = [k.strip().lower() for k in args[i + 1].split(",") if k.strip()]
+        args = args[:i] + args[i + 2:]
+    if not args:
+        sys.exit(__doc__)
+    seen = set()
+    for r in args:
+        for root, dirs, files in os.walk(r):
+            dirs.sort()
+            rel_root = Path(root)
+            for fn in sorted(files):
+                p = rel_root / fn
+                if p.is_symlink() or not p.is_file():
+                    continue
+                # classify by the path inside the tree (the tree itself may be under firmware/)
+                s = "/" + str(p.relative_to(r))
+                hal = re.search(r"/lib(64)?/hw/[^/]+\.so$|/bin/hw/[^/]+$", s)
+                fwf = "/firmware/" in s
+                lib = re.search(r"/lib(64)?/lib[^/]+\.so$", s) and group_of(fn) != "other"
+                if not (hal or fwf or lib):
+                    continue
+                arch = is_elf(p)
+                if not arch and (not fwf or is_text(p)):
+                    continue
+                g = group_of(s)
+                if match and not any(k in s.lower() or k == g for k in match):
+                    continue
+                bits = "64" if "/lib64/" in s else ("32" if "/lib/" in s else "")
+                stem = fn[:-3] if fn.endswith(".so") else fn
+                name = re.sub(r"[^A-Za-z0-9._-]", "_", f"{g}{bits}-{stem}")
+                while name in seen:
+                    name += "_"
+                seen.add(name)
+                try:
+                    rel = p.resolve().relative_to(ROOT)
+                except ValueError:
+                    rel = p.resolve()
+                if arch:
+                    print(f"{name}|{rel}|")
+                else:
+                    # raw firmware: REA needs the CPU and load address (from the
+                    # driver that loads it, or the stock DT); fill in, then uncomment
+                    print(f"# {name}|{rel}|--target-format raw-binary --architecture arm --entry-point 0x0")
+
+
+def cmd_re_index(args):
+    if len(args) != 1:
+        sys.exit(__doc__)
+    re_dir = Path(args[0])
+    a = re_dir / "analysis"
+    rows = []
+    for m in sorted(a.glob("*.meta")) if a.is_dir() else []:
+        n = m.stem
+        meta = m.read_text().strip().split("\t")
+        if meta[0] == "missing":
+            rows.append((n, meta[1] if len(meta) > 1 else "", "MISSING", "", "", "", "", "", ""))
+            continue
+        e, secs, path = meta[0], meta[1], meta[2]
+        extra = meta[3] if len(meta) > 3 else ""
+        fmt = arch = lang = procs = strs = ""
+        try:
+            d = json.loads((a / f"{n}.json").read_text())
+            s = d.get("subject", {})
+            fmt, arch = s.get("format", ""), s.get("architecture", "")
+            up = d.get("analysis_profile", {}).get("parameters", {}).get("upstream_analysis_profile") or {}
+            lang = up.get("parameters", {}).get("language_id", "")
+            r = d.get("normalized_result") or {}
+            procs, strs = r.get("procedure_count", ""), r.get("string_count", "")
+        except (OSError, ValueError, AttributeError) as x:
+            lang = f"error: {str(x)[:60]}"
+        rows.append((n, path, "ok" if e == "0" else f"exit {e}", secs, f"{fmt}/{arch}", lang, procs, strs, extra))
+    decomp = re_dir / "decomp"
+    fns = sorted(str(p.relative_to(decomp)) for p in decomp.rglob("*.c")) if decomp.is_dir() else []
+    with open(re_dir / "INDEX.md", "w") as f:
+        f.write("# REA / Ghidra analysis index (scripts/firmware-decompile index)\n\n"
+                "Proprietary inputs and their decompiled output: never commit any of it. "
+                "Evidence JSON in `analysis/`, Ghidra snapshots in `snapshots/`, functions in `decomp/`. "
+                "What we learn goes into docs/re/, in our own words.\n\n"
+                "| name | path | status | s | format/arch | language | procs | strings | extra args |\n"
+                "|---|---|---|---:|---|---|---:|---:|---|\n")
+        for r in rows:
+            f.write("| " + " | ".join(str(c) for c in r) + " |\n")
+        if fns:
+            f.write(f"\n## Decompiled functions ({len(fns)})\n\n" + "\n".join(f"- `decomp/{x}`" for x in fns) + "\n")
+    print(re_dir / "INDEX.md")
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    cmd, args = sys.argv[1], sys.argv[2:]
+    fn = {"redact": cmd_redact, "dtb": cmd_dtb, "ikconfig": cmd_ikconfig, "summary": cmd_summary,
+          "targets": cmd_targets, "re-index": cmd_re_index}.get(cmd)
+    if not fn:
+        sys.exit(__doc__)
+    fn(args)
+
+
+if __name__ == "__main__":
+    main()

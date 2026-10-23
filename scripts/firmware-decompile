@@ -1,0 +1,251 @@
+#!/bin/bash
+# Decompile Samsung's vendor binaries (HALs, daemons, DSP/MCU firmware) with
+# REA and its Ghidra provider, into firmware.re_dir (config.toml; gitignored).
+# For interoperability: what we learn goes into docs/re/ in our own words;
+# the decompiled output never leaves this PC (docs/FIRMWARE.md).
+#
+#   scripts/firmware-decompile doctor [--write-env]   REA, Ghidra, Java ready?
+#   scripts/firmware-decompile targets [KEYWORD...] [--add]
+#        candidates from the snapshot / stock trees ("name|path|extra args");
+#        KEYWORDs filter (audio, camera, sensors, gnss, wifi-bt, libfoo, ...);
+#        --add appends the binaries (not raw blobs) to <re_dir>/targets.txt
+#   scripts/firmware-decompile run [--yes] [--jobs N] [NAME...]
+#        analyze targets.txt (or only NAMEs): analysis/, snapshots/, INDEX.md
+#   scripts/firmware-decompile search NAME REGEX [strings]
+#        function names (or strings) matching REGEX: "address name" lines
+#   scripts/firmware-decompile fn NAME FUNCTION|0xADDR    one function as C
+#        -> decomp/NAME/FUNCTION.c (and stdout)
+#   scripts/firmware-decompile index                    rewrite INDEX.md
+#
+# Tools (not shipped here): REA (npm install -g rea-agents), Ghidra 12+
+# (github.com/NationalSecurityAgency/ghidra/releases) and a JDK 21. Their
+# locations: environment (GHIDRA_INSTALL_DIR, JAVA_HOME, REA) or
+# <firmware.dir>/re-env.sh, which doctor --write-env creates.
+#
+# Raw firmware (no ELF header) needs its CPU and load address: targets.txt
+# lines like "fw-dsp|path|--target-format raw-binary --architecture arm
+# --entry-point 0x0", from the driver that loads it or the stock DT.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT"
+eval "$(scripts/config shell)"
+TOOL=$ROOT/scripts/firmware-tool
+RE=$CFG_FIRMWARE_RE_DIR
+ENVF=$CFG_FIRMWARE_DIR/re-env.sh
+LIST=$RE/targets.txt
+
+die() { echo "firmware-decompile: $*" >&2; exit 1; }
+say() { printf '\n== %s\n' "$*"; }
+
+# shellcheck disable=SC1090
+[ -f "$ENVF" ] && . "$ENVF"
+REA=${REA:-$(command -v rea || true)}
+[ -n "${JAVA_HOME:-}" ] && export PATH=$JAVA_HOME/bin:$PATH
+# large binaries exceed REA's default Ghidra import deadline and heap
+export REA_GHIDRA_STARTUP_TIMEOUT_MS=${REA_GHIDRA_STARTUP_TIMEOUT_MS:-1800000}
+export GHIDRA_MAXMEM=${GHIDRA_MAXMEM:-4G}
+LOW="nice -n 19 ionice -c3"
+
+guard() {
+	if git rev-parse --git-dir >/dev/null 2>&1 && ! git check-ignore -q -- "$RE/x"; then
+		die "$RE is not gitignored: decompiled code must never be committed"
+	fi
+}
+
+tools_ok() {
+	local ok=0
+	if [ -n "$REA" ] && [ -x "$REA" ]; then echo "rea:    $REA ($("$REA" --version 2>/dev/null | head -1))"
+	else echo "rea:    missing (npm install -g rea-agents)"; ok=1; fi
+	if [ -n "${GHIDRA_INSTALL_DIR:-}" ] && [ -x "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" ]; then
+		echo "ghidra: $GHIDRA_INSTALL_DIR"
+	else echo "ghidra: missing (GHIDRA_INSTALL_DIR; github.com/NationalSecurityAgency/ghidra/releases)"; ok=1; fi
+	local jv
+	jv=$(java -version 2>&1 | sed -nE 's/.*version "([0-9]+).*/\1/p' | head -1)
+	if [ "${jv:-0}" -ge 21 ]; then echo "java:   $jv ($(command -v java))"
+	else echo "java:   ${jv:-missing} (Ghidra 12 needs a JDK 21: JAVA_HOME)"; ok=1; fi
+	return $ok
+}
+
+doctor() {
+	guard
+	echo "output: $RE (gitignored)"
+	echo "env:    $ENVF $([ -f "$ENVF" ] && echo "(sourced)" || echo "(none)")"
+	if [ "${1:-}" = --write-env ]; then
+		local g j
+		# installs, not Ghidra's settings directories: they have analyzeHeadless / bin/java
+		g=${GHIDRA_INSTALL_DIR:-$(find "$HOME" /opt -maxdepth 4 -path '*/ghidra_*/support/analyzeHeadless' 2>/dev/null |
+			sed 's,/support/analyzeHeadless$,,' | sort -V | tail -1)}
+		j=${JAVA_HOME:-$(find "$HOME" /usr/lib/jvm /opt -maxdepth 4 -path '*jdk*21*/bin/java' 2>/dev/null |
+			sed 's,/bin/java$,,' | sort -V | tail -1)}
+		mkdir -p "$(dirname "$ENVF")"
+		cat >"$ENVF" <<-EOF
+		# local paths for scripts/firmware-decompile (gitignored: this PC only)
+		export GHIDRA_INSTALL_DIR=$g
+		export JAVA_HOME=$j
+		export GHIDRA_MAXMEM=4G
+		EOF
+		echo "wrote $ENVF (check the paths)"
+		# shellcheck disable=SC1090
+		. "$ENVF"
+		[ -n "${JAVA_HOME:-}" ] && export PATH=$JAVA_HOME/bin:$PATH
+	fi
+	tools_ok || { echo "not ready: install what is missing, then: $0 doctor --write-env"; exit 1; }
+	echo "ready"
+}
+
+trees() { # the partition trees to search: snapshots and stock extracts
+	local t
+	for t in "$CFG_FIRMWARE_SNAPSHOT_DIR"/*/tree "$CFG_FIRMWARE_STOCK_DIR"/*/fs; do
+		[ -d "$t" ] && echo "$t"
+	done
+}
+
+targets() {
+	guard
+	local add=0 kw=() t=()
+	for a in "$@"; do
+		if [ "$a" = --add ]; then add=1; else kw+=("$a"); fi
+	done
+	mapfile -t t < <(trees)
+	[ ${#t[@]} -gt 0 ] || die "no firmware trees yet: scripts/firmware-snapshot run, or scripts/firmware-extract PACKAGE"
+	local m=()
+	[ ${#kw[@]} -gt 0 ] && m=(--match "$(IFS=,; echo "${kw[*]}")")
+	if [ "$add" = 1 ]; then
+		mkdir -p "$RE"
+		touch "$LIST"
+		local n=0 line
+		while IFS= read -r line; do
+			case $line in "#"*) continue ;; esac
+			grep -qF -- "|${line#*|}" "$LIST" && continue
+			echo "$line" >>"$LIST"
+			n=$((n + 1))
+		done < <(python3 -I "$TOOL" targets "${t[@]}" "${m[@]}")
+		echo "$n added to $LIST ($(grep -cv '^#' "$LIST") targets)"
+	else
+		python3 -I "$TOOL" targets "${t[@]}" "${m[@]}"
+	fi
+}
+
+confirm() {
+	[ "${YES:-0}" = 1 ] && return 0
+	[ -t 0 ] || die "not a terminal: ask the owner first, then run with --yes"
+	cat <<-EOF
+	This decompiles Samsung's binaries listed in $LIST on this PC, for
+	interoperability (making the hardware work with Linux). The output is
+	Samsung's code in another form: it stays in $RE/ (gitignored) and is
+	never published. Our own notes go to docs/re/.
+	EOF
+	read -r -p "Go on? [y/N] " a
+	case $a in y | Y | yes) ;; *) die "cancelled" ;; esac
+}
+
+analyze_one() { # name path extra...
+	local n=$1 f=$2 t0 e
+	shift 2
+	[ -f "$f" ] || { printf 'missing\t%s\n' "$f" >"$RE/analysis/$n.meta"; echo "[$n] MISSING $f"; return; }
+	t0=$(date +%s)
+	e=0
+	timeout 2400 $LOW "$REA" analyze "$f" --provider ghidra --snapshot "$RE/snapshots/$n.snap" "$@" --format json \
+		>"$RE/analysis/$n.json" 2>&1 || e=$?
+	printf '%s\t%s\t%s\t%s\n' "$e" "$(($(date +%s) - t0))" "$f" "$*" >"$RE/analysis/$n.meta"
+	echo "[$n] exit $e, $(($(date +%s) - t0)) s"
+}
+
+run() {
+	guard
+	local jobs=0 names=()
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--yes) YES=1 ;;
+		--jobs) jobs=${2:?--jobs N}; shift ;;
+		*) names+=("$1") ;;
+		esac
+		shift
+	done
+	[ -s "$LIST" ] || die "no $LIST: pick targets first ($0 targets KEYWORD --add)"
+	tools_ok >/dev/null || { tools_ok; die "tools missing ($0 doctor)"; }
+	confirm
+	# Ghidra takes a few GB each: by default one job per 4 GB of RAM and per 4 threads, at most 3
+	if [ "$jobs" = 0 ]; then
+		local mem cpu
+		mem=$(($(awk '/MemTotal/ {print $2}' /proc/meminfo) / 4194304))
+		cpu=$(($(nproc) / 4))
+		jobs=$((mem < cpu ? mem : cpu))
+		[ $jobs -gt 3 ] && jobs=3
+		[ $jobs -lt 1 ] && jobs=1
+	fi
+	mkdir -p "$RE/analysis" "$RE/snapshots" "$ROOT/build"
+	exec 9>"$ROOT/build/firmware-decompile.lock"
+	flock -n 9 || die "another firmware-decompile run is going (build/firmware-decompile.lock)"
+	say "analyze ($jobs jobs; Ghidra heap $GHIDRA_MAXMEM)"
+	local n f x
+	while IFS='|' read -r n f x; do
+		case $n in "" | "#"*) continue ;; esac
+		if [ ${#names[@]} -gt 0 ] && ! printf '%s\n' "${names[@]}" | grep -qxF "$n"; then continue; fi
+		while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do wait -n || true; done
+		# shellcheck disable=SC2086
+		analyze_one "$n" "$f" $x </dev/null &
+	done <"$LIST"
+	wait || true
+	python3 -I "$TOOL" re-index "$RE"
+}
+
+target() { # NAME -> f (path) and x (extra args) from targets.txt
+	IFS='|' read -r _ f x < <(awk -F'|' -v n="$1" '$1 == n {print; exit}' "$LIST" 2>/dev/null)
+	[ -n "${f:-}" ] || die "$1 is not in $LIST"
+	tools_ok >/dev/null || die "tools missing ($0 doctor)"
+	mkdir -p "$RE/snapshots"
+}
+
+search() {
+	guard
+	local n=${1:?NAME} pat=${2:?REGEX} kind=procedures f x
+	[ "${3:-}" = strings ] && kind="strings"
+	target "$n"
+	# shellcheck disable=SC2086
+	$LOW "$REA" search "$f" --pattern="$pat" --kind $kind --mode regex --provider ghidra \
+		--snapshot "$RE/snapshots/$n.snap" $x --format json |
+		python3 -I -c '
+import json, sys
+t = sys.stdin.read()
+try:
+    r = json.loads(t)["normalized_result"]
+except Exception:
+    sys.exit("rea: " + t[:2000])
+for m in r:
+    print(m.get("address", ""), m.get("value", ""))'
+}
+
+fn() {
+	guard
+	local n=${1:?NAME} what=${2:?FUNCTION or 0xADDR} f x out
+	target "$n"
+	mkdir -p "$RE/decomp/$n"
+	out=$RE/decomp/$n/$(tr -c 'A-Za-z0-9._-' _ <<<"$what" | sed 's/_$//').c
+	# shellcheck disable=SC2086
+	$LOW "$REA" decompile "$f" "$what" --provider ghidra --snapshot "$RE/snapshots/$n.snap" $x --format json |
+		python3 -I -c '
+import json, sys
+t = sys.stdin.read()
+try:
+    r = json.loads(t)["normalized_result"]
+except Exception:
+    sys.exit("rea: " + t[:2000])
+print(r if isinstance(r, str) else json.dumps(r, indent=1))' >"$out.part"
+	mv "$out.part" "$out"
+	cat "$out"
+	echo "-> $out" >&2
+}
+
+CMD=${1:-}
+[ $# -gt 0 ] && shift
+case $CMD in
+doctor) doctor "$@" ;;
+targets) targets "$@" ;;
+run) run "$@" ;;
+search) search "$@" ;;
+fn) fn "$@" ;;
+index) guard; python3 -I "$TOOL" re-index "$RE" ;;
+*) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

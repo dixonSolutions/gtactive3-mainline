@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -25,6 +26,11 @@ ROOT = Path(__file__).resolve().parent.parent
 PATH = Path(os.environ.get("CONFIG", ROOT / "config.toml"))
 STATUSES = ("bring-up", "testing", "stable")
 FLAVOURS = ("release", "dev")
+# identity, keys and owner data: scripts/firmware-snapshot never reads these
+# (scripts/firmware-snapshot has the same list)
+NEVER_READ = ("efs", "sec_efs", "persistent", "param", "up_param", "keystorage", "keydata",
+              "keyrefuge", "steady", "cpefs", "spu", "prism", "optics", "omr", "cm",
+              "userdata", "metadata", "persist", "modemst1", "modemst2", "fsg", "frp")
 TEMPLATE_VALUES = {"device.vendor": "vendor", "device.codename": "codename", "device.soc": "exynosxxxx"}
 
 
@@ -87,6 +93,12 @@ def load():
     ch.setdefault("dev", True)
     ch.setdefault("release", True)
     ch.setdefault("keep", 2)
+    fw = c.setdefault("firmware", {})
+    fw.setdefault("dir", "firmware")
+    for k in ("snapshot", "stock", "re"):
+        fw[f"{k}_dir"] = fw.get(f"{k}_dir") or f"{fw['dir']}/{k}"
+    fw.setdefault("snapshot_partitions", ["boot", "init_boot", "vendor_boot", "dtbo", "dtb", "recovery", "vbmeta"])
+    fw.setdefault("extract_partitions", ["vendor", "odm", "vendor_dlkm"])
     return c
 
 
@@ -121,6 +133,17 @@ def flat(prefix, v, out):
         elif isinstance(v, list):
             v = " ".join(str(x) for x in v)
         out[re.sub(r"[^A-Za-z0-9]", "_", prefix).upper()] = str(v)
+
+
+def gitignored(rel):
+    """True if git would not commit files under rel (or git is unavailable)."""
+    try:
+        r = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", "--", f"{rel.rstrip('/')}/x"],
+                           capture_output=True)
+    except OSError:
+        return True
+    # 128: not a git checkout (a release tarball): nothing can be committed
+    return r.returncode in (0, 128)
 
 
 def check(c):
@@ -208,6 +231,20 @@ def check(c):
         e("android.userdata_f2fs_options: at most 5 words (the console runs at most 7 arguments)")
     if feat and not re.fullmatch(r"0x[0-9a-f]+", feat):
         e("android.userdata_f2fs_features must be lower case hex like 0x499")
+    fw = c["firmware"]
+    for k in ("dir", "snapshot_dir", "stock_dir", "re_dir"):
+        v = fw[k]
+        if not isinstance(v, str) or not v or v.startswith("/") or ".." in Path(v).parts:
+            e(f"firmware.{k} must be a path inside the repo")
+        elif not gitignored(v):
+            e(f"firmware.{k}: {v}/ is not gitignored (Samsung's files must never be committed)")
+    for k in ("snapshot_partitions", "extract_partitions"):
+        for n in fw[k]:
+            if not re.fullmatch(r"[a-z0-9_]+", str(n)):
+                e(f"firmware.{k}: {n!r} must be a lower case partition name")
+    for n in fw["snapshot_partitions"]:
+        if str(n).removesuffix("_a").removesuffix("_b") in NEVER_READ:
+            e(f"firmware.snapshot_partitions: {n} holds identity or owner data and is never read")
     if not p["template"]:
         for k, v in TEMPLATE_VALUES.items():
             if get(c, k) == v:

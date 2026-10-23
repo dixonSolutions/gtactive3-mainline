@@ -41,6 +41,26 @@ tested_firmware = "T570XXSFEYI1"
 tested_bootloader_rev = "F"
 fus_model = "SM-T570"
 
+[firmware]
+# Where the firmware tools keep Samsung's files on a developer PC
+# (docs/FIRMWARE.md): relative to the repo, and gitignored (scripts/config
+# check refuses a directory git would commit). Everything under them is
+# proprietary or private (serial, MAC addresses) and never leaves the PC.
+dir = "firmware"
+# derived: <dir>/snapshot (scripts/firmware-snapshot: the running Android, adb)
+snapshot_dir = ""
+# derived: <dir>/stock (scripts/firmware-extract: a stock firmware package)
+stock_dir = ""
+# derived: <dir>/re (scripts/firmware-decompile: REA + Ghidra output)
+re_dir = ""
+# Partitions (by-name) scripts/firmware-snapshot --root reads, read-only.
+# Identity and key partitions (efs, sec_efs, persistent, param, ...) are
+# never read, whatever this says.
+snapshot_partitions = ["boot", "init_boot", "vendor_boot", "dtbo", "dtb", "recovery", "vbmeta"]
+# Logical partitions scripts/firmware-extract takes out of super.img.
+extract_partitions = ["vendor", "odm", "vendor_dlkm"]
+
+
 [kernel]
 # derived: linux-postmarketos-exynos9810
 package = ""

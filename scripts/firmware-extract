@@ -1,0 +1,180 @@
+#!/bin/bash
+# Unpack a stock Samsung firmware package into firmware.stock_dir/<version>/
+# (config.toml; gitignored): the boot images, their device trees, the stock
+# kernel's config and the vendor/odm file trees. For the hardware map and for
+# scripts/firmware-decompile; docs/FIRMWARE.md has the details.
+#
+#   scripts/firmware-extract [--yes] [--parts vendor,odm] [--keep] PACKAGE
+#
+# PACKAGE: the decrypted firmware zip (SamFW, Frija, Bifrost, samloader,
+# ./setup.sh --download-stock), an AP_*.tar.md5, or a directory holding one.
+# --parts: logical partitions to unpack (default firmware.extract_partitions)
+# --keep:  keep the unpacked partition images (several GB) next to the trees
+#
+# Needs: lz4, unzip (zip input), debugfs (e2fsprogs) for ext4, fsck.erofs
+# (erofs-utils) for EROFS; dtc for .dts files. Idempotent: done steps are
+# skipped. The package itself is never modified.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT"
+eval "$(scripts/config shell)"
+TOOL=$ROOT/scripts/firmware-tool
+PY=$ROOT/scripts/installer/py
+LOW="nice -n 19 ionice -c3"
+
+die() { echo "firmware-extract: $*" >&2; exit 1; }
+say() { printf '\n== %s\n' "$*"; }
+
+YES=0 KEEP=0 PARTS=$CFG_FIRMWARE_EXTRACT_PARTITIONS PKG=
+while [ $# -gt 0 ]; do
+	case $1 in
+	--yes) YES=1 ;;
+	--keep) KEEP=1 ;;
+	--parts) PARTS=$(tr ',' ' ' <<<"${2:?--parts a,b}"); shift ;;
+	-h | --help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-*) die "unknown option $1" ;;
+	*) PKG=$1 ;;
+	esac
+	shift
+done
+[ -n "$PKG" ] || die "which package? (scripts/firmware-extract --help)"
+[ -e "$PKG" ] || die "$PKG does not exist"
+OUT=$CFG_FIRMWARE_STOCK_DIR
+if git rev-parse --git-dir >/dev/null 2>&1 && ! git check-ignore -q -- "$OUT/x"; then
+	die "$OUT is not gitignored: Samsung's files must never be committed"
+fi
+for t in lz4 python3; do command -v $t >/dev/null || die "missing tool: $t"; done
+
+# the AP tar: given, inside a directory, or a member of the zip
+ZIP= AP=
+if [ -d "$PKG" ]; then
+	AP=$(find "$PKG" -maxdepth 1 -name 'AP_*.tar*' | head -1)
+	[ -n "$AP" ] || ZIP=$(find "$PKG" -maxdepth 1 -name '*.zip' | head -1)
+	[ -n "$AP$ZIP" ] || die "no AP_*.tar.md5 or firmware zip in $PKG"
+elif [[ $PKG == *.zip ]]; then
+	ZIP=$PKG
+elif [[ $PKG == *.enc4 || $PKG == *.enc2 ]]; then
+	die "$PKG is still encrypted: decrypt it first (samloader / ./setup.sh --download-stock do)"
+else
+	AP=$PKG
+fi
+if [ -n "$ZIP" ]; then
+	command -v unzip >/dev/null || die "missing tool: unzip"
+	APNAME=$(unzip -Z1 "$ZIP" | grep -m1 -E '(^|/)AP_.*\.tar(\.md5)?$') || die "no AP_*.tar.md5 in $ZIP"
+else
+	APNAME=$(basename "$AP")
+fi
+VER=$(grep -oE "$CFG_ANDROID_FIRMWARE_PATTERN" <<<"$(basename "$APNAME")" | head -1 || true)
+[ -n "$VER" ] || VER=$(sed -nE 's/^AP_([A-Z0-9]+)_.*/\1/p' <<<"$(basename "$APNAME")")
+[ -n "$VER" ] || VER=unknown
+D=$OUT/$VER
+IMG=$D/images FS=$D/fs
+
+if [ "$YES" != 1 ]; then
+	[ -t 0 ] || die "not a terminal: ask the owner first, then run with --yes"
+	echo "Unpack $APNAME ($VER) into $D/ (Samsung's files: private, never committed)."
+	echo "Needs about 10 GB free while it runs; it takes several minutes."
+	read -r -p "Go on? [y/N] " a
+	case $a in y | Y | yes) ;; *) die "cancelled" ;; esac
+fi
+mkdir -p "$IMG" "$FS"
+
+# stream the AP tar (from the zip without unpacking it to disk)
+ap_stream() {
+	if [ -n "$ZIP" ]; then unzip -p "$ZIP" "$APNAME"; else cat "$AP"; fi
+}
+
+say "1/5 images from $APNAME"
+WANT=(boot init_boot vendor_boot dtbo dtb recovery vbmeta super)
+for p in $PARTS; do WANT+=("$p"); done
+if [ ! -e "$IMG/.ap-done" ]; then
+	if [ -n "$AP" ]; then python3 -I "$PY/aptar.py" check "$AP"; fi
+	pats=()
+	for p in "${WANT[@]}"; do pats+=("$p.img" "$p.img.lz4" "$p.img.ext4.lz4"); done
+	# missing members are normal (not every device has every image)
+	ap_stream | $LOW tar -x -C "$IMG" --no-same-owner "${pats[@]}" 2>/dev/null || true
+	for f in "$IMG"/*.lz4; do
+		[ -e "$f" ] || continue
+		$LOW lz4 -d -q -f "$f" "${f%.lz4}.part" && mv "${f%.lz4}.part" "${f%.lz4}" && rm -f "$f"
+	done
+	for f in "$IMG"/*.img.ext4; do [ -e "$f" ] && mv "$f" "${f%.ext4}"; done
+	touch "$IMG/.ap-done"
+fi
+ls -l "$IMG" | sed 1d
+
+say "2/5 logical partitions from super: $PARTS"
+if [ -s "$IMG/super.img" ]; then
+	for p in $PARTS; do
+		[ -s "$IMG/$p.img" ] && continue
+		for n in "$p" "${p}_a"; do
+			if $LOW python3 -I "$PY/superfs.py" extract "$n" "$IMG/$p.img.part" <"$IMG/super.img" 2>/dev/null; then
+				mv "$IMG/$p.img.part" "$IMG/$p.img"
+				echo "$p: $(du -h "$IMG/$p.img" | cut -f1)"
+				break
+			fi
+			rm -f "$IMG/$p.img.part"
+		done
+		[ -s "$IMG/$p.img" ] || echo "$p: not in super"
+	done
+else
+	echo "no super.img: separate partition images (pre-dynamic-partition device)"
+fi
+
+say "3/5 file trees"
+for p in $PARTS; do
+	img=$IMG/$p.img
+	[ -s "$img" ] || continue
+	[ -e "$FS/$p/.done" ] && { echo "$p: done"; continue; }
+	# a sparse image (Android sparse format) first becomes a raw one
+	if [ "$(head -c4 "$img" | od -An -tx4 | tr -d ' ')" = ed26ff3a ]; then
+		command -v simg2img >/dev/null || die "$p.img is sparse: install simg2img (android-tools)"
+		$LOW simg2img "$img" "$img.raw" && mv "$img.raw" "$img"
+	fi
+	rm -rf "${FS:?}/$p"
+	mkdir -p "$FS/$p"
+	case $(file -b "$img") in
+	*ext[234]*)
+		command -v debugfs >/dev/null || die "missing tool: debugfs (e2fsprogs)"
+		# rdump cannot chown as a user; those warnings are harmless
+		$LOW debugfs -R "rdump / $FS/$p" "$img" 2>&1 | grep -v 'changing ownership' || true
+		# debugfs exits 0 even when rdump fails
+		[ -n "$(ls -A "$FS/$p")" ] || die "$p: rdump produced nothing" ;;
+	*EROFS* | *erofs*)
+		command -v fsck.erofs >/dev/null || die "$p is EROFS: install erofs-utils"
+		$LOW fsck.erofs --extract="$FS/$p" "$img" >/dev/null ;;
+	*) echo "$p: unknown filesystem ($(file -b "$img" | cut -c1-60)), skipped"; continue ;;
+	esac
+	chmod -R u+rwX "$FS/$p" 2>/dev/null || true
+	touch "$FS/$p/.done"
+	echo "$p: $(du -sh "$FS/$p" | cut -f1)"
+done
+
+say "4/5 device trees and the stock kernel"
+mkdir -p "$D/dt"
+dts=()
+for p in boot init_boot vendor_boot dtbo dtb recovery; do
+	[ -s "$IMG/$p.img" ] && dts+=("$IMG/$p.img")
+done
+[ ${#dts[@]} -gt 0 ] && python3 -I "$TOOL" dtb "${dts[@]}" -o "$D/dt" | tee "$D/dt/dtbs.txt"
+if [ -s "$IMG/boot.img" ] && python3 -I "$PY/bootimg.py" info "$IMG/boot.img" >"$D/dt/boot-info.txt" 2>/dev/null; then
+	python3 -I "$PY/bootimg.py" extract "$IMG/boot.img" kernel "$D/dt/kernel" 2>/dev/null || true
+	if [ -s "$D/dt/kernel" ]; then
+		strings "$D/dt/kernel" | grep -m1 '^Linux version' >"$D/dt/kernel-version.txt" || true
+		python3 -I "$TOOL" ikconfig "$D/dt/kernel" "$D/dt/kernel.config" || true
+	fi
+fi
+
+say "5/5 summary"
+{
+	echo "package: $(basename "$PKG")"
+	echo "ap: $APNAME"
+	echo "version: $VER"
+	echo "extracted: $(date -u +%FT%TZ) by scripts/firmware-extract"
+} >"$D/SOURCE.txt"
+if [ "$KEEP" != 1 ]; then
+	rm -f "$IMG/super.img"
+	for p in $PARTS; do rm -f "$IMG/$p.img"; done
+fi
+python3 -I "$TOOL" summary "$D"
+echo "Private: Samsung's files. Never commit them; write what you learn to docs/."

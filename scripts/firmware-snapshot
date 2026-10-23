@@ -1,0 +1,275 @@
+#!/bin/bash
+# Snapshot the hardware facts and vendor firmware of the device's running
+# stock Android, over adb, into firmware.snapshot_dir (config.toml; gitignored).
+# Read-only on the device: it runs getprop, cat, ls, dumpsys and tar there,
+# never a write. docs/FIRMWARE.md has the details.
+#
+#   scripts/firmware-snapshot doctor          adb, the device, root: what a run would get
+#   scripts/firmware-snapshot run [options]   take the snapshot
+#
+# options:
+#   --yes        do not ask (for agents, after the owner said yes in chat)
+#   --root       also read as root (Magisk su; the device asks to allow it):
+#                the live DT, dmesg, clocks, GPIOs, regulators, the kernel
+#                config and the firmware.snapshot_partitions images
+#   --no-tree    skip the vendor/odm file tree (the slowest part, ~1 GB)
+#   --out DIR    another directory (must be gitignored)
+#
+# The device: Settings > About > Software information > tap Build number 7
+# times; Developer options > USB debugging on; plug it in; allow this PC on
+# its screen. Several devices: set ANDROID_SERIAL.
+#
+# Private by construction: the serial, MAC addresses and IMEIs are removed
+# from everything written (scripts/firmware-tool redact), identity and key
+# partitions are never read, and nothing here is ever committed.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT"
+eval "$(scripts/config shell)"
+TOOL=$ROOT/scripts/firmware-tool
+ADB=${ADB:-adb}
+# keep in sync with NEVER_READ in scripts/config
+NEVER_READ="efs sec_efs persistent param up_param keystorage keydata keyrefuge steady cpefs spu prism optics omr cm userdata metadata persist modemst1 modemst2 fsg frp"
+
+die() { echo "firmware-snapshot: $*" >&2; exit 1; }
+say() { printf '== %s\n' "$*"; }
+
+YES=0 USE_ROOT=0 TREE=1 OUT=$CFG_FIRMWARE_SNAPSHOT_DIR
+CMD=${1:-}
+[ $# -gt 0 ] && shift
+while [ $# -gt 0 ]; do
+	case $1 in
+	--yes) YES=1 ;;
+	--root) USE_ROOT=1 ;;
+	--no-tree) TREE=0 ;;
+	--out) OUT=${2:?--out DIR}; shift ;;
+	*) die "unknown option $1 (see the top of $0)" ;;
+	esac
+	shift
+done
+
+ignored() { # a path git would never commit
+	git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+	git -C "$ROOT" check-ignore -q -- "${1%/}/x"
+}
+
+adb_state() {
+	command -v "$ADB" >/dev/null || { echo "no-adb"; return; }
+	local s
+	s=$("$ADB" get-state 2>&1) && { echo "$s"; return; }
+	case $s in
+	*unauthorized*) echo unauthorized ;;
+	*"more than one"*) echo several ;;
+	*) echo none ;;
+	esac
+}
+
+need_device() {
+	case $(adb_state) in
+	device) ;;
+	no-adb) die "adb is not installed (android-tools / adb package)" ;;
+	unauthorized) die "the device has not allowed this PC: unlock it and tap Allow on the USB debugging prompt" ;;
+	several) die "several devices: set ANDROID_SERIAL (adb devices lists them)" ;;
+	*) die "no device: USB debugging on (Developer options), cable in, screen unlocked (adb devices)" ;;
+	esac
+}
+
+sh_dev() { "$ADB" shell "$@" </dev/null; }
+has_root() { [ "$(sh_dev "su -c id -u" 2>/dev/null | tr -d '\r')" = 0 ]; }
+prop() { sh_dev getprop "$1" | tr -d '\r'; }
+
+doctor() {
+	local s
+	s=$(adb_state)
+	echo "adb:     $(command -v "$ADB" >/dev/null && "$ADB" version | head -1 || echo missing)"
+	echo "device:  $s"
+	[ "$s" = device ] || { need_device; return; }
+	echo "model:   $(prop ro.product.model) ($(prop ro.product.device)), firmware $(prop ro.build.PDA)"
+	echo "soc:     $(prop ro.soc.model) $(prop ro.hardware) $(prop ro.board.platform)"
+	echo "android: $(prop ro.build.version.release), bootloader $(prop ro.bootloader)"
+	echo "tar:     $(sh_dev 'command -v tar' | tr -d '\r' || true)"
+	if sh_dev "su -c true" >/dev/null 2>&1; then
+		echo "root:    su exists (a run with --root asks the device to allow it)"
+	else
+		echo "root:    no (fine: --root adds the live DT, dmesg, clocks and partition images)"
+	fi
+	echo "out:     $OUT ($(ignored "$OUT" && echo gitignored || echo NOT gitignored))"
+}
+
+confirm() {
+	[ "$YES" = 1 ] && return 0
+	[ -t 0 ] || die "not a terminal: ask the owner first, then run with --yes"
+	cat <<-EOF
+	This reads the connected device's stock Android over adb (read-only) and
+	writes hardware facts and Samsung's vendor files to $OUT/.
+	The serial, MAC addresses and IMEIs are removed; the files are Samsung's
+	and private: they stay on this PC and are never committed.
+	EOF
+	[ "$USE_ROOT" = 1 ] && echo "With --root the device asks to allow root access (Magisk): allow it once."
+	read -r -p "Take the snapshot? [y/N] " a
+	case $a in y | Y | yes) ;; *) die "cancelled" ;; esac
+}
+
+run() {
+	ignored "$OUT" || die "$OUT is not gitignored: Samsung's files must never be committed (.gitignore)"
+	need_device
+	confirm
+	local model pda dev d
+	model=$(prop ro.product.model)
+	pda=$(prop ro.build.PDA)
+	dev=$(prop ro.product.device)
+	[ -n "$model" ] || die "getprop returned nothing"
+	if [ "$CFG_PROJECT_TEMPLATE" != true ] && ! printf '%s\n' $CFG_DEVICE_MODELS | grep -qx "$model"; then
+		echo "warning: $model is not in device.models ($CFG_DEVICE_MODELS) in config.toml" >&2
+	fi
+	d=$OUT/$(printf '%s_%s' "$model" "${pda:-unknown}" | tr -c 'A-Za-z0-9._-' _)
+	mkdir -p "$d/system"
+	: >"$d/errors.txt"
+	# values that must not appear in anything written
+	SCRUB=()
+	for v in "$("$ADB" get-serialno 2>/dev/null)" "$(prop ro.serialno)" "$(prop ro.boot.serialno)" \
+		"$(prop ril.serialnumber)" "$(prop ro.boot.ap_serial)" "$(prop ro.boot.em.did)"; do
+		v=$(printf %s "$v" | tr -d '\r')
+		[ ${#v} -ge 4 ] && SCRUB+=(--scrub "$v")
+	done
+	RED() { python3 -I "$TOOL" redact "${SCRUB[@]}"; }
+	say "snapshot of $model ($dev) $pda -> $d"
+
+	sh_dev getprop | tr -d '\r' | RED >"$d/props.txt"
+	# name|command (the device's sh); a failure is recorded, not fatal
+	local name c
+	while IFS='|' read -r name c; do
+		[ -n "$name" ] || continue
+		if sh_dev "$c" 2>&1 | tr -d '\r' | RED >"$d/system/$name.txt" && [ -s "$d/system/$name.txt" ] &&
+			! grep -qiE '^(.*: )?(permission denied|not found|No such file)' "$d/system/$name.txt"; then
+			:
+		else
+			echo "$name: $(head -c 200 "$d/system/$name.txt" | tr '\n' ' ')" >>"$d/errors.txt"
+		fi
+	done <<-'EOF'
+	version|cat /proc/version
+	cmdline|cat /proc/cmdline
+	cpuinfo|cat /proc/cpuinfo
+	meminfo|cat /proc/meminfo
+	iomem|cat /proc/iomem
+	interrupts|cat /proc/interrupts
+	partitions|cat /proc/partitions
+	mounts|cat /proc/mounts
+	modules|cat /proc/modules
+	by-name|ls -l /dev/block/by-name/ /dev/block/bootdevice/by-name/ /dev/block/platform/*/by-name/ 2>/dev/null
+	block|for b in /sys/block/sd? /sys/block/mmcblk?; do [ -e $b ] && echo "${b##*/} logical_block=$(cat $b/queue/logical_block_size) sectors=$(cat $b/size) $(cat $b/device/model 2>/dev/null)"; done
+	input-devices|cat /proc/bus/input/devices
+	getevent|getevent -lp
+	i2c|for d in /sys/bus/i2c/devices/*; do echo "${d##*/} $(cat $d/name 2>/dev/null) $(readlink $d/driver 2>/dev/null | sed 's,.*/,,')"; done
+	spi|for d in /sys/bus/spi/devices/*; do echo "${d##*/} $(cat $d/modalias 2>/dev/null) $(readlink $d/driver 2>/dev/null | sed 's,.*/,,')"; done
+	platform-devices|for d in /sys/bus/platform/devices/*; do echo "${d##*/} $(readlink $d/driver 2>/dev/null | sed 's,.*/,,')"; done
+	power-supply|for d in /sys/class/power_supply/*; do echo "== ${d##*/}"; cat $d/uevent 2>/dev/null; done
+	thermal|for d in /sys/class/thermal/thermal_zone*; do echo "${d##*/} $(cat $d/type) $(cat $d/temp)"; done
+	regulators|for d in /sys/class/regulator/regulator.*; do echo "${d##*/} $(cat $d/name 2>/dev/null) $(cat $d/microvolts 2>/dev/null) $(cat $d/state 2>/dev/null)"; done
+	asound|cat /proc/asound/cards /proc/asound/pcm
+	gpu|cat /sys/class/misc/mali0/device/gpuinfo /sys/devices/platform/*.mali/gpuinfo 2>/dev/null
+	usb|for d in /sys/class/udc/* /sys/class/typec/*; do echo "${d##*/}"; done
+	sensors|dumpsys sensorservice
+	camera|dumpsys media.camera
+	display|dumpsys SurfaceFlinger --display-id; dumpsys display | grep -iE 'mDisplayInfos|DisplayDeviceInfo|density|refresh'
+	battery|dumpsys battery
+	audio-policy|dumpsys media.audio_policy | head -400
+	vintf|cat /vendor/etc/vintf/manifest.xml
+	EOF
+
+	if [ "$USE_ROOT" = 1 ]; then
+		has_root || die "su did not give root (allow it on the device, then run again)"
+		say "root: live DT, kernel log, clocks, pins, regulators"
+		while IFS='|' read -r name c; do
+			[ -n "$name" ] || continue
+			sh_dev "su -c '$c'" 2>&1 | tr -d '\r' | RED >"$d/system/$name.txt" ||
+				echo "$name (root): failed" >>"$d/errors.txt"
+		done <<-'EOF'
+		dmesg|dmesg
+		iomem|cat /proc/iomem
+		clk-summary|cat /sys/kernel/debug/clk/clk_summary
+		gpio|cat /sys/kernel/debug/gpio
+		pinmux|cat /sys/kernel/debug/pinctrl/*/pinmux-pins
+		regulator-summary|cat /sys/kernel/debug/regulator/regulator_summary
+		EOF
+		"$ADB" exec-out "su -c 'cat /sys/firmware/fdt'" >"$d/system/fdt.dtb" 2>/dev/null || true
+		if [ -s "$d/system/fdt.dtb" ]; then
+			python3 -I "$TOOL" dtb "$d/system/fdt.dtb" -o "$d/dt" >"$d/dt.txt" || true
+			[ -f "$d/dt/fdt-00.dts" ] && cp "$d/dt/fdt-00.dts" "$d/system/device-tree.dts"
+		else
+			rm -f "$d/system/fdt.dtb"
+			echo "fdt (root): /sys/firmware/fdt not readable" >>"$d/errors.txt"
+		fi
+		"$ADB" exec-out "su -c 'cat /proc/config.gz'" >"$d/system/config.gz" 2>/dev/null || true
+		if gzip -t "$d/system/config.gz" 2>/dev/null; then
+			gzip -dc "$d/system/config.gz" >"$d/system/kernel.config"
+		else
+			echo "kernel config (root): /proc/config.gz missing" >>"$d/errors.txt"
+		fi
+		rm -f "$d/system/config.gz"
+		say "root: partition images (read-only: $CFG_FIRMWARE_SNAPSHOT_PARTITIONS)"
+		mkdir -p "$d/partitions"
+		local bn p base
+		bn=$(sh_dev "for d in /dev/block/by-name /dev/block/bootdevice/by-name /dev/block/platform/*/by-name; do [ -d \$d ] && { echo \$d; break; }; done" | tr -d '\r')
+		[ -n "$bn" ] || echo "partitions (root): no by-name directory" >>"$d/errors.txt"
+		for p in $CFG_FIRMWARE_SNAPSHOT_PARTITIONS; do
+			[ -n "$bn" ] || break
+			base=${p%_a}; base=${base%_b}
+			case " $NEVER_READ " in *" $base "*) die "refusing to read $p (identity or owner data)" ;; esac
+			for s in "" _a _b; do
+				sh_dev "[ -e $bn/$p$s ]" || continue
+				"$ADB" exec-out "su -c 'cat $bn/$p$s'" >"$d/partitions/$p$s.img.part" &&
+					mv "$d/partitions/$p$s.img.part" "$d/partitions/$p$s.img" &&
+					echo "$p$s: $(stat -c %s "$d/partitions/$p$s.img") bytes"
+			done
+		done
+		(cd "$d/partitions" && sha256sum -- *.img >SHA256SUMS 2>/dev/null) || true
+		local imgs=()
+		for p in "$d"/partitions/*.img; do
+			case ${p##*/} in vbmeta*) ;; *) [ -s "$p" ] && imgs+=("$p") ;; esac
+		done
+		mkdir -p "$d/dt"
+		[ ${#imgs[@]} -gt 0 ] && python3 -I "$TOOL" dtb "${imgs[@]}" -o "$d/dt" >"$d/dt/dtbs.txt" || true
+	fi
+
+	if [ "$TREE" = 1 ]; then
+		say "vendor files (tar over adb; unreadable files are skipped)"
+		mkdir -p "$d/tree"
+		local parts=() x
+		for x in vendor odm vendor_dlkm system/etc system/build.prop; do
+			sh_dev "[ -e /$x ]" && parts+=("$x")
+		done
+		local su_pre="" su_post=""
+		[ "$USE_ROOT" = 1 ] && { su_pre="su -c '"; su_post="'"; }
+		if sh_dev "command -v tar" >/dev/null 2>&1; then
+			"$ADB" exec-out "${su_pre}tar -cf - -C / ${parts[*]} 2>/dev/null${su_post}" |
+				tar -x -C "$d/tree" --no-same-owner --no-same-permissions --delay-directory-restore 2>>"$d/errors.txt" || true
+		else
+			for x in "${parts[@]}"; do
+				mkdir -p "$d/tree/$(dirname "$x")"
+				"$ADB" pull "/$x" "$d/tree/$x" >/dev/null 2>>"$d/errors.txt" || true
+			done
+		fi
+		chmod -R u+rwX "$d/tree" 2>/dev/null || true
+		echo "tree: $(du -sh "$d/tree" | cut -f1), $(find "$d/tree" -type f | wc -l) files"
+	fi
+
+	{
+		echo "{"
+		printf '  "model": "%s",\n  "device": "%s",\n  "firmware": "%s",\n' "$model" "$dev" "$pda"
+		printf '  "taken": "%s",\n  "root": %s,\n  "tree": %s,\n' "$(date -u +%FT%TZ)" \
+			"$([ "$USE_ROOT" = 1 ] && echo true || echo false)" "$([ "$TREE" = 1 ] && echo true || echo false)"
+		printf '  "tool": "scripts/firmware-snapshot"\n}\n'
+	} >"$d/snapshot.json"
+	python3 -I "$TOOL" summary "$d" >/dev/null
+	say "done: $d/SUMMARY.md"
+	[ -s "$d/errors.txt" ] && echo "not collected: $(wc -l <"$d/errors.txt") items (errors.txt; many need --root)"
+	echo "Private: Samsung's files and this device's data. Never commit them; write what you learn to docs/."
+}
+
+case $CMD in
+doctor) doctor ;;
+run) run ;;
+*) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

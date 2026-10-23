@@ -1,0 +1,56 @@
+#!/bin/bash
+# A fake adb for tests/firmware/run.sh: a stock Android device with the
+# fixture tree $MOCK_FS (vendor/...), root when MOCK_ROOT=1. Every call is
+# logged to $MOCK_LOG.
+set -u
+echo "$*" >>"$MOCK_LOG"
+SERIAL=R52TESTSERIAL1
+props() {
+	cat <<P
+[ro.product.model]: [SM-T999]
+[ro.product.device]: [testtab]
+[ro.build.PDA]: [T999XXU1AXA1]
+[ro.bootloader]: [T999XXU1AXA1]
+[ro.hardware]: [exynos9999]
+[ro.soc.model]: [Exynos 9999]
+[ro.serialno]: [$SERIAL]
+[ro.boot.serialno]: [$SERIAL]
+[ro.boot.wifimacaddr]: [aa:bb:cc:dd:ee:ff]
+[ro.build.version.release]: [13]
+P
+}
+case ${1:-} in
+version) echo "Android Debug Bridge version 1.0.41 (mock)"; exit 0 ;;
+get-state) [ "${MOCK_STATE:-device}" = device ] && { echo device; exit 0; }
+	echo "error: device ${MOCK_STATE}" >&2; exit 1 ;;
+get-serialno) echo "$SERIAL"; exit 0 ;;
+shell | exec-out) mode=$1; shift ;;
+*) echo "mock adb: unsupported: $*" >&2; exit 1 ;;
+esac
+c="$*"
+case $c in
+getprop) props; exit 0 ;;
+"getprop "*) props | sed -n "s/^\[${c#getprop }\]: \[\(.*\)\]$/\1/p"; exit 0 ;;
+"su -c id -u") [ "${MOCK_ROOT:-0}" = 1 ] && { echo 0; exit 0; }; echo "su: not found"; exit 127 ;;
+"su -c true") [ "${MOCK_ROOT:-0}" = 1 ]; exit ;;
+"command -v tar") echo /system/bin/tar; exit 0 ;;
+"[ -e /"*) p=${c#\[ -e /}; p=${p% \]}; [ -e "$MOCK_FS/$p" ]; exit ;;
+"cat /proc/version") echo "Linux version 4.14.113-test (mock)"; exit 0 ;;
+"cat /proc/cmdline") echo "console=ram androidboot.serialno=$SERIAL androidboot.hardware=exynos9999"; exit 0 ;;
+"cat /proc/cpuinfo") printf 'processor\t: 0\nCPU part\t: 0xd05\nprocessor\t: 1\nCPU part\t: 0xd05\n'; exit 0 ;;
+"ls -l /dev/block/by-name/"*) echo "lrwxrwxrwx 1 root root 15 2026-01-01 00:00 boot -> /dev/block/sda5"
+	echo "lrwxrwxrwx 1 root root 15 2026-01-01 00:00 efs -> /dev/block/sda1"; exit 0 ;;
+"dumpsys sensorservice") echo "0x0000000b) LSM6DSL Accelerometer | STMicro | ver: 1 | type: android.sensor.accelerometer(1)"; exit 0 ;;
+"for d in /dev/block/by-name"*) [ -d "$MOCK_FS/dev/block/by-name" ] && echo /dev/block/by-name; exit 0 ;;
+*"tar -cf - -C / "*)
+	[ "$mode" = exec-out ] || exit 1
+	args=${c#*tar -cf - -C / }; args=${args%% 2>*}
+	# shellcheck disable=SC2086
+	tar -cf - -C "$MOCK_FS" $args 2>/dev/null; exit 0 ;;
+"su -c 'cat /sys/firmware/fdt'") [ "${MOCK_ROOT:-0}" = 1 ] && cat "$MOCK_FS/fdt.dtb"; exit ;;
+"su -c 'cat /dev/block/by-name/"*) [ "${MOCK_ROOT:-0}" = 1 ] || exit 1
+	p=${c#su -c \'cat /dev/block/by-name/}; p=${p%\'}; cat "$MOCK_FS/dev/block/by-name/$p"; exit ;;
+"su -c 'dmesg'") [ "${MOCK_ROOT:-0}" = 1 ] && echo "[    0.000000] Booting Linux, serial $SERIAL"; exit ;;
+esac
+echo "/system/bin/sh: ${c%% *}: Permission denied"
+exit 1
