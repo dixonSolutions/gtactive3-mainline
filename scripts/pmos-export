@@ -67,6 +67,35 @@ done
 printf '%s\n' "$BUILD" > "$tmp/aports/BUILD"
 while read -r d; do [ -f "$tmp/aports/$d/APKBUILD" ] || die "BUILD lists $d, not exported"; done <<<"$BUILD"
 echo "$pbase" > "$tmp/pmaports.BASE"
+# abuild pairs sha512sums with source= by position, not by name: a sum
+# appended at the end for a source in the middle fails the CI build. Check
+# names, order and count, and the sums of the files that ship in the aport.
+for d in "${dirs[@]}"; do
+	[ -f "$tmp/aports/$d/APKBUILD" ] || continue
+	err=$(cd "$tmp/aports/$d" && bash -c '
+		set +eu
+		. ./APKBUILD >/dev/null 2>&1
+		set -- $source
+		n=0
+		while read -r sum name; do
+			[ -n "$sum" ] || continue
+			n=$((n + 1))
+			src=${!n:-}
+			case $src in
+			*::*) f=${src%%::*} ;;
+			*) f=${src##*/} ;;
+			esac
+			if [ "$f" != "$name" ]; then
+				echo "sum $n is for $name, source $n is ${src:-missing}"
+			elif [ "${src#*://}" = "$src" ] && [ -f "$src" ] &&
+				[ "$(sha512sum < "$src" | cut -d" " -f1)" != "$sum" ]; then
+				echo "sum $n does not match $src"
+			fi
+		done <<< "$sha512sums"
+		[ "$n" = $# ] || echo "$n sums for $# sources"
+	' 2>&1 | head -n 3) || true
+	[ -z "$err" ] || die "$d: sha512sums vs source=: ${err//$'\n'/; }"
+done
 
 # 2. kernel: upstream tarball + one patch
 K=$tmp/aports/$KAPORT
