@@ -2,13 +2,6 @@
 # The published update channels: one GitHub release each, named like the
 # sysupdate source directory %M_%W_%w (IMAGE_ID_VARIANT_ID_VERSION_ID) plus
 # "-dev" for the development images (contrib/samsung-gtactive3wifi/
-# mkosi.finalize in duranium-build). Columns: ui channel tag
-DEVICE=samsung-gtactive3wifi
-RELEASE=edge
-for ui in phosh gnome; do
-	for ch in release dev; do
-		suffix=
-		[ "$ch" = dev ] && suffix=-dev
-		echo "$ui $ch ${DEVICE}_${ui}_${RELEASE}${suffix}"
-	done
-done
+# mkosi.finalize in duranium-build). Columns: ui channel tag. From
+# config.toml (device, images.uis, images.release, channels).
+exec "$(dirname "$0")/../scripts/config" channels

@@ -16,7 +16,7 @@
 #              that tablets run, so the next remote update replaces them)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-REPO=${GITHUB_REPOSITORY:-dixonSolutions/gtactive3-mainline}
+REPO=${GITHUB_REPOSITORY:-$("$(dirname "$0")/../scripts/config" get project.repo)}
 warn() { echo "::warning::$*" >&2; }
 
 # shellcheck disable=SC2016 # literal backquotes
@@ -50,7 +50,7 @@ else
 	warn "duranium.nura.eco unreachable: assuming postmarketOS base $upstream"
 fi
 ours=$(git rev-parse HEAD:pmos)
-for f in ci/prepare ci/channels ci/publish ci/check-image .github/workflows/images.yml; do
+for f in config.toml scripts/config ci/prepare ci/channels ci/publish ci/check-image .github/workflows/images.yml; do
 	ours="$ours-$(git rev-parse "HEAD:$f")"
 done
 fingerprint="pmos-$upstream/ours-$(echo "$ours" | sha256sum | cut -c1-16)"

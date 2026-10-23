@@ -6,13 +6,16 @@
 # key the tablets' systemd-sysupdate trusts. A file is used only if its hash
 # is in a SHA256SUMS whose signature checks out with that key.
 
-GTA3_PAGES=${GTA3_PAGES:-https://dixonsolutions.github.io/gtactive3-mainline}
-GTA3_API=${GTA3_API:-https://api.github.com/repos/dixonSolutions/gtactive3-mainline}
-GTA3_DL=${GTA3_DL:-https://github.com/dixonSolutions/gtactive3-mainline/releases/download}
-PROJECT_FPR=D0FE850AF01A47831B6EF808583161CE787FF5B5
+# Where releases live: config.toml (scripts/config); GTA3_* override (tests)
+cfg() { "$GTA3_REPO/scripts/config" get "$1"; }
+GTA3_PAGES=${GTA3_PAGES:-$(cfg update.pages)}
+GTA3_API=${GTA3_API:-https://api.github.com/repos/$(cfg project.repo)}
+GTA3_DL=${GTA3_DL:-$(cfg update.base)}
+GTA3_DL=${GTA3_DL%/}
+PROJECT_FPR=$(cfg update.fingerprint)
 TRUSTED_KEY=${GTA3_TRUSTED_KEY:-$GTA3_REPO/pmos/sysupdate-public-key.asc}
 TRUSTED_FPR=${GTA3_TRUSTED_FPR:-$PROJECT_FPR}
-BOOTCHAIN_TAG=samsung-gtactive3wifi_bootchain
+BOOTCHAIN_TAG=$(cfg bootchain.tag)
 
 PY_REL() { python3 -I "$INST/py/releases.py" "$@"; }
 

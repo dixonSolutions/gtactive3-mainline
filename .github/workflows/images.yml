@@ -56,6 +56,8 @@ jobs:
       fingerprint: ${{ steps.s.outputs.fingerprint }}
     steps:
       - uses: actions/checkout@v5
+      - name: Plumbing (config.toml, no old home URLs)
+        run: ci/check-plumbing
       - id: s
         env:
           GH_TOKEN: ${{ github.token }}
@@ -194,7 +196,12 @@ jobs:
           ln -sfn "$PWD/work/pmaports" work/duranium-build/pmaports
           echo "${{ needs.state.outputs.version }}" > work/duranium-build/mkosi.version
           mkdir -p ci-root/build
+          # the update server the image follows (config.toml update.base; in CI
+          # derived from $GITHUB_REPOSITORY, so the images point at this repo)
+          GTA3_UPDATE_BASE=$(scripts/config get update.base)
+          echo "update base: $GTA3_UPDATE_BASE"
           GTA3_ROOT=$PWD/ci-root PMAPORTS=$PWD/work/pmaports PKGS=$PWD/pkgs SKIP_APKS=1 FRESH=1 \
+            GTA3_UPDATE_BASE=$GTA3_UPDATE_BASE \
             sh work/duranium-build/contrib/samsung-gtactive3wifi/build-image.sh --profile=compressed
           ls -l work/duranium-build/mkosi.output/*/
       - name: Check the image (keyring, update channel, debug layer)

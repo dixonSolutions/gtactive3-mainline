@@ -38,7 +38,9 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = os.environ.get("GITHUB_REPOSITORY", "dixonSolutions/gtactive3-mainline")
+REPO = os.environ.get("GITHUB_REPOSITORY") or subprocess.run(
+    [str(Path(__file__).resolve().parent.parent / "scripts" / "config"), "get", "project.repo"],
+    check=True, capture_output=True, text=True).stdout.strip()
 KEY = HERE.parent / "pmos" / "sysupdate-public-key.asc"
 BOOTCHAIN_TAG = "samsung-gtactive3wifi_bootchain"
 TITLES = {"phosh": "Phosh", "gnome": "GNOME"}

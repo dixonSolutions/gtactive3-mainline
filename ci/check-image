@@ -19,7 +19,7 @@
 # (fsck.erofs --extract), without sudo.
 set -euo pipefail
 DIR=$1 VERSION=$2 CHANNEL=$3 TAG=$4
-REPO=${GITHUB_REPOSITORY:-dixonSolutions/gtactive3-mainline}
+REPO=${GITHUB_REPOSITORY:-$("$(dirname "$0")/../scripts/config" get project.repo)}
 HERE=$(cd "$(dirname "$0")" && pwd)
 PREFIX=${TAG%-dev}
 BASE="https://github.com/$REPO/releases/download/"

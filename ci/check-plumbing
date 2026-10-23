@@ -1,0 +1,15 @@
+#!/bin/sh
+# The plumbing reads config.toml (scripts/config): no file in it may name
+# the repository's old home again (moved to exynos-linux on 2026-10-23),
+# and config.toml must be valid. Exported patch series (pmos/) keep their
+# history and are not checked.
+set -eu
+cd "$(dirname "$0")/.."
+scripts/config check
+old='dixonsolutions\.github\.io|github\.com/dixonSolutions/gtactive3-mainline|repos/dixonSolutions/gtactive3-mainline'
+if git ls-files -- ci .github scripts tests config.toml README.md docs |
+	xargs grep -nIE "$old" -- 2>/dev/null; then
+	echo "check-plumbing: the lines above still point at the old home (use config.toml)" >&2
+	exit 1
+fi
+echo "check-plumbing: ok"

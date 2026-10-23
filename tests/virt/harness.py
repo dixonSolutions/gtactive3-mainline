@@ -768,8 +768,14 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 # ---------------------------------------------------------------- the checks
 
 TEST_USER, TEST_PASSWORD = "tester", "duranium1"
-UPDATE_BASE = "https://github.com/dixonSolutions/gtactive3-mainline/releases/download/"
-PROJECT_KEY = "D0FE850AF01A47831B6EF808583161CE787FF5B5"   # pmos/sysupdate-public-key.asc
+def _config(key):
+    """A value from the port's config.toml (scripts/config: derived values filled in)."""
+    cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "config")
+    return subprocess.run([cfg, "get", key], check=True, capture_output=True, text=True).stdout.strip()
+
+
+UPDATE_BASE = _config("update.base")
+PROJECT_KEY = _config("update.fingerprint")   # pmos/sysupdate-public-key.asc
 
 
 class Checks:

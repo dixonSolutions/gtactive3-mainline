@@ -14,7 +14,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-REPO=${REPO:-dixonSolutions/gtactive3-mainline}
+REPO=${REPO:-$("$(dirname "$0")/../../scripts/config" get project.repo)}
 TAG=$1
 VERSION=${2:-}
 WHAT=${3:-raw}
