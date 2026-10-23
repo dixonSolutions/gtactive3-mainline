@@ -35,9 +35,14 @@ yourself, autonomously, overnight. Keep going until the mission is met.
   Update 09:55: the user said go; the Wi-Fi session tests its
   gtactive3wifi-wifi-recover.service (stage A brcmfmac-only reload, stage
   B controller remove) under build/device.lock. Next: one A/B update
-  straight to r23 (kernel cand/1032 + device r45, CI run 40032957684),
-  skipping r22, so the user types the passphrase once; the user runs
-  `sudo updatectl update` and reboots.
+  straight to r23 (kernel cand/1032 + device r46, CI images run
+  40033972155, which replaced 40032957684), skipping r22, so the user
+  types the passphrase once; the user runs `sudo updatectl update` and
+  reboots. Update 10:30: the Wi-Fi recovery test PASSED (both stages, no
+  oops); its service is device r46 (83cea320), in that run. The user
+  installed 26102305 into the spare slot and was told not to boot it.
+  drv/wifi-recover (bfae8d748) waits for a live test on r23, then
+  cand/1033.
 - Next three steps (same as PLAN.md): see PLAN.md "Next three steps".
 - Waits for the owner: a console route (USB cable to the laptop, or the
   tablet back on Wi-Fi) when the Wi-Fi session needs it; charging current
