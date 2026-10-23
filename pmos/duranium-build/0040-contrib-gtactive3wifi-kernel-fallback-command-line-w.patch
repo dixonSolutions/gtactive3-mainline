@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 20:09:23 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: fallback command line with
+ all eight CPUs
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+index 9dc8436..033583f 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
++++ b/contrib/samsung-gtactive3wifi/kernel/gtactive3wifi.config
+@@ -27,7 +27,7 @@ CONFIG_RD_LZ4=y
+ #     image (uniLoader); this is only the fallback ---
+ # CONFIG_CMDLINE_FORCE is not set
+ CONFIG_CMDLINE_FROM_BOOTLOADER=y
+-CONFIG_CMDLINE="console=tty0 fbcon=rotate:3 clk_ignore_unused maxcpus=4 loglevel=7"
++CONFIG_CMDLINE="console=tty0 fbcon=rotate:3 clk_ignore_unused loglevel=7 exynos9810_cpucl1.enable=0x43"
+ CONFIG_LOCALVERSION=""
+ 
+ # --- UEFI: S-Boot -> uniLoader -> U-Boot -> systemd-boot -> UKI ---

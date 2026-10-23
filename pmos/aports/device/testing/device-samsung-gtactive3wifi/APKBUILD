@@ -3,7 +3,7 @@ maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
 pkgname=device-samsung-gtactive3wifi
 pkgdesc="Samsung Galaxy Tab Active3 (Wi-Fi)"
 pkgver=2
-pkgrel=42
+pkgrel=43
 url="https://github.com/dixonSolutions/gtactive3-mainline"
 license="MIT"
 arch="aarch64"
@@ -401,7 +401,7 @@ initramfs() {
 
 sha512sums="
 c6afa71ccf2102f8e986145e21b0b1c40d1b65c00664d2563da8aed0b4158d24d6dd1aaacbef4917a315e0f95feda8a6ba9f11c788a55ad96fdd00ccb2026c58  deviceinfo
-2efd1e10b71f07e054fb65714c332a99e8476eae868e90122c9d36572dc6241c685d8cf4cd8cbdaa0ed555d337dd806219a02e2318d857f217dbb18f48721972  kernel-cmdline.conf
+d70eb3159b6a94d83584e0ec3cce1e70b8016b5e4e8265b4a08bf3346e9241dc3d2c1b55d84e606006209d1ae4b5490fdf5517d0bb97e39d7c0f57969c775786  kernel-cmdline.conf
 acba813ff0feb882b6cb0cc4b4c9f8dc0b9b58cb3da7c6a87920ecf4ef63670ac90f23d3ca6bc5b057832fe8e4388c1eca60b6c79c7f3e50eab6d5986cd349d7  gtactive3wifi-usb-prep.c
 fcf5c1e3a2c601e30acc506b7996770dfeddf2cc2b920bc9acb2858442b2aad71ab2d0fd50590e0cdacc8ebb14fb1c04bdca0007268ad6f62f5988a8ac61e3ad  gtactive3wifi-usb-prep.service
 28297b58b56192c894ed5a1f60a4834b4490945054b6db21dcf72212605fdf4a5cd153331313eab1b78d65b13402038dfd08f5b41e1da9b3bb02db0d012328dc  gta3-console.c

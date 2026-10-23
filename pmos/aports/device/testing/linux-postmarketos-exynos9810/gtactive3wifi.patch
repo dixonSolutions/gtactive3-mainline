@@ -2292,10 +2292,10 @@ index cab741a695f5231de63b1f5b03cf5e9403cd9168..f29bb2f5ccc3aca3ba4f35f6de11fd20
  	bool "Cortex-A57: 832075: possible deadlock on mixing exclusive memory accesses with device loads"
  	default y
 diff --git a/arch/arm64/Kconfig.debug b/arch/arm64/Kconfig.debug
-index 265c4461031f4df457eb782eac820070710c8d06..27170a18e3302bf9b7dd1c9002648d939098080f 100644
+index 265c4461031f4df457eb782eac820070710c8d06..b139b43977b21bddebfafdceb9131031d5594c00 100644
 --- a/arch/arm64/Kconfig.debug
 +++ b/arch/arm64/Kconfig.debug
-@@ -16,6 +16,21 @@ config DEBUG_EFI
+@@ -16,6 +16,22 @@ config DEBUG_EFI
  	  the kernel that are only useful when using a debug build of the
  	  UEFI firmware
  
@@ -2305,9 +2305,10 @@ index 265c4461031f4df457eb782eac820070710c8d06..27170a18e3302bf9b7dd1c9002648d93
 +	help
 +	  Record how far a secondary CPU gets on its way into the kernel,
 +	  in the early boot status word that is written with the MMU off,
-+	  together with its MPIDR, MIDR, exception level and the ID
-+	  registers that decide whether it can run this kernel (PFR0,
-+	  ISAR0, MMFR0, MMFR1). The record is cleared before each CPU_ON.
++	  together with its MPIDR, MIDR, exception level, CTR_EL0 and the
++	  ID registers that decide whether it can run this kernel (PFR0/1,
++	  ISAR0/1/2, MMFR0/1/2, DFR0). The record is cleared before each
++	  CPU_ON.
 +	  When a CPU fails to come online, the last step it reached is
 +	  printed.
 +
@@ -5984,15 +5985,15 @@ index 1fa29616e586e520d5282d0291ebc3fd2382dc15..f86b67366197d9f924f93ea459fffd14
  /* Fujitsu Erratum 010001 affects A64FX 1.0 and 1.1, (v0r0 and v1r0) */
  #define MIDR_FUJITSU_ERRATUM_010001		MIDR_FUJITSU_A64FX
 diff --git a/arch/arm64/include/asm/smp.h b/arch/arm64/include/asm/smp.h
-index 10ea4f5430690328d501eb7323e3de5105e0e2d7..91835cb8f21e65d40e044b8b481597fc1592c746 100644
+index 10ea4f5430690328d501eb7323e3de5105e0e2d7..260538ef341b9c6d2816c542287f49a6b90eb18b 100644
 --- a/arch/arm64/include/asm/smp.h
 +++ b/arch/arm64/include/asm/smp.h
-@@ -94,6 +94,19 @@ struct secondary_data {
+@@ -94,6 +94,26 @@ struct secondary_data {
  
  extern struct secondary_data secondary_data;
  extern long __early_cpu_boot_status;
 +#ifdef CONFIG_ARM64_DEBUG_SECONDARY_BOOT
-+/* Slots of __early_cpu_boot_trace, one cache line, see head.S */
++/* Slots of __early_cpu_boot_trace, two cache lines, see head.S */
 +#define TRACE_MPIDR		0
 +#define TRACE_MIDR		1
 +#define TRACE_CURRENTEL		2
@@ -6001,7 +6002,14 @@ index 10ea4f5430690328d501eb7323e3de5105e0e2d7..91835cb8f21e65d40e044b8b481597fc
 +#define TRACE_MMFR0		5
 +#define TRACE_MMFR1		6
 +#define TRACE_CSTEP		7
-+#define TRACE_NR		8
++#define TRACE_ISAR1		8
++#define TRACE_ISAR2		9
++#define TRACE_MMFR2		10
++#define TRACE_PFR1		11
++#define TRACE_DFR0		12
++#define TRACE_CTR		13
++#define TRACE_REVIDR		14
++#define TRACE_NR		16
 +extern u64 __early_cpu_boot_trace[TRACE_NR];
 +#endif
  extern void secondary_entry(void);
@@ -6032,7 +6040,7 @@ index e0c09402540cecf1311ccb99509fe2cb6cd11606..21082155e9478a30a42b3a1d5cbdb94a
  		ERRATA_MIDR_RANGE_LIST(workaround_clean_cache),
  		.cpu_enable = cpu_enable_cache_maint_trap,
 diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
-index 87a822e5c4ca83c279c733a54c79e64bb41870db..db3989a8e11768ce9b3a42ced684194bea446ef3 100644
+index 87a822e5c4ca83c279c733a54c79e64bb41870db..4339166eaaaf8e3bd700d1ad7b275d306c72ae97 100644
 --- a/arch/arm64/kernel/head.S
 +++ b/arch/arm64/kernel/head.S
 @@ -42,6 +42,20 @@
@@ -6056,7 +6064,7 @@ index 87a822e5c4ca83c279c733a54c79e64bb41870db..db3989a8e11768ce9b3a42ced684194b
  /*
   * Kernel startup entry point.
   * ---------------------------
-@@ -353,6 +367,27 @@ SYM_FUNC_END(secondary_holding_pen)
+@@ -353,6 +367,43 @@ SYM_FUNC_END(secondary_holding_pen)
  	 * be used where CPUs are brought online dynamically by the kernel.
  	 */
  SYM_FUNC_START(secondary_entry)
@@ -6077,14 +6085,30 @@ index 87a822e5c4ca83c279c733a54c79e64bb41870db..db3989a8e11768ce9b3a42ced684194b
 +	str	x2, [x1, #40]
 +	mrs	x2, id_aa64mmfr1_el1
 +	str	x2, [x1, #48]
++	mrs	x2, id_aa64isar1_el1
++	str	x2, [x1, #64]
++	mrs_s	x2, SYS_ID_AA64ISAR2_EL1	// RAZ before ARMv8.7
++	str	x2, [x1, #72]
++	mrs_s	x2, SYS_ID_AA64MMFR2_EL1
++	str	x2, [x1, #80]
++	mrs	x2, id_aa64pfr1_el1
++	str	x2, [x1, #88]
++	mrs	x2, id_aa64dfr0_el1
++	str	x2, [x1, #96]
++	mrs	x2, ctr_el0
++	str	x2, [x1, #104]
++	mrs	x2, revidr_el1
++	str	x2, [x1, #112]
 +	dmb	sy
-+	dc	ivac, x1			// one 64-byte line
++	dc	ivac, x1			// two 64-byte lines
++	add	x2, x1, #64
++	dc	ivac, x2
 +#endif
 +	secondary_trace 0x10, x1, x2		// entered, MMU off
  	mov	x0, xzr
  	bl	init_kernel_el			// w0=cpu_boot_mode
  	b	secondary_startup
-@@ -363,6 +398,7 @@ SYM_FUNC_START_LOCAL(secondary_startup)
+@@ -363,6 +414,7 @@ SYM_FUNC_START_LOCAL(secondary_startup)
  	 * Common entry point for secondary CPUs.
  	 */
  	mov	x20, x0				// preserve boot mode
@@ -6092,7 +6116,7 @@ index 87a822e5c4ca83c279c733a54c79e64bb41870db..db3989a8e11768ce9b3a42ced684194b
  
  #ifdef CONFIG_ARM64_VA_BITS_52
  alternative_if ARM64_HAS_VA52
-@@ -371,6 +407,7 @@ alternative_else_nop_endif
+@@ -371,6 +423,7 @@ alternative_else_nop_endif
  #endif
  
  	bl	__cpu_setup			// initialise processor
@@ -6145,10 +6169,10 @@ index f093cdf71be111ae0839937bd745af52a2628151..c1c988b02760eeabb38ef2e57b806968
  
  	/* retrieve mpidr_hash members to compute the hash */
 diff --git a/arch/arm64/kernel/smp.c b/arch/arm64/kernel/smp.c
-index a61dc3016a117dac35344810652bcb21679baacc..64af14331267aa1f384f5b46dea27876cbda26f6 100644
+index a61dc3016a117dac35344810652bcb21679baacc..aafcea80a25fb27618363ec8e971c8e15510d4b8 100644
 --- a/arch/arm64/kernel/smp.c
 +++ b/arch/arm64/kernel/smp.c
-@@ -110,6 +110,66 @@ static int boot_secondary(unsigned int cpu, struct task_struct *idle)
+@@ -110,6 +110,71 @@ static int boot_secondary(unsigned int cpu, struct task_struct *idle)
  
  static DECLARE_COMPLETION(cpu_running);
  
@@ -6205,6 +6229,11 @@ index a61dc3016a117dac35344810652bcb21679baacc..64af14331267aa1f384f5b46dea27876
 +	pr_crit("CPU%u: boot trace: PFR0 %#llx, ISAR0 %#llx, MMFR0 %#llx, MMFR1 %#llx\n",
 +		cpu, READ_ONCE(t[TRACE_PFR0]), READ_ONCE(t[TRACE_ISAR0]),
 +		READ_ONCE(t[TRACE_MMFR0]), READ_ONCE(t[TRACE_MMFR1]));
++	pr_crit("CPU%u: boot trace: ISAR1 %#llx, ISAR2 %#llx, MMFR2 %#llx, PFR1 %#llx, DFR0 %#llx, CTR %#llx, REVIDR %#llx\n",
++		cpu, READ_ONCE(t[TRACE_ISAR1]), READ_ONCE(t[TRACE_ISAR2]),
++		READ_ONCE(t[TRACE_MMFR2]), READ_ONCE(t[TRACE_PFR1]),
++		READ_ONCE(t[TRACE_DFR0]), READ_ONCE(t[TRACE_CTR]),
++		READ_ONCE(t[TRACE_REVIDR]));
 +}
 +#else
 +static inline void secondary_trace(int step) { }
@@ -6215,7 +6244,7 @@ index a61dc3016a117dac35344810652bcb21679baacc..64af14331267aa1f384f5b46dea27876
  int __cpu_up(unsigned int cpu, struct task_struct *idle)
  {
  	int ret;
-@@ -121,6 +181,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
+@@ -121,6 +186,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
  	 */
  	secondary_data.task = idle;
  	update_cpu_boot_status(CPU_MMU_OFF);
@@ -6223,7 +6252,7 @@ index a61dc3016a117dac35344810652bcb21679baacc..64af14331267aa1f384f5b46dea27876
  
  	/* Now bring the CPU into our world */
  	ret = boot_secondary(cpu, idle);
-@@ -140,6 +201,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
+@@ -140,6 +206,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
  		return 0;
  
  	pr_crit("CPU%u: failed to come online\n", cpu);
@@ -6231,7 +6260,7 @@ index a61dc3016a117dac35344810652bcb21679baacc..64af14331267aa1f384f5b46dea27876
  	secondary_data.task = NULL;
  	status = READ_ONCE(secondary_data.status);
  	if (status == CPU_MMU_OFF)
-@@ -201,24 +263,29 @@ asmlinkage notrace void secondary_start_kernel(void)
+@@ -201,24 +268,29 @@ asmlinkage notrace void secondary_start_kernel(void)
  	const struct cpu_operations *ops;
  	unsigned int cpu = smp_processor_id();
  
@@ -6261,7 +6290,7 @@ index a61dc3016a117dac35344810652bcb21679baacc..64af14331267aa1f384f5b46dea27876
  
  	/*
  	 * If the system has established the capabilities, make sure
-@@ -226,23 +293,28 @@ asmlinkage notrace void secondary_start_kernel(void)
+@@ -226,23 +298,28 @@ asmlinkage notrace void secondary_start_kernel(void)
  	 * fail to come online.
  	 */
  	check_local_cpu_capabilities();
@@ -6291,7 +6320,7 @@ index a61dc3016a117dac35344810652bcb21679baacc..64af14331267aa1f384f5b46dea27876
  	numa_add_cpu(cpu);
  
 diff --git a/arch/arm64/mm/mmu.c b/arch/arm64/mm/mmu.c
-index d4384131e10d8d9147849e46c285e12d62a518d3..32efe149e72063865ff4add5df5f7e535f37d1ee 100644
+index d4384131e10d8d9147849e46c285e12d62a518d3..cb97b328321b55e0075ffb242a037d0f68f8d10e 100644
 --- a/arch/arm64/mm/mmu.c
 +++ b/arch/arm64/mm/mmu.c
 @@ -62,6 +62,16 @@ static bool rodata_is_rw __ro_after_init = true;
@@ -6301,12 +6330,12 @@ index d4384131e10d8d9147849e46c285e12d62a518d3..32efe149e72063865ff4add5df5f7e53
 +#ifdef CONFIG_ARM64_DEBUG_SECONDARY_BOOT
 +/*
 + * ID registers of the last secondary CPU that entered the kernel, written
-+ * with the MMU off, plus its last C step. Exactly one 64-byte line, so that
-+ * secondary_entry can invalidate it with a single DC IVAC.
++ * with the MMU off, plus its last C step. Exactly two 64-byte lines, which
++ * secondary_entry invalidates with two DC IVACs.
 + */
 +u64 __section(".mmuoff.data.write") __aligned(64)
 +	__early_cpu_boot_trace[TRACE_NR];
-+static_assert(sizeof(__early_cpu_boot_trace) == 64);
++static_assert(sizeof(__early_cpu_boot_trace) == 128);
 +#endif
  
  static DEFINE_SPINLOCK(swapper_pgdir_lock);
@@ -24274,10 +24303,10 @@ index 636a762608c9ba2c22a72d6f9597ceb015f7f36c..00cd0d6bcccfad8eea4386c0433109cc
  obj-$(CONFIG_EXYNOS_PMU_ARM_DRIVERS)	+= exynos3250-pmu.o exynos4-pmu.o \
  					exynos5250-pmu.o exynos5420-pmu.o
 diff --git a/drivers/soc/samsung/exynos-pmu.c b/drivers/soc/samsung/exynos-pmu.c
-index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02064f0de5 100644
+index efccdd63e40ea645132c9f04b72a6ec02dbae40b..b8daf9056845d939586bd749dfa00e421a4606cc 100644
 --- a/drivers/soc/samsung/exynos-pmu.c
 +++ b/drivers/soc/samsung/exynos-pmu.c
-@@ -116,6 +116,75 @@ static const struct regmap_config regmap_pmu_intr = {
+@@ -116,6 +116,91 @@ static const struct regmap_config regmap_pmu_intr = {
  	.use_raw_spinlock = true,
  };
  
@@ -24291,6 +24320,21 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
 +static unsigned int exynos9810_cpupm_intr_bit(unsigned int cpu)
 +{
 +	return (cpu & 7) ^ 4;
++}
++
++/*
++ * The Mongoose cores' GRP2 bits can be pending while the core runs (they
++ * are at boot, left from S-Boot's cluster power-off), and unmasking such a
++ * request lets ACPM power the core down while it still runs. Offlining
++ * CPU4 with the hint given in the CPU hotplug ONLINE_DYN teardown hung the
++ * SoC. Samsung's kernel gives the hint at the very end of the teardown, on
++ * the dying CPU with IRQs off (CPUHP_AP_EXYNOS_CPU_DOWN_POWER_CONTROL right
++ * above CPUHP_AP_OFFLINE): do the same for these cores, and drop a stale
++ * request first.
++ */
++static bool exynos9810_cpupm_late_offline(unsigned int cpu)
++{
++	return exynos9810_cpupm_intr_bit(cpu) < 4;
 +}
 +
 +/*
@@ -24346,6 +24390,7 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
 +static const struct exynos_pmu_data exynos9810_pmu_data = {
 +	.pmu_cpuhp = true,
 +	.cpupm_intr_bit = exynos9810_cpupm_intr_bit,
++	.cpupm_late_offline = exynos9810_cpupm_late_offline,
 +	.cpupm_event_en = EXYNOS9810_PMU_EVENT_INTERRUPT_ENABLE_GRP2,
 +	.pmu_init = exynos9810_pmu_init,
 +};
@@ -24353,7 +24398,7 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
  /*
   * PMU platform driver and devicetree bindings.
   */
-@@ -149,6 +218,9 @@ static const struct of_device_id exynos_pmu_of_device_ids[] = {
+@@ -149,6 +234,9 @@ static const struct of_device_id exynos_pmu_of_device_ids[] = {
  		.compatible = "samsung,exynos7-pmu",
  	}, {
  		.compatible = "samsung,exynos850-pmu",
@@ -24363,7 +24408,7 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
  	},
  	{ /*sentinel*/ },
  };
-@@ -227,6 +299,13 @@ EXPORT_SYMBOL_GPL(exynos_get_pmu_regmap_by_phandle);
+@@ -227,6 +315,21 @@ EXPORT_SYMBOL_GPL(exynos_get_pmu_regmap_by_phandle);
  #define CPU_INFORM_CLEAR	0
  #define CPU_INFORM_C2		1
  
@@ -24374,10 +24419,18 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
 +	return data->cpupm_intr_bit ? data->cpupm_intr_bit(cpu) : cpu;
 +}
 +
++/* CPUs that get the CPU hotplug offline hint only at the end of teardown */
++static bool cpupm_late_offline(unsigned int cpu)
++{
++	const struct exynos_pmu_data *data = pmu_context->pmu_data;
++
++	return data->cpupm_late_offline && data->cpupm_late_offline(cpu);
++}
++
  /*
   * __gs101_cpu_pmu_ prefix functions are common code shared by CPU PM notifiers
   * (CPUIdle) and CPU hotplug callbacks. Functions should be called with IRQs
-@@ -235,23 +314,27 @@ EXPORT_SYMBOL_GPL(exynos_get_pmu_regmap_by_phandle);
+@@ -235,23 +338,27 @@ EXPORT_SYMBOL_GPL(exynos_get_pmu_regmap_by_phandle);
  static int __gs101_cpu_pmu_online(unsigned int cpu)
  	__must_hold(&pmu_context->cpupm_lock)
  {
@@ -24409,7 +24462,7 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
  	return 0;
  }
  
-@@ -296,21 +379,27 @@ static int gs101_cpuhp_pmu_online(unsigned int cpu)
+@@ -296,21 +403,34 @@ static int gs101_cpuhp_pmu_online(unsigned int cpu)
  static int __gs101_cpu_pmu_offline(unsigned int cpu)
  	__must_hold(&pmu_context->cpupm_lock)
  {
@@ -24424,6 +24477,13 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
  
 -	mask = BIT(cpu);
 +	mask = BIT(cpupm_intr_bit(cpu));
++	if (cpupm_late_offline(cpu)) {
++		/* drop a stale request before unmasking it */
++		regmap_read(pmu_context->pmuintrgen, GS101_GRP2_INTR_BID_UPEND,
++			    &reg);
++		regmap_write(pmu_context->pmuintrgen, GS101_GRP2_INTR_BID_CLEAR,
++			     reg & mask);
++	}
  	regmap_update_bits(pmu_context->pmuintrgen, GS101_GRP2_INTR_BID_ENABLE,
 -			   mask, BIT(cpu));
 +			   mask, mask);
@@ -24441,7 +24501,39 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
  	mask = (BIT(cpu + 8));
  	regmap_read(pmu_context->pmuintrgen, GS101_GRP1_INTR_BID_UPEND, &reg);
  	regmap_write(pmu_context->pmuintrgen, GS101_GRP1_INTR_BID_CLEAR,
-@@ -415,6 +504,9 @@ static int setup_cpuhp_and_cpuidle(struct device *dev)
+@@ -355,13 +475,30 @@ static int gs101_cpuhp_pmu_offline(unsigned int cpu)
+ 	 * ACPM the CPU entering hotplug should not enter C2 idle state.
+ 	 */
+ 	set_bit(cpu, pmu_context->in_cpuhp);
+-	__gs101_cpu_pmu_offline(cpu);
++	if (!cpupm_late_offline(cpu))
++		__gs101_cpu_pmu_offline(cpu);
+ 
+ 	raw_spin_unlock_irqrestore(&pmu_context->cpupm_lock, flags);
+ 
+ 	return 0;
+ }
+ 
++/*
++ * Called from the last CPU hot plug teardown step, on the dying CPU with
++ * IRQs disabled, right before it calls PSCI CPU_OFF
++ */
++static int gs101_cpuhp_pmu_dying(unsigned int cpu)
++{
++	if (!cpupm_late_offline(cpu))
++		return 0;
++
++	raw_spin_lock(&pmu_context->cpupm_lock);
++	__gs101_cpu_pmu_offline(cpu);
++	raw_spin_unlock(&pmu_context->cpupm_lock);
++
++	return 0;
++}
++
+ static int gs101_cpu_pm_notify_callback(struct notifier_block *self,
+ 					unsigned long action, void *v)
+ {
+@@ -415,6 +552,9 @@ static int setup_cpuhp_and_cpuidle(struct device *dev)
  	void __iomem *virt_addr;
  	int ret, cpu;
  
@@ -24451,8 +24543,20 @@ index efccdd63e40ea645132c9f04b72a6ec02dbae40b..9037ea4c96727195a51366b01cb6da02
  	if (!intr_gen_node) {
  		/*
  		 * To maintain support for older DTs that didn't specify syscon
+@@ -464,6 +604,11 @@ static int setup_cpuhp_and_cpuidle(struct device *dev)
+ 	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "soc/exynos-pmu:online",
+ 			  NULL, gs101_cpuhp_pmu_offline);
+ 
++	if (pmu_context->pmu_data->cpupm_late_offline)
++		cpuhp_setup_state_nocalls(CPUHP_AP_EXYNOS_PMU_DYING,
++					  "soc/exynos-pmu:dying",
++					  NULL, gs101_cpuhp_pmu_dying);
++
+ 	/* register CPU PM notifiers for cpuidle */
+ 	cpu_pm_register_notifier(&gs101_cpu_pm_notifier);
+ 	register_reboot_notifier(&exynos_cpupm_reboot_nb);
 diff --git a/drivers/soc/samsung/exynos-pmu.h b/drivers/soc/samsung/exynos-pmu.h
-index fbe381e2a2e1062c318b10b3df171e328901fa7a..d5b471cf907f10f93cd0bfccfec774b2863da4d5 100644
+index fbe381e2a2e1062c318b10b3df171e328901fa7a..9923bc3a1ddbc3604dbbcceca333c9fe902da15b 100644
 --- a/drivers/soc/samsung/exynos-pmu.h
 +++ b/drivers/soc/samsung/exynos-pmu.h
 @@ -32,6 +32,11 @@ struct exynos_pmu_conf {
@@ -24467,21 +24571,22 @@ index fbe381e2a2e1062c318b10b3df171e328901fa7a..d5b471cf907f10f93cd0bfccfec774b2
   * @pmu_init: Optional init function.
   * @powerdown_conf: Optional callback before entering target system states:
   *                  SYS_AFTR, SYS_LPA, SYS_SLEEP. This will be invoked before
-@@ -50,6 +55,8 @@ struct exynos_pmu_data {
+@@ -50,6 +55,9 @@ struct exynos_pmu_data {
  	const struct exynos_pmu_conf *pmu_config_extra;
  	bool pmu_secure;
  	bool pmu_cpuhp;
 +	unsigned int (*cpupm_intr_bit)(unsigned int cpu);
++	bool (*cpupm_late_offline)(unsigned int cpu);
 +	unsigned int cpupm_event_en;
  
  	void (*pmu_init)(void);
  	void (*powerdown_conf)(enum sys_powerdown);
 diff --git a/drivers/soc/samsung/exynos9810-cpucl1.c b/drivers/soc/samsung/exynos9810-cpucl1.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b9355926b54ab8
+index 0000000000000000000000000000000000000000..93e11d55d3d08e283b565a0d1765f619af86c2a7
 --- /dev/null
 +++ b/drivers/soc/samsung/exynos9810-cpucl1.c
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,765 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Exynos9810 big (Samsung Mongoose M3) cluster bring-up helper.
@@ -24496,47 +24601,79 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 + * then runs its cluster-1 and core power-up sequences. (EL3's CPU_ON only
 + * sets CLUSTER1_CPUn_CONFIGURATION[3:0]; it never powers the cluster.)
 + *
-+ * The cluster's coherent request port on the SCI stays disconnected
-+ * (CRP_PM_CC1_0[1:0] = 3, written by S-Boot and by the APM's cluster1_off),
-+ * and neither Samsung's kernel nor the APM tables write it back; Samsung's
-+ * BTS code shows three CRP ports with 0x28-byte register blocks from 0x188,
-+ * so the same PM word of the other two ports is at 0x1cc and 0x1f4, and the
-+ * report prints all three for comparison with the working A55 port.
++ * The cluster's coherent request port on the SCI is left disconnected by
++ * S-Boot (CRP_PM_CC1_0[1:0] = 3); the APM's cluster1_off sequence does the
++ * same, and its cluster1_on sequence never writes the port. Measured on
++ * 2026-10-23: when a big core actually runs, the port reads 0 (connected)
++ * without anybody on the AP side writing it, i.e. the cluster's own power-up
++ * (or the EL3 warm boot code on the core) connects it. Writing it from the
++ * AP while the cluster was powered but its core could not run hung the SoC
++ * so hard that the watchdog did not reset it: this driver never writes it.
 + *
-+ * Samsung's kernel additionally applies its pmucal "lpm_init" sequence at
-+ * time_init (cal_if_init(), so before the secondary CPUs are started), which
-+ * also programs the CPUCL1 clock unit: CPUCL1_CTRL_EXT_EVENT, SHORTSTOP,
-+ * HCHGEN and the CPUCL1 bus dynamic clock gating. Mainline never does.
++ * Samsung's kernel applies its pmucal "lpm_init" sequence at time_init
++ * (cal_if_init(), so before the secondary CPUs are started). Mainline's
++ * exynos-pmu programs its CPU subset (CPU_QCH_CLUSTER1_NONCPU top byte 0x8d,
++ * MEMORY_CLUSTER*_OPTION = 2) only at its postcore_initcall probe, after
++ * smp_init(). Three measurements line up with that:
++ *  - late online, kernel without that exynos-pmu code (2026-10-22): the APM
++ *    powers cluster and core, the core never fetches, the port stays 3;
++ *  - late online after the probe (2026-10-23): same power-up, the port
++ *    connects by itself and the core enters the kernel;
++ *  - CPU_ON in smp_init() (2026-10-23): as the first case.
++ * The ACPM IPC stack was up in the first case, so it is not what matters.
++ * LPM_PMU programs the lpm_init PMU subset before the first big-core CPU_ON.
 + *
 + * Everything here is OFF unless asked for with exynos9810_cpucl1.enable=,
 + * a bit mask (also writable at runtime under /sys/module/.../parameters):
 + *
 + *   BIT(0) ARM_WAKE     arm the GRP1 wake enable of a big core right before
 + *                       its CPU_ON (stale pending bits cleared first)
-+ *   BIT(1) LPM_INIT     the cluster-1 subset of Samsung's lpm_init (PMU QCH
-+ *                       and memory options, CMU_CPUCL1 setup), once
-+ *   BIT(2) SCI_CONNECT  once the APM reports cluster 1 powered, reconnect it
-+ *                       to the coherent interconnect (CRP_PM_CC1_0[1:0] = 0;
-+ *                       S-Boot and the APM power-down leave it disconnected)
++ *   BIT(1) LPM_PMU      stock lpm_init's CPU and reset subset, once, before
++ *                       the first big-core CPU_ON (PMU space only):
++ *                       CPU_QCH_CLUSTER1_NONCPU, MEMORY_CLUSTER{0,1}_*_OPTION,
++ *                       RESET_LPI_TIMEOUT and WDTRESET_LPI
++ *   BIT(2)              (was SCI_CONNECT: removed, ignored)
 + *   BIT(3) DEBUG_PCSR   in the report, read the stuck core's external debug
 + *                       EDPRSR/EDPCSR (only while the PMU says it is powered)
 + *   BIT(4) WATCHDOG     before the first big-core CPU_ON, arm the cluster-0
 + *                       watchdog (~82 s) and make any reset enter Download
-+ *                       mode, unless the watchdog is already armed (a hang
-+ *                       before userspace then still comes back to the host)
++ *                       mode (RECOVERY with wdt_to_recovery=1), unless the
++ *                       watchdog is already armed. Also programs the reset
++ *                       LPI timeout of LPM_PMU, so that the reset sequence
++ *                       cannot wait forever for the LPI handshake of a hung
++ *                       bus port. For tests only: it rewrites the reboot
++ *                       reason of every later reset
 + *   BIT(5) REPORT_PLL   in the report, read PLL_CON0_PLL_CPUCL1 while the
 + *                       PMU says cluster 1 is on (with 0x09 the report hung
 + *                       the SoC on 26102302: this read or the debug one)
++ *   BIT(6) PMU_HINTS    before each big-core CPU_ON, what exynos-pmu's CPU
++ *                       hotplug prepare callback does for that core (it is
++ *                       not registered yet in smp_init): CPU_INFORM = 0, GRP2
++ *                       wake enable and PMU_EVENT_INTERRUPT_ENABLE_GRP2 bit
++ *                       cleared, stale GRP2 pending bit cleared. Only ever
++ *                       masks GRP2; it never unmasks it
++ *   BIT(7) LPM_CMU      stock lpm_init's CMU_CPUCL1 / CPUCL1 bus writes, once
++ *                       (unproven with the cluster off)
++ *
++ * A boot of all eight CPUs wants ARM_WAKE | LPM_PMU | PMU_HINTS (0x43); test
++ * kernels add WATCHDOG (0x53). A read-only line with the PMU state that
++ * differs between a boot and a late online (QCH, memory option, CPU_INFORM,
++ * GRP2, event masks, LPI reset settings) is printed before each armed CPU_ON.
 + *
 + * Each armed CPU_ON is followed by a report a few seconds later (PMU core and
 + * cluster status, GRP1 state, CRP_PM_CC1_0, optionally the CPUCL1 PLL and
-+ * the core's debug registers: both sit behind the cluster's bus port). The secondary
-+ * boot trace (CONFIG_ARM64_DEBUG_SECONDARY_BOOT) tells how far the core got.
++ * the core's debug registers: both sit behind the cluster's bus port). The
++ * secondary boot trace (CONFIG_ARM64_DEBUG_SECONDARY_BOOT) tells how far the
++ * core got.
 + *
-+ * After a watchdog reset (PMU RST_STAT) the big cores stay off for that boot
-+ * (wdt_fallback=1, default), so a big-core setup that hangs the boot cannot
-+ * loop; wdt_to_recovery=1 makes the WATCHDOG bit's reset re-enter RECOVERY
-+ * (the bring-up test kernel) instead of Download mode.
++ * Boot-attempt record: the first big-core CPU_ON of a boot writes a record
++ * into DRAM that survives warm resets (the last page of the "uboot-log"
++ * no-map reserved region, which uniLoader and the bring-up init only use at
++ * its start and its last 16 bytes); late_initcall_sync clears it. Finding
++ * it at the next boot means that boot hung while starting the big cores:
++ * with wdt_fallback=1 (default) this boot then leaves them off, so a bad
++ * setup cannot loop, and the boot after it tries again. PMU RST_STAT is not
++ * used for this: its watchdog bits survive a following software reset.
 + *
 + * Independently of enable=, every CPU that comes online is checked against
 + * the MPIDR hash the suspend code uses (arm64 sleep.S drops one affinity
@@ -24544,39 +24681,59 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 + * DT "reg" would corrupt another core's context in C2.
 + *
 + * Note on cpu4-7 and maxcpus=: the Mongoose cores lack ARMv8.1+ features the
-+ * Cortex-A55s have (LSE atomics, PAN, ...). A big core onlined after boot is
-+ * therefore rejected by the cpufeature checks even if it starts; for real
-+ * use all eight CPUs must be started at boot (no maxcpus=4), so the system
-+ * features are the common subset. A late online is still the safest first
-+ * test: a core that reaches the kernel says so before it is parked.
++ * Cortex-A55s have (LSE atomics, PAN, LDAPR, XNX, ...) and need errata
++ * handling the A55s do not (KPTI, Spectre-v2/v4/BHB). A big core onlined
++ * after an A55-only boot dies at its first LSE atomic (measured: cstep 0x20,
++ * mmgrab()), and without LSE it would still be rejected by those local
++ * errata, which a late CPU may not add. For real use all eight CPUs must be
++ * started at boot (no maxcpus=4), so the system features are the common
++ * subset. A late online is still the safest first test of the power-up.
++ *
++ * Big cores going down: offlining CPU4 on an eight-CPU boot (2026-10-23)
++ * hung the SoC; exynos-pmu now gives their CPU_OFF/C2 hint the way Samsung's
++ * kernel does (at the end of the hotplug teardown, stale GRP2 request
++ * dropped first), but that is unproven. Until it is, a big core refuses to
++ * go offline (-EBUSY, also for suspend's freeze_secondary_cpus(), which then
++ * aborts cleanly) unless big_hotplug=1 (runtime writable), and its C2 idle
++ * state (exynos9810_c2=1 enables it for every CPU) stays disabled unless
++ * big_c2=1; it can be enabled per CPU at runtime through cpuidle's sysfs
++ * "disable" files. kexec from an eight-CPU kernel offlines the secondaries
++ * too: with big_hotplug=0 it stops at a BUG_ON() instead of hanging.
 + */
 +
 +#define pr_fmt(fmt) "exynos9810-cpucl1: " fmt
 +
++#include <linux/align.h>
++#include <linux/bitfield.h>
 +#include <linux/bits.h>
++#include <linux/cleanup.h>
 +#include <linux/cpu.h>
++#include <linux/cpuidle.h>
 +#include <linux/cpuhotplug.h>
 +#include <linux/delay.h>
 +#include <linux/init.h>
 +#include <linux/io.h>
-+#include <linux/iopoll.h>
 +#include <linux/ktime.h>
 +#include <linux/moduleparam.h>
 +#include <linux/mutex.h>
 +#include <linux/of.h>
 +#include <linux/of_address.h>
 +#include <linux/printk.h>
++#include <linux/sched.h>
++#include <linux/sizes.h>
 +#include <linux/workqueue.h>
 +
 +#include <asm/cputype.h>
 +#include <asm/smp_plat.h>
 +
 +#define CPUCL1_ARM_WAKE		BIT(0)
-+#define CPUCL1_LPM_INIT		BIT(1)
-+#define CPUCL1_SCI_CONNECT	BIT(2)
++#define CPUCL1_LPM_PMU		BIT(1)
++#define CPUCL1_SCI_REMOVED	BIT(2)
 +#define CPUCL1_DEBUG_PCSR	BIT(3)
 +#define CPUCL1_WATCHDOG		BIT(4)
 +#define CPUCL1_REPORT_PLL	BIT(5)
++#define CPUCL1_PMU_HINTS	BIT(6)
++#define CPUCL1_LPM_CMU		BIT(7)
 +
 +static unsigned int enable;
 +module_param(enable, uint, 0644);
@@ -24587,14 +24744,25 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +MODULE_PARM_DESC(wdt_to_recovery,
 +		 "WATCHDOG bit: a reset re-enters RECOVERY instead of Download mode");
 +
++static bool big_c2;
++module_param(big_c2, bool, 0444);
++MODULE_PARM_DESC(big_c2, "Leave the big cores' C2 idle state enabled (exynos9810_c2=1)");
++
++static bool big_hotplug;
++module_param(big_hotplug, bool, 0644);
++MODULE_PARM_DESC(big_hotplug, "Let the big cores go offline (CPU hotplug, deep sleep)");
++
 +static bool wdt_fallback = true;
 +module_param(wdt_fallback, bool, 0444);
 +MODULE_PARM_DESC(wdt_fallback,
-+		 "After a watchdog reset, leave the big cores off for this boot");
++		 "After a boot that hung while starting the big cores, leave them off for one boot");
 +
 +/* PMU (samsung,exynos9810-pmu) */
 +#define PMU_RST_STAT			0x0404
-+#define PMU_RST_WDT			(BIT(24) | BIT(23))	/* CL0, CL1 WDT */
++#define PMU_WDTRESET_LPI		0x0418
++#define PMU_RESET_LPI_TIMEOUT		0x0420
++#define PMU_LPI_TIMEOUT_EN		BIT(0)
++#define PMU_LPI_TIMEOUT_DUR		GENMASK(31, 16)
 +#define PMU_WDT_DISABLE			0x0408
 +#define PMU_WDT_MASK_RESET		0x040c
 +#define PMU_CL0_WDTRESET		BIT(24)
@@ -24603,17 +24771,27 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +#define PMU_SEC_POWER_RESET		0x12345678
 +#define PMU_SEC_RESET_DOWNLOAD		0x12345671
 +#define PMU_SEC_RESET_RECOVERY		0x12345674
++#define PMU_CPU_INFORM(cpu)		(0x0860 + ((cpu) & 7) * 4)
 +#define PMU_CPU_QCH_CL1_NONCPU		0x1088
 +#define PMU_CL1_CPU_CONFIG(n)		(0x2000 + 8 * (n))
 +#define PMU_CL1_CPU_STATUS(n)		(0x2004 + 8 * (n))
 +#define PMU_CL1_NONCPU_CONFIG		0x2040
 +#define PMU_CL1_NONCPU_STATUS		0x2044
++#define PMU_MEM_CL1_NONCPU_OPT		0x2384
++#define PMU_RESET_CL1_DBG_CONFIG	0x2600	/* + 4: status */
++#define PMU_CPUCL1_CONFIG		0x4090	/* CPUCL1 block domain */
++#define PMU_DISABLE_PLL_CPUCL1_CONFIG	0x4d4c
++#define PMU_EVT_EN_GRP1			0x7f04
++#define PMU_EVT_EN_GRP2			0x7f08
 +#define PMU_PWR_ON			0xf
 +
 +/* pmu-intr-gen (samsung,exynos9810-pmu-intr-gen): GRP1 = APM core wake */
 +#define INTR_GRP1_ENABLE		0x0100
 +#define INTR_GRP1_UPEND			0x0108
 +#define INTR_GRP1_CLEAR			0x010c
++#define INTR_GRP2_ENABLE		0x0200
++#define INTR_GRP2_UPEND			0x0208
++#define INTR_GRP2_CLEAR			0x020c
 +
 +/* Blocks without a DT node (Samsung cmucal-sfr.c / flexpmu tables) */
 +#define CMU_CPUCL1_BASE			0x1d100000
@@ -24627,8 +24805,6 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +#define SCI_CRP_PM_CC1_0		0x01a4
 +#define SCI_CRP_PM_PORT1		0x01cc
 +#define SCI_CRP_PM_PORT2		0x01f4
-+#define SCI_CRP_PM_DISCONNECT		GENMASK(1, 0)
-+#define SCI_CRP_PM_ACTIVE		BIT(16)
 +/* CoreSight per-core external debug (stock DT coresight@1e000000) */
 +#define DBG_CL1_CPU(n)			(0x1e410000 + 0x100000 * (n))
 +#define DBG_EDPCSR_LO			0x0a0
@@ -24642,6 +24818,17 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +#define WTCON_EN_RST			(BIT(5) | BIT(0))
 +#define WTCON_ARMED			((0xff << 8) | (3 << 3) | WTCON_EN_RST)
 +
++/* Boot-attempt record, in the last page of the "uboot-log" region */
++#define CPUCL1_MARK_PAGE_OFF		0xfc0
++#define CPUCL1_MARK_MAGIC		0x334d4742	/* "BGM3" */
++
++struct cpucl1_mark {
++	u32 magic;
++	u32 enable;
++	u32 rst_stat;
++	u32 boots;	/* consecutive boots that hung while starting them */
++};
++
 +#define CPUCL1_REPORT_MS		5500
 +#define CPUCL1_POLL_MS			4
 +
@@ -24653,13 +24840,17 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +	void __iomem *bus;
 +	void __iomem *sci;
 +	void __iomem *dbg[4];
-+	struct mutex lock;		/* armed[], lpm_done, wdt_done */
++	struct cpucl1_mark *mark;
++	struct mutex lock;		/* armed, *_done, mark_set */
 +	struct delayed_work work;
 +	ktime_t armed_at[4];
 +	unsigned long armed;		/* big cores waiting for a report */
-+	bool lpm_done;
++	u32 hung_boots;			/* from the record found at boot */
++	bool lpm_pmu_done;
++	bool lpm_cmu_done;
++	bool lpi_done;
 +	bool wdt_done;
-+	bool sci_done;
++	bool mark_set;
 +};
 +
 +static struct cpucl1 cl1;
@@ -24679,26 +24870,104 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +	writel((readl(reg) & ~mask) | (val & mask), reg);
 +}
 +
-+/* Samsung pmucal lpm_init, the entries that concern cluster 1 */
-+static void cpucl1_lpm_init(void)
++/*
++ * Stock lpm_init: bound the bus quiesce (LPI) handshake of the reset
++ * sequence (RESET_LPI_TIMEOUT enable, duration 0x20) and set WDTRESET_LPI.
++ * Without the timeout a hung interconnect port can keep a watchdog reset
++ * from completing.
++ */
++static void cpucl1_reset_lpi(void)
 +{
-+	static const u16 mem_opt[] = { 0x2114, 0x2180, 0x21ec, 0x2258, 0x2384 };
++	u32 lpi = readl(cl1.pmu + PMU_WDTRESET_LPI);
++	u32 to = readl(cl1.pmu + PMU_RESET_LPI_TIMEOUT);
++
++	if (cl1.lpi_done)
++		return;
++	cl1.lpi_done = true;
++	cpucl1_rmw(cl1.pmu + PMU_RESET_LPI_TIMEOUT,
++		   PMU_LPI_TIMEOUT_EN | PMU_LPI_TIMEOUT_DUR,
++		   PMU_LPI_TIMEOUT_EN | FIELD_PREP(PMU_LPI_TIMEOUT_DUR, 0x20));
++	cpucl1_rmw(cl1.pmu + PMU_WDTRESET_LPI, BIT(0), BIT(0));
++	pr_info("reset LPI: WDTRESET_LPI %08x -> %08x, RESET_LPI_TIMEOUT %08x -> %08x\n",
++		lpi, readl(cl1.pmu + PMU_WDTRESET_LPI),
++		to, readl(cl1.pmu + PMU_RESET_LPI_TIMEOUT));
++}
++
++/*
++ * Samsung pmucal lpm_init, the CPU entries mainline's exynos-pmu programs
++ * at its (postcore) probe (same table as exynos9810_cpu_pd_options there),
++ * plus the reset LPI timeout.
++ */
++static void cpucl1_lpm_pmu(void)
++{
++	static const u16 mem_opt[] = {
++		0x2114, 0x2180, 0x21ec, 0x2258, 0x2384,	/* cluster 1 */
++		0x23c8, 0x2418, 0x2468, 0x24b8, 0x25a0,	/* cluster 0 */
++	};
++	u32 qch = readl(cl1.pmu + PMU_CPU_QCH_CL1_NONCPU);
++	u32 mem = readl(cl1.pmu + PMU_MEM_CL1_NONCPU_OPT);
 +	int i;
 +
 +	cpucl1_rmw(cl1.pmu + PMU_CPU_QCH_CL1_NONCPU, 0xffU << 24, 0x8dU << 24);
 +	for (i = 0; i < ARRAY_SIZE(mem_opt); i++)
 +		cpucl1_rmw(cl1.pmu + mem_opt[i], 0x3, 0x2);
 +
++	pr_info("lpm_pmu: QCH %08x -> %08x, MEMORY_CLUSTER1_NONCPU_OPTION %08x -> %08x\n",
++		qch, readl(cl1.pmu + PMU_CPU_QCH_CL1_NONCPU),
++		mem, readl(cl1.pmu + PMU_MEM_CL1_NONCPU_OPT));
++	cpucl1_reset_lpi();
++}
++
++/* Samsung pmucal lpm_init, the CMU_CPUCL1 and CPUCL1 bus entries */
++static void cpucl1_lpm_cmu(void)
++{
 +	cpucl1_rmw(cl1.cmu + CMU_CPUCL1_HCHGEN_CLKMUX, 0x7f, 0);
 +	cpucl1_rmw(cl1.cmu + CMU_CPUCL1_CTRL_EXT_EVENT, 0x3ff, 0x201);
 +	writel(0xffffffff, cl1.cmu + CMU_CPUCL1_SHORTSTOP);
 +	writel(0xffffffff, cl1.bus + CPUCL1_BUS_DRCG_EN);
 +
-+	pr_info("lpm_init: QCH %08x EXT_EVENT %08x SHORTSTOP %08x DRCG %08x\n",
-+		readl(cl1.pmu + PMU_CPU_QCH_CL1_NONCPU),
++	pr_info("lpm_cmu: EXT_EVENT %08x SHORTSTOP %08x DRCG %08x\n",
 +		readl(cl1.cmu + CMU_CPUCL1_CTRL_EXT_EVENT),
 +		readl(cl1.cmu + CMU_CPUCL1_SHORTSTOP),
 +		readl(cl1.bus + CPUCL1_BUS_DRCG_EN));
++}
++
++/*
++ * exynos-pmu's CPU hotplug prepare callback (__gs101_cpu_pmu_online()) for
++ * @cpu, which a late online gets and smp_init() does not: clear the C2 hint
++ * and mask (never unmask) the core's GRP2 wake.
++ */
++static void cpucl1_pmu_hints(unsigned int cpu, unsigned int core)
++{
++	u32 bit = BIT(core);
++
++	writel(0, cl1.pmu + PMU_CPU_INFORM(cpu));
++	cpucl1_rmw(cl1.intrgen + INTR_GRP2_ENABLE, bit, 0);
++	writel(readl(cl1.intrgen + INTR_GRP2_UPEND) & bit,
++	       cl1.intrgen + INTR_GRP2_CLEAR);
++	cpucl1_rmw(cl1.pmu + PMU_EVT_EN_GRP2, bit, 0);
++}
++
++/* Read-only: the PMU state that differs between a boot and a late online */
++static void cpucl1_state(unsigned int cpu)
++{
++	pr_info("cpu%u: state: QCH %08x MEMOPT %08x INFORM %08x GRP2 en %08x pend %08x EVT1 %08x EVT2 %08x LPI %08x/%08x\n",
++		cpu, readl(cl1.pmu + PMU_CPU_QCH_CL1_NONCPU),
++		readl(cl1.pmu + PMU_MEM_CL1_NONCPU_OPT),
++		readl(cl1.pmu + PMU_CPU_INFORM(cpu)),
++		readl(cl1.intrgen + INTR_GRP2_ENABLE),
++		readl(cl1.intrgen + INTR_GRP2_UPEND),
++		readl(cl1.pmu + PMU_EVT_EN_GRP1),
++		readl(cl1.pmu + PMU_EVT_EN_GRP2),
++		readl(cl1.pmu + PMU_WDTRESET_LPI),
++		readl(cl1.pmu + PMU_RESET_LPI_TIMEOUT));
++	pr_info("cpu%u: state: CPUCL1 %08x/%08x DISABLE_PLL_CPUCL1 %08x/%08x RESET_CL1_DBG %08x/%08x\n",
++		cpu, readl(cl1.pmu + PMU_CPUCL1_CONFIG),
++		readl(cl1.pmu + PMU_CPUCL1_CONFIG + 4),
++		readl(cl1.pmu + PMU_DISABLE_PLL_CPUCL1_CONFIG),
++		readl(cl1.pmu + PMU_DISABLE_PLL_CPUCL1_CONFIG + 4),
++		readl(cl1.pmu + PMU_RESET_CL1_DBG_CONFIG),
++		readl(cl1.pmu + PMU_RESET_CL1_DBG_CONFIG + 4));
 +}
 +
 +static bool cpucl1_wdt_armed(void)
@@ -24722,6 +24991,7 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +	writel(PMU_SEC_POWER_RESET, cl1.pmu + PMU_INFORM2);
 +	writel(wdt_to_recovery ? PMU_SEC_RESET_RECOVERY : PMU_SEC_RESET_DOWNLOAD,
 +	       cl1.pmu + PMU_INFORM3);
++	cpucl1_reset_lpi();
 +	if (cpucl1_wdt_armed()) {
 +		pr_info("watchdog already armed (WTCON %08x), reset -> %s\n",
 +			readl(cl1.wdt + WTCON), to);
@@ -24737,34 +25007,70 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +		readl(cl1.wdt + WTCON), to);
 +}
 +
-+static bool cpucl1_cluster_on(void)
++/* The record lives in DRAM mapped write-combined: push it out */
++static void cpucl1_mark_write(u32 magic)
 +{
-+	return (readl(cl1.pmu + PMU_CL1_NONCPU_STATUS) & PMU_PWR_ON) == PMU_PWR_ON;
++	struct cpucl1_mark *m = cl1.mark;
++
++	WRITE_ONCE(m->enable, READ_ONCE(enable));
++	WRITE_ONCE(m->rst_stat, readl(cl1.pmu + PMU_RST_STAT));
++	WRITE_ONCE(m->boots, magic ? cl1.hung_boots + 1 : 0);
++	WRITE_ONCE(m->magic, magic);
++	/* in DRAM before the CPU_ON (or the hang) that may follow */
++	mb();
 +}
 +
-+/* The APM has powered cluster 1: put it back on the SCI if still detached */
-+static void cpucl1_sci_connect(void)
++static void __init cpucl1_mark_map(void)
 +{
-+	void __iomem *reg = cl1.sci + SCI_CRP_PM_CC1_0;
-+	u32 before = readl(reg), after;
-+	int ret;
++	struct device_node *rmem __free(device_node) =
++		of_find_node_by_path("/reserved-memory");
++	struct resource res;
 +
-+	cl1.sci_done = true;
-+	if (!(before & SCI_CRP_PM_DISCONNECT)) {
-+		pr_info("SCI: CRP_PM_CC1_0 %08x, already connected\n", before);
++	if (!rmem)
++		return;
++	for_each_child_of_node_scoped(rmem, np) {
++		if (!of_node_name_eq(np, "uboot-log"))
++			continue;
++		if (of_address_to_resource(np, 0, &res) ||
++		    resource_size(&res) < SZ_4K)
++			return;
++		cl1.mark = memremap(ALIGN_DOWN(res.end, SZ_4K) + CPUCL1_MARK_PAGE_OFF,
++				    sizeof(*cl1.mark), MEMREMAP_WC);
 +		return;
 +	}
-+	writel(before & ~SCI_CRP_PM_DISCONNECT, reg);
-+	ret = readl_poll_timeout_atomic(reg, after, after & SCI_CRP_PM_ACTIVE,
-+					1, 1000);
-+	pr_info("SCI: CRP_PM_CC1_0 %08x -> %08x%s\n", before, after,
-+		ret ? " (no ACTIVE ack)" : "");
++}
++
++/*
++ * Before smp_init(): did the previous boot hang while starting the big
++ * cores? Returns true when they must stay off for this boot.
++ */
++static bool __init cpucl1_mark_check(void)
++{
++	struct cpucl1_mark *m = cl1.mark;
++	bool off;
++
++	if (!m) {
++		pr_info("no \"uboot-log\" reserved region: no boot-attempt record\n");
++		return false;
++	}
++	if (READ_ONCE(m->magic) != CPUCL1_MARK_MAGIC)
++		return false;
++
++	cl1.hung_boots = READ_ONCE(m->boots);
++	off = enable && wdt_fallback;
++	pr_warn("the previous boot hung while starting the big cores (enable=%#x, RST_STAT then %08x, now %08x, %u in a row)%s\n",
++		READ_ONCE(m->enable), READ_ONCE(m->rst_stat),
++		readl(cl1.pmu + PMU_RST_STAT), cl1.hung_boots,
++		off ? ": big cores stay off this boot" : "");
++	cpucl1_mark_write(0);
++	return off;
 +}
 +
 +static void cpucl1_report(unsigned int core, unsigned int cpu)
 +{
 +	u32 st = readl(cl1.pmu + PMU_CL1_CPU_STATUS(core));
-+	bool cl_on = cpucl1_cluster_on();
++	bool cl_on = (readl(cl1.pmu + PMU_CL1_NONCPU_STATUS) & PMU_PWR_ON) ==
++		     PMU_PWR_ON;
 +
 +	pr_info("cpu%u: %s: CPU cfg %08x st %08x NONCPU cfg %08x st %08x GRP1 en %08x pend %08x\n",
 +		cpu, cpu_online(cpu) ? "online" : "NOT online",
@@ -24805,10 +25111,6 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +	ktime_t now = ktime_get();
 +
 +	mutex_lock(&cl1.lock);
-+	if ((READ_ONCE(enable) & CPUCL1_SCI_CONNECT) && !cl1.sci_done &&
-+	    cl1.armed && cpucl1_cluster_on())
-+		cpucl1_sci_connect();
-+
 +	for_each_possible_cpu(cpu) {
 +		int c = cpucl1_core(cpu);
 +
@@ -24831,7 +25133,7 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +/* CPUHP_BP_PREPARE_DYN: on the boot CPU, before PSCI CPU_ON of @cpu */
 +static int cpucl1_prepare(unsigned int cpu)
 +{
-+	unsigned int en = READ_ONCE(enable);
++	unsigned int en = READ_ONCE(enable) & ~CPUCL1_SCI_REMOVED;
 +	int core = cpucl1_core(cpu);
 +	u32 bit;
 +
@@ -24839,14 +25141,25 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +		return 0;
 +
 +	mutex_lock(&cl1.lock);
++	if (cl1.mark && !cl1.mark_set && system_state < SYSTEM_RUNNING) {
++		cpucl1_mark_write(CPUCL1_MARK_MAGIC);
++		cl1.mark_set = true;
++	}
++	cpucl1_state(cpu);
 +	if ((en & CPUCL1_WATCHDOG) && !cl1.wdt_done) {
 +		cpucl1_wdt_arm();
 +		cl1.wdt_done = true;
 +	}
-+	if ((en & CPUCL1_LPM_INIT) && !cl1.lpm_done) {
-+		cpucl1_lpm_init();
-+		cl1.lpm_done = true;
++	if ((en & CPUCL1_LPM_PMU) && !cl1.lpm_pmu_done) {
++		cpucl1_lpm_pmu();
++		cl1.lpm_pmu_done = true;
 +	}
++	if ((en & CPUCL1_LPM_CMU) && !cl1.lpm_cmu_done) {
++		cpucl1_lpm_cmu();
++		cl1.lpm_cmu_done = true;
++	}
++	if (en & CPUCL1_PMU_HINTS)
++		cpucl1_pmu_hints(cpu, core);
 +	if (en & CPUCL1_ARM_WAKE) {
 +		bit = BIT(core);
 +		pr_info("cpu%u: arming the APM wake (GRP1 en %08x pend %08x NONCPU st %08x CPU st %08x)\n",
@@ -24858,8 +25171,6 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +		       cl1.intrgen + INTR_GRP1_CLEAR);
 +		cpucl1_rmw(cl1.intrgen + INTR_GRP1_ENABLE, bit, bit);
 +	}
-+	if (!cpucl1_cluster_on())
-+		cl1.sci_done = false;
 +	cl1.armed_at[core] = ktime_get();
 +	set_bit(core, &cl1.armed);
 +	schedule_delayed_work(&cl1.work, msecs_to_jiffies(CPUCL1_POLL_MS));
@@ -24882,6 +25193,30 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +	else if (cpucl1_core(cpu) >= 0)
 +		pr_info("cpu%u: MIDR %08x MPIDR %#llx (DT reg %#llx), suspend hash ok\n",
 +			cpu, read_cpuid_id(), mpidr, hwid);
++	return 0;
++}
++
++/*
++ * CPUHP_AP_ONLINE_DYN teardown, on the CPU going down. Registered after
++ * exynos-pmu's state, so it runs (and can refuse) before that one marks
++ * the CPU as in hotplug.
++ */
++static int cpucl1_ap_offline(unsigned int cpu)
++{
++	if (cpucl1_core(cpu) < 0)
++		return 0;
++	if (!READ_ONCE(big_hotplug)) {
++		pr_warn_ratelimited("cpu%u: big core stays online (big_hotplug=0)\n",
++				    cpu);
++		return -EBUSY;
++	}
++	pr_info("cpu%u: going offline: INFORM %08x GRP1 en %08x pend %08x GRP2 en %08x pend %08x EVT2 %08x\n",
++		cpu, readl(cl1.pmu + PMU_CPU_INFORM(cpu)),
++		readl(cl1.intrgen + INTR_GRP1_ENABLE),
++		readl(cl1.intrgen + INTR_GRP1_UPEND),
++		readl(cl1.intrgen + INTR_GRP2_ENABLE),
++		readl(cl1.intrgen + INTR_GRP2_UPEND),
++		readl(cl1.pmu + PMU_EVT_EN_GRP2));
 +	return 0;
 +}
 +
@@ -24924,18 +25259,18 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +	mutex_init(&cl1.lock);
 +	INIT_DELAYED_WORK(&cl1.work, cpucl1_work_fn);
 +
++	if (enable & CPUCL1_SCI_REMOVED)
++		pr_warn("enable bit 0x4 (SCI_CONNECT) was removed and is ignored\n");
++
 +	/*
-+	 * A boot that brought the big cores up and then hung ends in a
-+	 * watchdog reset: start this one with the A55s only, so a bad big-core
-+	 * setup cannot loop. smp_init() has not run yet, so the big cores are
-+	 * simply not started. The next ordinary reboot tries them again.
++	 * smp_init() has not run yet: a big core that is not present is simply
++	 * not started. The record is read (and cleared) whatever enable= is,
++	 * so the RECOVERY kernel after a hung test kernel says so.
 +	 */
-+	if (enable && wdt_fallback &&
-+	    (readl(cl1.pmu + PMU_RST_STAT) & PMU_RST_WDT)) {
++	cpucl1_mark_map();
++	if (cpucl1_mark_check()) {
 +		unsigned int cpu;
 +
-+		pr_warn("last reset was a watchdog reset (RST_STAT %08x): big cores stay off this boot\n",
-+			readl(cl1.pmu + PMU_RST_STAT));
 +		enable = 0;
 +		for_each_present_cpu(cpu)
 +			if (cpucl1_core(cpu) >= 0)
@@ -24958,6 +25293,65 @@ index 0000000000000000000000000000000000000000..a00e0aab832aa6755e21d1f442b93559
 +	return 0;
 +}
 +early_initcall(exynos9810_cpucl1_init);
++
++/* The boot got through starting the big cores: drop the attempt record */
++static int __init exynos9810_cpucl1_mark_done(void)
++{
++	unsigned int cpu, n = 0;
++
++	mutex_lock(&cl1.lock);
++	if (cl1.mark_set) {
++		for_each_online_cpu(cpu)
++			n += cpucl1_core(cpu) >= 0;
++		cpucl1_mark_write(0);
++		cl1.mark_set = false;
++		pr_info("big cores started at boot: %u online\n", n);
++	}
++	mutex_unlock(&cl1.lock);
++	return 0;
++}
++late_initcall_sync(exynos9810_cpucl1_mark_done);
++
++/* After exynos-pmu (postcore) registered its CPU hotplug states */
++static int __init exynos9810_cpucl1_offline_gate(void)
++{
++	int ret;
++
++	if (!cl1.pmu)
++		return 0;
++	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN,
++					"soc/exynos9810-cpucl1:offline",
++					NULL, cpucl1_ap_offline);
++	return ret < 0 ? ret : 0;
++}
++late_initcall(exynos9810_cpucl1_offline_gate);
++
++#ifdef CONFIG_CPU_IDLE
++/* After cpuidle-psci (device_initcall) registered the per-CPU devices */
++static int __init exynos9810_cpucl1_c2_gate(void)
++{
++	unsigned int cpu, n = 0;
++	int i;
++
++	if (big_c2 || !cl1.pmu)
++		return 0;
++
++	for_each_present_cpu(cpu) {
++		struct cpuidle_device *dev = per_cpu(cpuidle_devices, cpu);
++
++		if (cpucl1_core(cpu) < 0 || !dev)
++			continue;
++		for (i = 1; i < CPUIDLE_STATE_MAX; i++)
++			dev->states_usage[i].disable |= CPUIDLE_STATE_DISABLED_BY_USER;
++		n++;
++	}
++	if (n)
++		pr_info("idle states beyond WFI off on %u big cores (big_c2=1 keeps them)\n",
++			n);
++	return 0;
++}
++late_initcall(exynos9810_cpucl1_c2_gate);
++#endif
 diff --git a/drivers/thermal/samsung/Kconfig b/drivers/thermal/samsung/Kconfig
 index e1e8035d24fb22b9c50c5cb6522e38120340f446..697a35532343e113ff441c1755f57ccacefb1952 100644
 --- a/drivers/thermal/samsung/Kconfig
@@ -27887,6 +28281,18 @@ index 0000000000000000000000000000000000000000..442f08fba6cd60c937c2c2f5e5cb2746
 +#define CLK_GOUT_G3D_GRAY2BIN_G3D_CLK		20
 +
 +#endif /* _DT_BINDINGS_CLOCK_EXYNOS9810_H */
+diff --git a/include/linux/cpuhotplug.h b/include/linux/cpuhotplug.h
+index feb32949aeea6a1d4386fc31a71bc4571926e01c..526e85886c27990cc955fc20fee8a3474a27f819 100644
+--- a/include/linux/cpuhotplug.h
++++ b/include/linux/cpuhotplug.h
+@@ -130,6 +130,7 @@ enum cpuhp_state {
+ 	 */
+ 	CPUHP_AP_IDLE_DEAD,
+ 	CPUHP_AP_OFFLINE,
++	CPUHP_AP_EXYNOS_PMU_DYING,
+ 	CPUHP_AP_CACHECTRL_STARTING,
+ 	CPUHP_AP_SCHED_STARTING,
+ 	CPUHP_AP_RCUTREE_DYING,
 diff --git a/include/linux/mfd/samsung/core.h b/include/linux/mfd/samsung/core.h
 index 6191f409de945e4f894d3d629f6dc7e88d70d425..5bea9d9f70c848bdbffe1dc13ebbfde94db1f4dd 100644
 --- a/include/linux/mfd/samsung/core.h
