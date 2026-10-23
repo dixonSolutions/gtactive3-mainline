@@ -81,11 +81,15 @@ source="
 	modprobe-gtactive3wifi-camera.conf
 	libcamera-softisp.yaml
 	sysupdate-retry.conf
+	sysupdate-slot-hygiene.conf
+	slot-hygiene.sh
+	gtactive3wifi-slot-hygiene.service
 	switch-ui.sh
 	claim-android-space.sh
 	panfrost-environment.conf
 	gdm-panfrost.conf
 	panfrost-profile.sh
+	panfrost-profile.tmpfiles
 	nm-wifi-powersave.conf
 	80-gtactive3wifi-wlan-mac.rules
 	wlan-efs-mac
@@ -180,6 +184,18 @@ package() {
 	# automatic updates retry a download that broke off
 	install -Dm644 "$srcdir"/sysupdate-retry.conf \
 		"$pkgdir"/usr/lib/systemd/system/systemd-sysupdate.service.d/50-gtactive3wifi-retry.conf
+	# an A/B slot of another UI never counts as an installed version
+	install -Dm755 "$srcdir"/slot-hygiene.sh \
+		"$pkgdir"/usr/libexec/gtactive3wifi/slot-hygiene
+	local u
+	for u in systemd-sysupdate systemd-sysupdated; do
+		install -Dm644 "$srcdir"/sysupdate-slot-hygiene.conf \
+			"$pkgdir"/usr/lib/systemd/system/$u.service.d/40-gtactive3wifi-slot-hygiene.conf
+	done
+	install -Dm644 "$srcdir"/gtactive3wifi-slot-hygiene.service \
+		-t "$pkgdir"/usr/lib/systemd/system/
+	ln -s ../gtactive3wifi-slot-hygiene.service \
+		"$pkgdir"/usr/lib/systemd/system/multi-user.target.wants/
 	# cameras: libcamera's simple pipeline + SoftISP
 	install -Dm644 "$srcdir"/modprobe-gtactive3wifi-camera.conf \
 		"$pkgdir"/usr/lib/modprobe.d/gtactive3wifi-camera.conf
@@ -232,8 +248,12 @@ package() {
 	# window buffers the first modifier the compositor offers.
 	install -Dm644 "$srcdir"/gdm-panfrost.conf \
 		"$pkgdir"/usr/lib/systemd/system/gdm.service.d/90-gtactive3wifi-panfrost.conf
+	# (Duranium's /etc comes from the base confext, not from packages: the
+	# script lives in /usr and tmpfiles links it into /etc/profile.d)
 	install -Dm644 "$srcdir"/panfrost-profile.sh \
-		"$pkgdir"/etc/profile.d/90-gtactive3wifi-panfrost.sh
+		"$pkgdir"/usr/lib/gtactive3wifi/profile.d/90-gtactive3wifi-panfrost.sh
+	install -Dm644 "$srcdir"/panfrost-profile.tmpfiles \
+		"$pkgdir"/usr/lib/tmpfiles.d/gtactive3wifi-panfrost.conf
 	install -Dm644 "$srcdir"/nm-wifi-powersave.conf \
 		"$pkgdir"/usr/lib/NetworkManager/conf.d/90-gtactive3wifi-powersave.conf
 	# this unit's own Wi-Fi MAC address (the nvram has a shared placeholder)
@@ -415,11 +435,15 @@ dd982aead67e3cc4d6b0b128395d21bcbcd4065f3cfd5c1733123813a48169032a499ee8788c1de3
 80f67a6e205e9998eb10797c0fa0bbcca2863559f87551104b5d1d5fc74d5251a7ec8ab6492fe24a8cc35364a9e9e34e779425b280864d4a60c764f78c0108cb  modprobe-gtactive3wifi-camera.conf
 a901cabb56beff176716df29d79a56a2b97e8e36eb6468497d05c2ebf032ac63c310bc554e7a1200355bc25495b9e551c28656296ab5a94987716ad75c38a8d3  libcamera-softisp.yaml
 ee138d47dfd10ccd3864040abbf7838461178194f605430c9a3f1fa5288efb40432e6dda03df1c98c1ceae013d98d706b3d9919a5593b2c30b39a4fb4d872e6e  sysupdate-retry.conf
+6af11567545e21958ce82db6734fb230fc7f773fec9819caf13fb5705955aef5440e40eca4c6f638db49d17bfdb8c0cb710d112c8c54b928f5c8e9e5ded92220  sysupdate-slot-hygiene.conf
+f06456bc205d45e94abfae0215683201d6e02e34d69072c6e3f0cb3ccb4a98d334bc9a8a33a8f56b07ec1aaebfd029f3e02c88c70effc3ca7867ddffa815bf8b  slot-hygiene.sh
+3681242341f5bf7156e7e6523c812aa674696eaf4daa28ba3d434f9640bfaa828ceae049f02bcb329a8dc453a9b229cbbfebe99a677b1d6229e5671214bc5b5e  gtactive3wifi-slot-hygiene.service
 585042c50b4e2cf8530465c9fbf25cbd832036d6459bf396a43596f4941ce901c344be2f8493c40ce5025f58f8aa9b8afcc64e0d5f81482ef55ee0e7933328d1  switch-ui.sh
 2de64dc82fd39da23dfdfd98f0784e51646e4883975845f62fa33d261c83fc6b9c7fb036a39c79be48fce9dfa2789ed8e88c51d548236c41ae012ccae25b5a1f  claim-android-space.sh
 fa48039f5feea839f0bcfa4101a2a0ea7b988822ebde3cfb4ac632bd4e2962c5d716e15f5091f9f2f1bb1346ebcab94dc840d8e7f36b4f9e5e51cacaacde5d53  panfrost-environment.conf
 28cac460860b0987c4f05bbbf64081a07bbfb4bf6e3a9c9f7eef045442e41491a42466eea29fa3717a76f87d02c55fc24448d24405a00466a37da53d1b2ebf4b  gdm-panfrost.conf
 611a89eac00742d374401fea72c9a38659377b282fc304215531be36bb6b11083b427185d24a70ab5fe4b05ee39c721d6ec9dc86c056c0219e6a41db837fb90d  panfrost-profile.sh
+d65d18f451bbd9fda18c6d0c76fdaa9fb0c3a8d5aac0150beae3e327262ee26b7d3778c6591ba28a7eda3402c2ba9b00ca3238c9820d8a526749e149c54ac031  panfrost-profile.tmpfiles
 8f78c7ca8f739750579ede9b4ba16e6b1e51c08296ced929fc7db9176f0bb487bad9a096460d65ec05bfb6530dc83eb2c1e2a17155b1bae96ea4778b5b98acad  nm-wifi-powersave.conf
 cbd57e963b49b08d97b12818d44f19bfc736a538bb04299a8d4d58f8609e2e8773b8af87ecfda0370ff4479b57fe5ffc4637fe5c5ba8d2b9b6546915cbe090d6  80-gtactive3wifi-wlan-mac.rules
 4d2c6c11f751b1ac6d028b01f2eece848330cde5b20d971f8cd19bb3cec94b126edc7f3caf82a964297cd940461690b1e50ef8f23dae33b5919d84655de28313  wlan-efs-mac

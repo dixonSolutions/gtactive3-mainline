@@ -1,0 +1,2 @@
+# /etc/profile sources /etc/profile.d/*.sh; the script itself lives in /usr
+L+ /etc/profile.d/90-gtactive3wifi-panfrost.sh - - - - /usr/lib/gtactive3wifi/profile.d/90-gtactive3wifi-panfrost.sh

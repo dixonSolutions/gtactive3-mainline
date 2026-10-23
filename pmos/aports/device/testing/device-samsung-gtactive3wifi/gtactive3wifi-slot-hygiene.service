@@ -1,0 +1,12 @@
+[Unit]
+Description=Free A/B usr slots of other UIs, drop boot entries without a system
+RequiresMountsFor=/boot
+After=gtactive3wifi-boot-default.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gtactive3wifi/slot-hygiene
+
+[Install]
+WantedBy=multi-user.target
