@@ -121,6 +121,18 @@ jobs:
             echo "attempt $i failed, waiting $((i * 60)) s"; sleep $((i * 60))
           done
           exit 1
+      # The kernel compiles through ccache (build-apks.sh: path independent,
+      # so every new snapshot reuses the objects of the files it did not
+      # change). Without keeping /ccache between runs every kernel change was
+      # a cold build of about an hour; with it, minutes. One entry per run,
+      # restored from the newest; GitHub evicts the oldest past 10 GB.
+      - name: Restore the compiler cache
+        if: steps.kcache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: ccache
+          key: ccache-kernel-${{ github.run_id }}
+          restore-keys: ccache-kernel-
       - name: Build our packages
         run: |
           set -eu
@@ -139,6 +151,20 @@ jobs:
             mkdir -p kpkgs && cp pkgs/linux-postmarketos-exynos9810-*.apk kpkgs/
           fi
           ls -l pkgs
+      # also after a failed build: the objects compiled so far still count
+      - name: Trim the compiler cache
+        if: always() && steps.kcache.outputs.cache-hit != 'true'
+        run: |
+          [ -d ccache ] || exit 0
+          podman run --rm --entrypoint /bin/sh -v "$PWD/ccache:/ccache:Z" \
+            -e CCACHE_DIR=/ccache gta3-pkgbuilder \
+            -c 'ccache --max-size=4G >/dev/null && ccache --cleanup && ccache --show-stats' || true
+      - name: Save the compiler cache
+        if: always() && steps.kcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ccache
+          key: ccache-kernel-${{ github.run_id }}
       - name: Keep the trees for the image jobs
         run: tar -cf trees.tar work
       - uses: actions/upload-artifact@v6
