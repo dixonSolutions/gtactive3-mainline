@@ -1,0 +1,12 @@
+[Unit]
+Description=Suspend when the screen turns off (SM-T570)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/libexec/gtactive3wifi/blank-suspend
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

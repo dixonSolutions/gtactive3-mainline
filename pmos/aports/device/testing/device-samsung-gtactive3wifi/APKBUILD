@@ -3,7 +3,7 @@ maintainer="dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>"
 pkgname=device-samsung-gtactive3wifi
 pkgdesc="Samsung Galaxy Tab Active3 (Wi-Fi)"
 pkgver=2
-pkgrel=44
+pkgrel=45
 url="https://github.com/dixonSolutions/gtactive3-mainline"
 license="MIT"
 arch="aarch64"
@@ -73,6 +73,10 @@ source="
 	boot-default.sh
 	gtactive3wifi-boot-default.service
 	gtactive3wifi-suspend-gate.service
+	blank-suspend.sh
+	gtactive3wifi-blank-suspend.service
+	gtactive3wifi-active-key.c
+	gtactive3wifi-active-key.service
 	system-sleep-usb.sh
 	system-sleep-wifi.sh
 	usb-resume-check.sh
@@ -125,6 +129,9 @@ build() {
 		"$srcdir"/gtactive3wifi-usb-prep.c $LDFLAGS
 	# cross-native build: abuild's strip is the host one, so strip here
 	${CROSS_COMPILE:-}strip "$srcdir"/gtactive3wifi-usb-prep
+	${CC:-gcc} $CFLAGS -O2 -Wall -static -o "$srcdir"/gtactive3wifi-active-key \
+		"$srcdir"/gtactive3wifi-active-key.c $LDFLAGS
+	${CROSS_COMPILE:-}strip "$srcdir"/gtactive3wifi-active-key
 	# The bring-up debug console (gtactive3-mainline initramfs/init.c built
 	# with CONSOLE_STDIO; refresh both copies from that repository)
 	${CC:-gcc} $CFLAGS -O2 -Wall -Wno-unused-function -Wno-unused-variable \
@@ -156,6 +163,22 @@ package() {
 	mkdir -p "$pkgdir"/usr/lib/systemd/system/sysinit.target.wants
 	ln -s ../gtactive3wifi-suspend-gate.service \
 		"$pkgdir"/usr/lib/systemd/system/sysinit.target.wants/
+	# screen off = suspend, like a phone (Phosh's power key only blanks)
+	install -Dm755 "$srcdir"/blank-suspend.sh \
+		"$pkgdir"/usr/libexec/gtactive3wifi/blank-suspend
+	install -Dm644 "$srcdir"/gtactive3wifi-blank-suspend.service \
+		-t "$pkgdir"/usr/lib/systemd/user/
+	mkdir -p "$pkgdir"/usr/lib/systemd/user/graphical-session.target.wants
+	ln -s ../gtactive3wifi-blank-suspend.service \
+		"$pkgdir"/usr/lib/systemd/user/graphical-session.target.wants/
+	# the Active key held 3 s suspends
+	install -Dm755 "$srcdir"/gtactive3wifi-active-key \
+		"$pkgdir"/usr/libexec/gtactive3wifi/active-key
+	install -Dm644 "$srcdir"/gtactive3wifi-active-key.service \
+		-t "$pkgdir"/usr/lib/systemd/system/
+	mkdir -p "$pkgdir"/usr/lib/systemd/system/multi-user.target.wants
+	ln -s ../gtactive3wifi-active-key.service \
+		"$pkgdir"/usr/lib/systemd/system/multi-user.target.wants/
 	# boot the owner's UI by default, whatever else is on the ESP
 	install -Dm755 "$srcdir"/boot-default.sh \
 		"$pkgdir"/usr/libexec/gtactive3wifi/boot-default
@@ -469,4 +492,8 @@ fb2febe60164d63cb0c02ef81f477fd326f53b9a39bbf9487492c4c6743d0e6d4eec5462ebb0bf94
 2f58d3af193c441d90b2b2a25d8f7f5db160ab63fb26b1f36bb6ac3db35cd50ab71693c6fa588873000c9d59542d7f91e6e8d58700a60603f01282f201f522f9  gtactive3wifi-container-images.service
 e4f4a34f93f43ff0439299269252cc487fe1fb763b42a51c887685607560e8dcd096e6b7290fab45006fcd76727bdcd467d2626f4545b6e234e48eaf61ee9f28  gtactive3wifi-container-images.user.service
 03422f1492db2d8e30711b3657345528d572a9e827c048bdd995b2fc5afb0a1a42fc5ba2ba3e6f99cec2cefd6df1fe27fb80c557f24ba7f2a6d5a7728b990d3f  README
+a3c783e96d1c6f3d4a9b42bbcb385974df5ffb3178a3273a8a34a65d1e8ef7aaa77c9849ab8ec3189d7e0519886fdd6e8d83a0481aea3d047528a3d72d844a94  blank-suspend.sh
+5b29e9866a1b6b431e868a9fae8af6f9b974d04eb5fbd5870c705bd0bee81ef1f4743354b9407fb77c7041e2fc1964a794b5d55d83b31bacbd0fd2f524c80c56  gtactive3wifi-blank-suspend.service
+5a3bdd06d6e79af512c5443622d6fdf8688b6da9b6c3555c78981147b2b68fd970a2d092ed1744446f9eeee1913542adb11b126fc7f1f0f66420f32a5ff75542  gtactive3wifi-active-key.c
+66f4f332e87bb279c9e32c166fa168fde108c4221e663c7b78a1e0f034e9b65c8255c356e5a61a16fa74c018653b58f71a5ad682dc45f87383be5f2f2d7c4c70  gtactive3wifi-active-key.service
 "

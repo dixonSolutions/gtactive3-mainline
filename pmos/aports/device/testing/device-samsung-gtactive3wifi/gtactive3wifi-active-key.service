@@ -1,0 +1,11 @@
+[Unit]
+Description=Active key held 3 s = suspend (SM-T570)
+After=systemd-udev-settle.service systemd-logind.service
+
+[Service]
+ExecStart=/usr/libexec/gtactive3wifi/active-key 3000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -15669,7 +15669,7 @@ index 9b9ae8ac3f7fd3b9e948083fcd05afabdcd69bca..a2d5a4bddfee616a6486713efb4cf605
  	  If unsure, say N.
  
 diff --git a/drivers/input/touchscreen/himax_hx83112b.c b/drivers/input/touchscreen/himax_hx83112b.c
-index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f4926ce337f 100644
+index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..6d21d84e54fdb8386b3f4c9a8ec676813f74cd68 100644
 --- a/drivers/input/touchscreen/himax_hx83112b.c
 +++ b/drivers/input/touchscreen/himax_hx83112b.c
 @@ -7,6 +7,9 @@
@@ -15714,7 +15714,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  struct himax_event_point {
  	__be16 x;
  	__be16 y;
-@@ -62,17 +82,33 @@ struct himax_ts_data;
+@@ -62,17 +82,39 @@ struct himax_ts_data;
  struct himax_chip {
  	u32 id;
  	int (*check_id)(struct himax_ts_data *ts);
@@ -15727,6 +15727,8 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
 +	unsigned int reset_delay_ms;
 +	/* touch part of an Exynos9810 TDDI panel: follow its power */
 +	bool panel_follower;
++	/* loses its state in system sleep: reset and set up on resume */
++	bool restart_on_resume;
  };
  
  struct himax_ts_data {
@@ -15747,10 +15749,14 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
 +	struct notifier_block panel_nb;
 +	bool panel_off;
 +	bool rst_held;
++	/* system sleep while the panel was off: restart at the unblank */
++	bool need_restart;
++	/* events in a row with a bad checksum */
++	unsigned int bad_events;
  };
  
  static const struct regmap_config himax_regmap_config = {
-@@ -142,7 +178,10 @@ static void himax_reset(struct himax_ts_data *ts)
+@@ -142,7 +184,25 @@ static void himax_reset(struct himax_ts_data *ts)
  	 * The downstream driver doesn't contain this delay but is seems safer
  	 * to include it. The range is just a guess that seems to work well.
  	 */
@@ -15759,10 +15765,25 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
 +		msleep(ts->chip->reset_delay_ms);
 +	else
 +		usleep_range(1000, 1100);
++}
++
++/*
++ * Hardware reset and bus interface set-up again, like Samsung's driver on
++ * resume (HX_RESUME_HW_RESET): after a system sleep the HX83102E answered
++ * every event read with 00/ff frames (checksum errors, touch dead) until
++ * the driver was rebound.
++ */
++static void himax_restart(struct himax_ts_data *ts)
++{
++	himax_reset(ts);
++	ts->rst_held = false;
++	ts->need_restart = false;
++	if (ts->chip->check_id && ts->chip->check_id(ts))
++		dev_warn(ts->dev, "no answer after the reset\n");
  }
  
  static int himax_read_product_id(struct himax_ts_data *ts, u32 *product_id)
-@@ -167,23 +206,151 @@ static int himax_check_product_id(struct himax_ts_data *ts)
+@@ -167,23 +227,151 @@ static int himax_check_product_id(struct himax_ts_data *ts)
  	if (error)
  		return error;
  
@@ -15918,7 +15939,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  		return -ENOMEM;
  	}
  
-@@ -199,14 +366,14 @@ static int himax_input_register(struct himax_ts_data *ts)
+@@ -199,14 +387,14 @@ static int himax_input_register(struct himax_ts_data *ts)
  	error = input_mt_init_slots(ts->input_dev, HIMAX_MAX_POINTS,
  				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
  	if (error) {
@@ -15935,7 +15956,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  			"Failed to register input device: %d\n", error);
  		return error;
  	}
-@@ -258,18 +425,20 @@ static void himax_process_event(struct himax_ts_data *ts,
+@@ -258,18 +446,20 @@ static void himax_process_event(struct himax_ts_data *ts,
  }
  
  static bool himax_verify_checksum(struct himax_ts_data *ts,
@@ -15962,7 +15983,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  		return false;
  	}
  
-@@ -277,36 +446,101 @@ static bool himax_verify_checksum(struct himax_ts_data *ts,
+@@ -277,36 +467,116 @@ static bool himax_verify_checksum(struct himax_ts_data *ts,
  }
  
  static int himax_read_events(struct himax_ts_data *ts,
@@ -16042,6 +16063,8 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  	return himax_bus_read(ts, HX83100A_REG_FW_EVENT_STACK, event, length);
  };
  
++#define HIMAX_BAD_EVENTS_RESTART	8
++
  static int himax_handle_input(struct himax_ts_data *ts)
  {
 +	size_t length = ts->chip->event_size;
@@ -16066,12 +16089,25 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  	 */
 -	if (himax_verify_checksum(ts, &event))
 -		himax_process_event(ts, &event);
-+	if (himax_verify_checksum(ts, ts->event_buf, length))
++	if (himax_verify_checksum(ts, ts->event_buf, length)) {
++		ts->bad_events = 0;
 +		himax_process_event(ts, (const struct himax_event *)ts->event_buf);
++	} else if (ts->chip->restart_on_resume &&
++		   ++ts->bad_events >= HIMAX_BAD_EVENTS_RESTART) {
++		/*
++		 * A wedged controller (Samsung's driver calls it ESD) sends
++		 * nothing but bad frames: restart it. The threaded handler
++		 * may sleep and its interrupt stays masked meanwhile.
++		 */
++		dev_warn(ts->dev, "%u bad events in a row: restarting\n",
++			 ts->bad_events);
++		himax_restart(ts);
++		ts->bad_events = 0;
++	}
  
  	return 0;
  }
-@@ -323,30 +557,93 @@ static irqreturn_t himax_irq_handler(int irq, void *dev_id)
+@@ -323,30 +593,90 @@ static irqreturn_t himax_irq_handler(int irq, void *dev_id)
  	return IRQ_HANDLED;
  }
  
@@ -16107,11 +16143,8 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
 +	case EXYNOS9810_PANEL_UNBLANK:
 +		if (!ts->panel_off)
 +			break;
-+		if (ts->rst_held) {
-+			gpiod_set_value_cansleep(ts->gpiod_rst, 0);
-+			msleep(ts->chip->reset_delay_ms ?: 1);
-+			ts->rst_held = false;
-+		}
++		if (ts->rst_held || ts->need_restart)
++			himax_restart(ts);
 +		ts->panel_off = false;
 +		enable_irq(ts->irq);
 +		break;
@@ -16179,7 +16212,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  	}
  
  	ts->gpiod_rst = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
-@@ -359,7 +656,7 @@ static int himax_probe(struct i2c_client *client)
+@@ -359,7 +689,7 @@ static int himax_probe(struct i2c_client *client)
  	himax_reset(ts);
  
  	if (ts->chip->check_id) {
@@ -16188,7 +16221,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  		if (error)
  			return error;
  	}
-@@ -368,12 +665,24 @@ static int himax_probe(struct i2c_client *client)
+@@ -368,12 +698,24 @@ static int himax_probe(struct i2c_client *client)
  	if (error)
  		return error;
  
@@ -16215,20 +16248,30 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  	return 0;
  }
  
-@@ -381,7 +690,7 @@ static int himax_suspend(struct device *dev)
+@@ -381,7 +723,10 @@ static int himax_suspend(struct device *dev)
  {
  	struct himax_ts_data *ts = dev_get_drvdata(dev);
  
 -	disable_irq(ts->client->irq);
 +	disable_irq(ts->irq);
++	/* lift all contacts: no release event arrives while asleep */
++	input_mt_sync_frame(ts->input_dev);
++	input_sync(ts->input_dev);
  	return 0;
  }
  
-@@ -389,22 +698,55 @@ static int himax_resume(struct device *dev)
+@@ -389,22 +734,63 @@ static int himax_resume(struct device *dev)
  {
  	struct himax_ts_data *ts = dev_get_drvdata(dev);
  
 -	enable_irq(ts->client->irq);
++	if (ts->chip->restart_on_resume) {
++		/* panel off: the unblank restarts it once the panel is up */
++		if (ts->panel_off)
++			ts->need_restart = true;
++		else
++			himax_restart(ts);
++	}
 +	enable_irq(ts->irq);
  	return 0;
  }
@@ -16250,6 +16293,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
 +	/* Samsung's driver waits 50 ms before talking to the firmware */
 +	.reset_delay_ms = 50,
 +	.panel_follower = true,
++	.restart_on_resume = true,
 +};
 +
 +static const struct himax_chip hx83112b_chip __maybe_unused = {
@@ -16283,7 +16327,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  static const struct i2c_device_id himax_ts_id[] = {
  	{ .name = "hx83100a", .driver_data = (kernel_ulong_t)&hx83100a_chip },
  	{ .name = "hx83112b", .driver_data = (kernel_ulong_t)&hx83112b_chip },
-@@ -422,7 +764,7 @@ MODULE_DEVICE_TABLE(of, himax_of_match);
+@@ -422,7 +808,7 @@ MODULE_DEVICE_TABLE(of, himax_of_match);
  #endif
  
  static struct i2c_driver himax_ts_driver = {
@@ -16292,7 +16336,7 @@ index 0aa67dfacbad84bda6e6803fd66296bdffdbc853..c97d697b34bc6b55ca9a6e829f345f49
  	.id_table = himax_ts_id,
  	.driver = {
  		.name = "Himax-hx83112b-TS",
-@@ -430,8 +772,224 @@ static struct i2c_driver himax_ts_driver = {
+@@ -430,8 +816,224 @@ static struct i2c_driver himax_ts_driver = {
  		.pm = pm_sleep_ptr(&himax_pm_ops),
  	},
  };
