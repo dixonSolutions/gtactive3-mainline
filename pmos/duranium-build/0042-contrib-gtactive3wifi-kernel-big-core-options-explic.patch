@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 21:25:50 +1100
+Subject: [PATCH] contrib: gtactive3wifi: kernel: big-core options explicit in
+ the fragment
+
+gen-kernel-config.sh starts from build/bringup/.config, so options that
+only a bring-up build happened to enable (the Exynos9810 PoU erratum, the
+energy model) vanished when cand/1030's config was generated after another
+bring-up build.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ contrib/samsung-gtactive3wifi/kernel/bigcores.config | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/contrib/samsung-gtactive3wifi/kernel/bigcores.config b/contrib/samsung-gtactive3wifi/kernel/bigcores.config
+index 51f3190..b1a8d6f 100644
+--- a/contrib/samsung-gtactive3wifi/kernel/bigcores.config
++++ b/contrib/samsung-gtactive3wifi/kernel/bigcores.config
+@@ -4,3 +4,11 @@
+ CONFIG_EXYNOS9810_CPUCL1=y
+ # report how far a secondary core got when it fails to come online
+ CONFIG_ARM64_DEBUG_SECONDARY_BOOT=y
++# Mongoose M3 I-cache coherency (Samsung cleans to PoC; selects
++# ARM64_WORKAROUND_CLEAN_CACHE) and the energy model for the big cluster's
++# OPPs. Explicit: gen-kernel-config.sh starts from the last bring-up build's
++# .config, so a default-y symbol is not enough (cand/1030 lost both once).
++CONFIG_SAMSUNG_ERRATUM_EXYNOS9810_POU=y
++CONFIG_ENERGY_MODEL=y
++CONFIG_SCHED_MC=y
++CONFIG_HOTPLUG_CPU=y
