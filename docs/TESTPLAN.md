@@ -26,7 +26,7 @@ from them (only a Duranium ✔ counts).
 | A2 | Phosh image in QEMU | `tests/virt/run.sh <phosh raw> --ui phosh` | summary PASS, screenshot shows Phosh |
 | A3 | GNOME image in QEMU | `tests/virt/run.sh <gnome raw> --ui gnome` | summary PASS, screenshot shows GDM/GNOME |
 | A4 | CI | `gh run list -w images.yml -L 3` | newest run green, releases updated |
-| A5 | release index | `curl -fsS https://exynos-linux.github.io/gtactive3-mainline/releases.json` | lists every channel's newest version; `./setup.sh` verifies its SHA256SUMS signature |
+| A5 | release index | `curl -fsS https://exynos-linux.github.io/samsung-gtactive3wifi/releases.json` | lists every channel's newest version; `./setup.sh` verifies its SHA256SUMS signature |
 
 ## B. Boot and baseline (every new image)
 

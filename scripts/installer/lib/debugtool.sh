@@ -11,7 +11,7 @@
 dt_cfg() { "$GTA3_REPO/scripts/config" get "debug_tool.$1"; }
 
 debug_tool_install() {
-	local setup version f device
+	local setup version f device want
 	setup=${GTA3_DEBUG_TOOL_SETUP:-$(dt_cfg setup)} version=$(dt_cfg version)
 	device=$("$GTA3_REPO/scripts/config" get device.id)
 	f=$CACHE_DIR/usb-debug-install.sh
@@ -22,6 +22,12 @@ debug_tool_install() {
 	fi
 	curl -fsSL --retry 3 -o "$f.part" "$setup" && mv "$f.part" "$f" ||
 		{ warn "could not download $setup: the USB debug tool is not installed (./setup.sh debug-tools retries)"; return 1; }
+	want=$(dt_cfg sha256)
+	if [ -n "$want" ] && [ "$(sha256sum < "$f" | cut -d' ' -f1)" != "$want" ]; then
+		rm -f "$f"
+		warn "the downloaded install.sh does not match debug_tool.sha256 in config.toml: not run"
+		return 1
+	fi
 	sh "$f" --yes --device="$device" ${version:+--version="$version"} ||
 		{ warn "the USB debug tool's installer failed (log above); ./setup.sh debug-tools retries"; return 1; }
 	state_set DEBUG_TOOL installed

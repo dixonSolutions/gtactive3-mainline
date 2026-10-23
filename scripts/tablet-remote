@@ -5,7 +5,7 @@
 # and next to a VPN on the other end), with Tailscale SSH for the owner's
 # devices. Run in the tablet's Console app:
 #
-#   wget -qO- https://exynos-linux.github.io/gtactive3-mainline/remote | sudo sh
+#   wget -qO- https://exynos-linux.github.io/samsung-gtactive3wifi/remote | sudo sh
 #
 # It shows a QR code: scan it with a phone signed in to the same tailnet and
 # approve the tablet. Then, from the PC: tailscale ssh root@gtactive3
@@ -37,7 +37,7 @@ if [ ! -x "$D/tailscaled" ] || ! "$D/tailscaled" --version 2>/dev/null | grep -q
 	t=$(mktemp -d)
 	# a copy on this project's Pages site (same file, checked below), else
 	# Tailscale's own server
-	wget -qO "$t/ts.tgz" "https://exynos-linux.github.io/gtactive3-mainline/tools/tailscale_${V}_arm64.tgz" ||
+	wget -qO "$t/ts.tgz" "https://exynos-linux.github.io/samsung-gtactive3wifi/tools/tailscale_${V}_arm64.tgz" ||
 		wget -qO "$t/ts.tgz" "https://pkgs.tailscale.com/stable/tailscale_${V}_arm64.tgz"
 	echo "$SHA  $t/ts.tgz" | sha256sum -c -
 	tar -xzf "$t/ts.tgz" -C "$t"

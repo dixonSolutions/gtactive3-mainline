@@ -52,7 +52,7 @@ def load():
     u.setdefault("public_key", "pmos/sysupdate-public-key.asc")
     u.setdefault("fingerprint", "")
     # where every image says which channel it follows (mkosi.finalize)
-    u["channel_file"] = f"/usr/lib/{d['id']}/update-channel"
+    u["channel_file"] = u.get("channel_file") or f"/usr/lib/{d['id']}/update-channel"
     c["bootchain"].setdefault("enabled", False)
     c["bootchain"]["tag"] = c["bootchain"].get("tag") or f"{d['id']}_bootchain"
     c["installer"]["name"] = c["installer"].get("name") or f"{d.get('codename', '')}-setup"
@@ -71,7 +71,12 @@ def load():
     dt.setdefault("ask", True)
     dt["remote"] = (dt.get("remote") or "https://github.com/exynos-linux/usb-debug").rstrip("/")
     dt.setdefault("version", "")
-    dt["setup"] = dt.get("setup") or f"{dt['remote']}/raw/{dt['version'] or 'main'}/install.sh"
+    # sha256 of install.sh: setup.sh verifies it before running it ("" = no check)
+    dt.setdefault("sha256", "")
+    # a pinned version comes from that release, else from the main branch
+    dt["setup"] = dt.get("setup") or (
+        f"{dt['remote']}/releases/download/{dt['version']}/install.sh" if dt["version"]
+        else f"{dt['remote']}/raw/main/install.sh")
     ch = c["channels"]
     ch.setdefault("dev", True)
     ch.setdefault("release", True)
@@ -129,6 +134,8 @@ def check(c):
         e("debug_tool.remote must be an https URL")
     if not isinstance(c["debug_tool"]["ask"], bool):
         e("debug_tool.ask must be true or false")
+    if c["debug_tool"]["sha256"] and not re.fullmatch(r"[0-9a-f]{64}", c["debug_tool"]["sha256"]):
+        e("debug_tool.sha256 must be 64 lower case hex digits or empty")
     if d.get("arch") != "aarch64":
         e("device.arch: only aarch64 is supported")
     if d.get("status") not in STATUSES:

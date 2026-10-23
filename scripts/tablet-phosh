@@ -2,7 +2,7 @@
 # Back to Phosh, with no version numbers to type. Run in the tablet's
 # Console:
 #
-#   wget https://exynos-linux.github.io/gtactive3-mainline/phosh
+#   wget https://exynos-linux.github.io/samsung-gtactive3wifi/phosh
 #   sudo sh phosh
 #
 # It makes the newest Phosh image the boot default (and remembers Phosh as
@@ -33,7 +33,7 @@ sync
 echo "boot default: the newest Phosh image"
 
 echo "setting up Tailscale remote access..."
-if wget -qO /tmp/gta3-remote https://exynos-linux.github.io/gtactive3-mainline/remote; then
+if wget -qO /tmp/gta3-remote https://exynos-linux.github.io/samsung-gtactive3wifi/remote; then
 	sh /tmp/gta3-remote || echo "Tailscale setup failed (see above); Phosh is still the boot default"
 else
 	echo "could not download the Tailscale setup (no internet?); Phosh is still the boot default"

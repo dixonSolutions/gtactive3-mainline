@@ -5,8 +5,8 @@ Subject: [PATCH] contrib: gtactive3wifi: update server from the build
  (exynos-linux)
 
 build-image.sh passes GTA3_UPDATE_BASE through to mkosi, so CI can set
-the update server from gtactive3-mainline's config.toml; without it the
-default is the project's new home, github.com/exynos-linux.
+the update server from the port's config.toml; without it the default is
+the project's new home, github.com/exynos-linux/samsung-gtactive3wifi.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -28,7 +28,7 @@ index 02c0af6..56684bf 100755
  			--release="$RELEASE" \
  			--package-directory="$PKGS" \
 diff --git a/contrib/samsung-gtactive3wifi/firmware/APKBUILD b/contrib/samsung-gtactive3wifi/firmware/APKBUILD
-index 396e5e1..7af52d3 100644
+index 396e5e1..1097eba 100644
 --- a/contrib/samsung-gtactive3wifi/firmware/APKBUILD
 +++ b/contrib/samsung-gtactive3wifi/firmware/APKBUILD
 @@ -16,7 +16,7 @@ pkgname=firmware-samsung-gtactive3wifi
@@ -36,12 +36,12 @@ index 396e5e1..7af52d3 100644
  pkgrel=0
  pkgdesc="Samsung Galaxy Tab Active3 vendor firmware (local build, not redistributable)"
 -url="https://github.com/dixonSolutions/gtactive3-mainline"
-+url="https://github.com/exynos-linux/gtactive3-mainline"
++url="https://github.com/exynos-linux/samsung-gtactive3wifi"
  arch="noarch"
  license="proprietary"
  options="!check !strip !tracedeps !archcheck"
 diff --git a/contrib/samsung-gtactive3wifi/mkosi.finalize b/contrib/samsung-gtactive3wifi/mkosi.finalize
-index 574eb17..af3248c 100755
+index 574eb17..c8f7ede 100755
 --- a/contrib/samsung-gtactive3wifi/mkosi.finalize
 +++ b/contrib/samsung-gtactive3wifi/mkosi.finalize
 @@ -7,7 +7,7 @@
@@ -49,7 +49,7 @@ index 574eb17..af3248c 100755
  # release per update channel:
  #
 -#   https://github.com/dixonSolutions/gtactive3-mainline/releases/download/
-+#   https://github.com/exynos-linux/gtactive3-mainline/releases/download/
++#   https://github.com/exynos-linux/samsung-gtactive3wifi/releases/download/
  #       samsung-gtactive3wifi_<ui>_<release><suffix>/SHA256SUMS(.gpg)
  #
  # so sysupdate here must never fetch postmarketOS's generic images (they
@@ -64,7 +64,7 @@ index 574eb17..af3248c 100755
  
  HERE=$(cd "$(dirname "$0")" && pwd)
 -BASE=${GTA3_UPDATE_BASE:-https://github.com/dixonSolutions/gtactive3-mainline/releases/download/}
-+BASE=${GTA3_UPDATE_BASE:-https://github.com/exynos-linux/gtactive3-mainline/releases/download/}
++BASE=${GTA3_UPDATE_BASE:-https://github.com/exynos-linux/samsung-gtactive3wifi/releases/download/}
  case "${GTA3_CHANNEL:-}" in
  	"") suffix= ;;
  	dev) suffix=-dev ;;

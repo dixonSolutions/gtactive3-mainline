@@ -6,8 +6,8 @@ maintain the kernel, the drivers and the device packages. postmarketOS
 maintains everything else, and our images follow theirs automatically.
 
 Official record of what is published (versions, files, sizes, sha256,
-signature key): **https://exynos-linux.github.io/gtactive3-mainline/**
-(machine-readable: [`releases.json`](https://exynos-linux.github.io/gtactive3-mainline/releases.json)).
+signature key): **https://exynos-linux.github.io/samsung-gtactive3wifi/**
+(machine-readable: [`releases.json`](https://exynos-linux.github.io/samsung-gtactive3wifi/releases.json)).
 To install, see [INSTALL.md](INSTALL.md).
 
 ## Who maintains what
@@ -90,7 +90,7 @@ it under `bootchain`.
 Every image carries, from `contrib/samsung-gtactive3wifi/mkosi.finalize`:
 
 - `/usr/lib/sysupdate.d/*.transfer` sourcing
-  `https://github.com/exynos-linux/gtactive3-mainline/releases/download/<channel>/`
+  `https://github.com/exynos-linux/samsung-gtactive3wifi/releases/download/<channel>/`
   (upstream's transfers with only `Path=` rewritten: usr + verity into the
   inactive A/B slot, the UKI with boot counting `+2-0`, sysexts/confexts
   behind the disabled `dev-tools` / `waydroid` features)
@@ -205,7 +205,7 @@ from the release assets. `releases.json` (schema 1, consumed by the
 installer; new fields are only ever added):
 
 ```
-{"schema": 1, "generated": "<iso8601>", "repo": "exynos-linux/gtactive3-mainline",
+{"schema": 1, "generated": "<iso8601>", "repo": "exynos-linux/samsung-gtactive3wifi",
  "channels": [{"id": "samsung-gtactive3wifi_phosh_edge-dev", "ui": "phosh",
    "flavour": "release" | "dev", "title": "Phosh", "description": "...",
    "prerelease": bool, "verified": bool, "latest": "<version>",

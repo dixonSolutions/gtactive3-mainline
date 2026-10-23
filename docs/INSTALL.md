@@ -10,7 +10,7 @@ It is a development port: read [STATUS.md](STATUS.md) for what works.
 ## In short
 
 ```sh
-git clone https://github.com/exynos-linux/gtactive3-mainline
+git clone https://github.com/exynos-linux/samsung-gtactive3wifi
 cd gtactive3-mainline
 ./setup.sh --stock-ap ~/Downloads/AP_T570XXSFEYI1_....tar.md5
 ```
@@ -344,7 +344,7 @@ To reach a tablet over Wi-Fi (also behind enterprise networks that isolate
 clients, and next to a VPN on the PC), join it to your Tailscale tailnet:
 log in, connect to Wi-Fi, open Console and run
 
-    wget -qO- https://exynos-linux.github.io/gtactive3-mainline/remote | sudo sh
+    wget -qO- https://exynos-linux.github.io/samsung-gtactive3wifi/remote | sudo sh
 
 Scan the QR code it shows with a phone signed in to your tailnet and
 approve the tablet; then `tailscale ssh root@gtactive3` from the PC. The

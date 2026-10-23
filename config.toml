@@ -16,7 +16,7 @@ schema = 1
 template = false
 # owner/name on GitHub. CI uses $GITHUB_REPOSITORY when it is set, so a
 # fork (and this repo until it has moved to exynos-linux) publishes to itself.
-repo = "exynos-linux/gtactive3-mainline"
+repo = "exynos-linux/samsung-gtactive3wifi"
 title = "Galaxy Tab Active3: mainline Linux"
 maintainers = ["@dixonSolutions"]
 community = "https://discord.gg/exynos-linux"
@@ -81,6 +81,9 @@ base = ""
 # The release records (GitHub Pages of this repo).
 # derived: https://<owner>.github.io/<name>
 pages = ""
+# Where an image records its channel (UPDATE_BASE, UPDATE_CHANNEL); this
+# port keeps its historic path. derived: /usr/lib/<device.id>/update-channel
+channel_file = "/usr/lib/gtactive3wifi/update-channel"
 # The public half of the signing key (scripts/new-signing-key makes it).
 public_key = "pmos/sysupdate-public-key.asc"
 # Its fingerprint, for humans and the installer (scripts/new-signing-key).
@@ -146,7 +149,10 @@ shell_port = 2323
 # it without asking. --debug-tools / --no-debug-tools decide on the command line.
 ask = true
 remote = "https://github.com/exynos-linux/usb-debug"
-# a release tag; "" = the newest
+# a release tag; "" = the main branch
 version = ""
-# derived: <remote>/raw/<version, or main>/install.sh
+# sha256 of that install.sh: setup.sh refuses one that differs ("" = no check)
+sha256 = ""
+# derived: <remote>/releases/download/<version>/install.sh, or with no
+# version <remote>/raw/main/install.sh
 setup = ""

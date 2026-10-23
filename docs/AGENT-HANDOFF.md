@@ -65,7 +65,7 @@ yourself, autonomously, overnight. Keep going until the mission is met.
   (4× A55 + 4× Samsung M3 big cores, Mali-G72 MP18), hw_rev 4, bootloader
   T570XXSFEYI1 (unlocked, KnoxGuard cleared). The serial is never published.
 - Repo: `/home/borysthebear/Projects/gtactive3-mainline` = public
-  github.com/exynos-linux/gtactive3-mainline (moved from dixonSolutions on
+  github.com/exynos-linux/samsung-gtactive3wifi (moved from dixonSolutions/gtactive3-mainline on
   2026-10-23; git identity: dixonSolutions, repo-local). Its public plumbing
   (repo, update server, Pages, channels, signing key fingerprint, debug tool)
   is in config.toml, read through scripts/config. Commit in small chunks, end messages with
