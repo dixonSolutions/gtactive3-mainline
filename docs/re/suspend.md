@@ -256,7 +256,7 @@ domain that is off are skipped (PMU STATUS checked at save and restore).
 | local domains (DPU, AUD, G3D, ...) | must be off at entry (stock) | PM driver power off/on with D-TZPC SMCs |
 | pads (TOP etc.) | retained until released | pinctrl after restoring the banks (shared count) |
 | DECON/DPP/IDMA/DMA, DPU sysreg | lost | DPU driver: probe-time snapshot written back when DECON has no window enabled, D-PHY isolation bypass (PMU 0x70c/0x710) |
-| DSIM links, M4S4 D-PHYs | lost | dsim-bl `restore` hook: Samsung's `_dsim_enable()` order from a probe snapshot, then full panel power-up and init |
+| DSIM links, M4S4 D-PHYs | lost | dsim-bl `restore` hook (drv/deepsleep is rebased on drv/panelpm): link and D-PHY configuration from a probe snapshot in Samsung's `_dsim_enable()` order, left as level 3 leaves it; panelpm's level 3 wake-up then locks the PLLs, brings the lanes to LP-11, resets and initialises the panel. The D-PHYs are mapped without claiming them (the CSIS receivers own the same ranges) |
 | panel, touch (TDDI) | rails off by the forced blank | panel init sequence; touch follows the panel notifier |
 | UFS host + PHY | lost | spm level 5 (already): host reset, PHY init, link startup, FMP SMCs |
 | DWC3 + USB DRD PHY | lost | `dwc3_core_init` on resume (phy_init/power_on incl. PMU 0x72c), gadget re-enumerates |
@@ -278,7 +278,10 @@ domain that is off are skipped (PMU STATUS checked at save and restore).
   and MIF-down counter in the log tell).
 - Whether CMU_TOP comes back as S-Boot set it (stock assumes so).
 - Whether the SoC RTC alarm is a working PMU wake-up source (WAKEUP_MASK
-  bit 1; stock masks it and wakes through the S2MPS18 RTC on EINT 1).
+  bit 1; stock masks it and wakes through the S2MPS18 RTC on EINT 1). The
+  SoC RTC comes up cleared at every boot (invalid date, every read
+  -EINVAL until `hwclock -w`); drv/deepsleep starts it at 2000-01-01 in
+  that case so that rtcwake works right after boot.
 - Spurious wake-ups from the unmasked WAKEUP_MASK bits 7, 8, 15, 20-27, 29.
 - Whether the arch counter survives, the watchdog reset defaults after
   wake-up, and which external supplies drop with PWREN.
@@ -288,9 +291,12 @@ domain that is off are skipped (PMU STATUS checked at save and restore).
 
 ### Suspend-to-idle improvements, in order of value
 
-1. **C2 in s2idle** once per-core C2 is proven (`exynos9810_c2=1`): with
-   drv/deepsleep s2idle enters C2 with the tick frozen and keeps the
-   flexpmu hints. Cheap, no new risk beyond C2 itself.
+1. **C2 in s2idle**: per-core C2 works and is on by default from device
+   r41, so s2idle already picks C2 through the fallback path, but
+   without the flexpmu hints (exynos-pmu dropped them during any
+   suspend). drv/deepsleep keeps the hints in s2idle and lets s2idle
+   enter C2 with the tick frozen; needs one s2idle test
+   (`cpuidle/state1/s2idle_usage` must count).
 2. **Panel/DECON off on blank** (`exynos9810_dsim_bl.power_off_level=3`,
    drv/blank): the largest screen-off consumer; no SoC sleep needed.
 3. **MIF floor**: `exynos9810_pm.s2idle_mif_khz=421000` asks the APM for
