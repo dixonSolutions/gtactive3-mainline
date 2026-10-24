@@ -47,6 +47,10 @@ section 1).
   image owner (since 2026-10-22 evening): "Camera firmware drivers and OS
   setup", which also runs the user's test campaign. Others
   hand it package/kernel changes instead of building images themselves.
+  2026-10-24 10:59: "Suspend, updates, cores" built one local Phosh image
+  there with the coordinator's OK (26102307~test1 = kernel r23 + device
+  r46, `mkosi.version` left at 26102307~test1; the 26102219~test4 outputs
+  were removed) and handed the worktree back.
 - The pmaports worktree (build/wt/pmaports-duranium) is shared: commit your
   aport change right away and bump pkgrel; never leave edits uncommitted.
 - The main checkout is shared too: when a push is rejected, `git pull
