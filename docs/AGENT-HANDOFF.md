@@ -5,6 +5,31 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-24 15:05 (session "Mainline boot image testing", cameras)
+
+- The user asked for: all cores and both "GPUs" with activity (verified,
+  see STATUS; Resources' first "GPU" is the DPU, card0, no render engine,
+  so always idle), rotation (manual works, auto via the sensor hub
+  session), and better cameras (focus, frame rate, quality).
+- Rear camera fixed (missing since r21, DT 3b4f3e2d4 in cand/1033).
+- Live test stack on the tablet, survives reboots on purpose:
+  /var/lib/gta3-libcamera (libcamera 0.7.2 + aport patches 0001-0009 +
+  build/scratch/camera/deliver/libcamera-aport/0010-0012, built in
+  localhost/lcbuild-arm64 from build/scratch/camera/lc-src, incremental:
+  build/scratch/camera/lcbuild/inc.sh), tuning in .../tuning/simple
+  (AGC target 1.8, rear Af block), selected by user systemd drop-ins
+  ~ratrad/.config/systemd/user/{pipewire,wireplumber}.service.d/
+  gta3-libcamera.conf. Redeploy: build/scratch/camera/redeploy-lc.sh
+  (restarts PipeWire and the portals, which die with it). To leave the
+  test: remove both drop-ins and restart.
+- csis 64de959b7 (cacheable buffers, IRQ burst guard) runs as a live
+  module on r23; r24 does not carry it yet (coordinator has the commit).
+- Next for cameras: AF/exposure on real scenes with the user, rear CCM/AWB,
+  then 0010-0012 into the libcamera aport (pkgrel bump) and the drop-ins
+  out (coordinator's condition).
+- Never run `cam` while Snapshot streams: both receivers share /dev/media0
+  and the second pipeline broke the first stream (front ERR_OVER loop).
+
 ## State 2026-10-24 14:02 (session "Auto-rotate: BCM4775 sensor hub accelerometer")
 
 - Auto-rotate works on the tablet (live): r23's bcm4775_shub boots the
