@@ -235,8 +235,11 @@ never changes = JD/IRQ (codec reg 0x0f0 bits 4/12, IRQ count); silent mic
 = LDO36 off (LCTRL 0x6d bits 7:6); Headphones default with nothing in =
 saved WirePlumber default + no JackControl (UCM older than r48).
 Result 2026-10-24 (r24 + live modules, logs/test-runs/2026-10-24-audio):
-no-hands part PASS; speaker and internal mic PASS (owner); plug/unplug not
-yet done.
+no-hands part PASS; speaker and internal mic PASS (owner); plug PASS
+(owner: output switched to the headphones and played there); unplug not yet
+done. r26 adds: Settings → Sound input slider moves "IN3 Boost Volume"
+(-12 .. +21 dB) and the recorded level 👆; with headphones in, the Speaker
+stays listed and selectable 👆.
 
 ## E. Test helpers
 
