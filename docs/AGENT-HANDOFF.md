@@ -23,6 +23,24 @@ yourself, autonomously, overnight. Keep going until the mission is met.
 - Waits for the owner: proximity "near" test (cover the sensor) when
   convenient.
 
+## State 2026-10-24 14:10 (coordinator)
+
+- Tablet: IMAGE_VERSION 26102401, kernel #24 (r23), all eight CPUs online,
+  Wi-Fi up. Auto-rotate works live with LDO35/42/43 switched on by a test
+  module (logs/test-runs/2026-10-24-shub); the rear camera EEPROM answered
+  with LDO45 (live test by "Mainline boot image testing").
+- Kernel candidate cand/1033 (adfe545e7) = cand/1032 + drv/shub3 9655ab5e4
+  (sensor rails, stock voltages) + drv/cam 3b4f3e2d4 (EEPROM vcc = LDO45).
+  drv/wifi-recover stays out until its live-swap test.
+- The user asked for r24 published and installed: "Suspend, updates,
+  cores" owns the export (pmos-export, CI publishes) and a local Phosh build
+  + scripts/duranium-update over USB; the coordinator asks the user before
+  the reboot. After the boot: TESTPLAN D8, rear camera in Snapshot, then
+  the suspend/RTC/touch test, the Wi-Fi live-swap (gate "#25"), and phoc's
+  step 2 (session restart), one at a time.
+- scripts/duranium-update has an uncommitted 3-line change in the main
+  checkout from another session.
+
 ## State 2026-10-24 09:45 (coordinator "PostmarketOS duranium bootloader unlock")
 
 - Repo: exynos-linux/samsung-gtactive3wifi, values in config.toml
