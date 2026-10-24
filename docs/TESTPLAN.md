@@ -150,6 +150,9 @@ the proximity sensor 👆 (by the front camera [?]): proximity near. FAIL "the h
 sensor LDOs off (r23 without drv/shub3: live workaround
 build/dkmod/shubldo + `echo 1 > /sys/kernel/debug/spi1.0/boot`, then
 restart iio-sensor-proxy). Evidence: logs/test-runs/2026-10-24-shub.
+Result 2026-10-24: PASS on r24 (26102402~test1, kernel cand/1033 #25): no
+hands part logs/test-runs/2026-10-24-r24/d8.log; the user turned the tablet
+and Phosh followed.
 
 ### D9. Update remote (GitHub releases, RELEASE)
 
