@@ -36,6 +36,14 @@ from them (only a Duranium ✔ counts).
 | B2 | boot 👆 passphrase | reboot, user types passphrase | console answers, IMAGE_VERSION = new | boot counting falls back after 2 tries; `scripts/tab ulog`, pstore |
 | B3 | health | `scripts/duranium-check $R/shots/b3.png` | `systemctl is-system-running` running (or degraded only by known QEMU-free units), no new failed units, Phosh (phoc+phosh) or gdm+gnome-shell running | journal errors → fix |
 | B4 | GUI | look at the screenshot | lock screen / home screen drawn cleanly | display/GPU cases |
+| B5 | clean boots in a row | count every boot of the export: console up without a forced restart (laptop `journalctl -k` shows the gadget; `scripts/tab ulog`: no fallback) | r24/r25 need 5 in a row before `scripts/pmos-verify` | a hang that the watchdog does not reset is a stranding failure: note time, last USB event, next boot's RST_STAT / PWRONSRC / OFFSRC |
+
+Clean-boot counter (B5):
+
+| export | boots | clean | hangs |
+|---|---|---|---|
+| r23 (26102401, CI) | 1 | 1 | 0 |
+| r24 (26102402~test1, local) | 2 | 1 (15:52) | 1 (15:37, watchdog did not fire, forced restart) |
 
 ## C. Existing hardware regression (each new kernel)
 
