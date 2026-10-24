@@ -66,6 +66,26 @@ yourself, autonomously, overnight. Keep going until the mission is met.
 - scripts/duranium-update has an uncommitted 3-line change in the main
   checkout from another session.
 
+## State 2026-10-24 16:10 ("Suspend, updates, cores": export owner for r23-r25)
+
+- Tablet: r24 local 26102402~test1 (kernel cand/1033 #25, device r46),
+  booted 15:52 and blessed; 26102401 (CI r23) is the fallback. CI also
+  published 26102402 (same r24). First r24 boot attempt (15:37) hung, the
+  watchdog did not reset it, forced restart: docs/STATUS.md Hang recovery,
+  TESTPLAN B5 counter. No pmos-verify for r24.
+- Verified on the device today: all eight CPUs + gpu_busy_percent (r23,
+  26102401), D8 auto-rotate (r24, user). Not yet: screen-off suspend +
+  HX83102E restart after sleep + Active key hold (scripts ready, waits for
+  the coordinator after the camera retest).
+- In flight for r25: drv/bootreason (build/wt/bootreason, 2 commits on
+  cand/1033: PMIC power-on/off sources + RST_STAT logged at boot), device
+  r47 (pmaports ece1619: exynos9810_c2=0), plus the camera session's
+  drv/cam fix when handed over. CI keeps the kernel ccache now (2a7c815a);
+  scripts/pmos-export refuses sums out of source order (3481da96).
+- Next three steps: (1) r25 = cand/1034 + device r47, export, local build,
+  A/B install, one reboot; (2) suspend/touch/Active-key test on it;
+  (3) count clean boots (B5) to 5, then pmos-verify.
+
 ## State 2026-10-24 09:45 (coordinator "PostmarketOS duranium bootloader unlock")
 
 - Repo: exynos-linux/samsung-gtactive3wifi, values in config.toml
