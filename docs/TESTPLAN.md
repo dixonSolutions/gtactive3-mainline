@@ -148,9 +148,16 @@ without `sd-uhs-sdr104`, then without `sd-uhs-sdr50`. In Phosh: automount.
   `cat /sys/devices/platform/soc@0/16230000.csis/af_status`: samples and
   sample_us (budget < 1 ms, < 2 % of a core). PASS 2026-10-24 (r24 + the
   cand/1035 csis/vb2-dc as live modules, user "good" in Snapshot).
-- F Autofocus (user): back camera near (~20 cm) then far (> 2 m), each
-  sharp within ~2 s; covering the lens parks it (af_status "locked" at
-  the park position), uncovering rescans.
+- F Fixed focus (default): after boot the rear lens reads 592 (`v4l2-grab
+  ctrl /dev/<dw9807 subdev> 0x009a090a`, dmesg "pan focus code 296, start
+  position 592"); Snapshot sharp from ~1.5 m to far. PASS 2026-10-24 (r24
+  live: lens set to 592, af=N, user "good").
+- G Autofocus opt-in (`echo 1 > /sys/module/exynos9810_csis/parameters/af`,
+  then reopen the camera; drv/cam-caf): near (~20 cm) then far (> 2 m),
+  each sharp within ~2 s without visible hunting; panning or shaking does
+  not start a new search (af_status stays "locked"); a flat scene leaves
+  the lens where it is. The first receiver AF (full rescans) FAILED this
+  2026-10-24 ("keeps trying to adjust focus ... random blur").
 
 ### D8. Sensor hub, auto-rotate (drv/shub3, SHUB)
 
