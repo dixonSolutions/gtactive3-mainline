@@ -54,7 +54,7 @@ Clean-boot counter (B5):
 | C3 | Touch 👆 | evtest on the Himax device while the user drags | ≥100 events, no bad frames in dmesg |
 | C4 | S Pen 👆 | evtest on "Wacom W9019 Digitizer", hover + press | BTN_TOOL_PEN, pressure changes |
 | C5 | Keys 👆 | evtest gpio-keys: Power, Vol+, Home, Back, Recent | each key down/up seen |
-| C6 | Audio 👆 | `speaker-test -c2 -t sine -l1` / pw-play; user confirms speaker + headphones | user hears both |
+| C6 | Audio 👆 | D11 (speaker, jack, microphone) | D11 PASS |
 | C7 | Battery/charger | `/sys/class/power_supply/*/{capacity,current_now,status,temp}` | sane values, charging on USB |
 | C8 | Thermal | `/sys/class/thermal/thermal_zone*/temp` | all < 70 °C idle |
 | C9 | GPU | `glxinfo -B`/`eglinfo` in the session: panfrost; fault count in dmesg | renderer Mali-G72 (Panfrost), 0 MMU faults |
@@ -199,6 +199,27 @@ On the user's tablet (unlocked, Duranium dev, Android super wiped):
 
 Never on the user's tablet without their explicit OK: `install`, `wipe`,
 `restore-android`, `restore-android-backup`, `undo`.
+
+### D11. Audio: speaker, jack, microphone (drv/audio-fix, device r48, AUDIO)
+
+No hands: `/sys/class/regulator/*/{name,state}`: regulator_3v3 (LDO36,
+MICVDD) enabled; `amixer -c Active3 cget iface=CARD,name='Headphones Jack'`
+= off with nothing plugged in; `grep rt5665 /proc/interrupts` (gpa2 2);
+`wpctl status`: default sink "Built-in Audio Speaker", Headphones port "not
+available" (`pactl list sinks`); 10 s `pw-record` from
+alsa_input.platform-sound.HiFi__Mic__source: room noise ≥ 3 LSB RMS the whole
+time and no thump in the first 0.5 s (peak ≪ 1000), not a 1-LSB silence.
+👆 one at a time (logs/test-runs/2026-10-24-audio/owner.sh speaker, plug,
+hsmic, unplug, mic): chimes from the speaker; plug headphones → "Headphones
+Jack" on, default sink Headphones, chimes in the headphones only (speaker
+pin off); headset: speak, the playback has the voice; unplug → Speaker
+again; speak to the tablet, the playback has the voice. FAIL hints: jack
+never changes = JD/IRQ (codec reg 0x0f0 bits 4/12, IRQ count); silent mic
+= LDO36 off (LCTRL 0x6d bits 7:6); Headphones default with nothing in =
+saved WirePlumber default + no JackControl (UCM older than r48).
+Result 2026-10-24 (r24 + live modules, logs/test-runs/2026-10-24-audio):
+no-hands part PASS; speaker and internal mic PASS (owner); plug/unplug not
+yet done.
 
 ## E. Test helpers
 

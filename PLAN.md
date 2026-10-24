@@ -66,7 +66,7 @@ what is verified today.
 - [ ] Wi-Fi (Exynos PCIe + brcmfmac), Bluetooth (UART, hci_bcm) — `wifi`
 
 ## Layer 6: the rest
-- [ ] Audio (ABOX, RT5665, RT5510) — `audio`
+- [ ] Audio (ABOX, RT5665, RT5510) — `audio`: speaker, internal mic and jack detection fixed live on r24 (2026-10-24), permanent in r25 (drv/audio-fix 0f44582cd, device r48); left: owner plug/unplug test, then TESTPLAN D11 on r25
 - [ ] MUIC SM5504, hall sensor, jack, vibrator, keys, NFC (S3FWRN5), grip sensor,
       accelerometer/light sensors — `misc` (2026-10-24: accel/light/
       proximity through the BCM4775 hub verified live, Phosh auto-rotate

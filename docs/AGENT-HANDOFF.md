@@ -5,6 +5,30 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-24 17:05 (session "Audio fixes", side session of the coordinator)
+
+- Owner's audio report on r24: phantom headphones (default sink
+  Headphones, system sound lost), microphone "a blip, then silence".
+  Causes: no jack detection in r24 (jd-src 0) plus a saved Headphones
+  default; MICVDD (S2MPS18 LDO36) never switched on: sec-acpm allowed the
+  write, but s2mps11.c still gave LDO36 the read-only ops. The blip was a
+  ~100 ms power-up thump of the mic path.
+- Live on the tablet until the next reboot (logs/test-runs/2026-10-24-audio):
+  micldo test module (LDO36 on), live snd-soc-rt5665 (jd_src=2, IRQ gpa2-2,
+  amic_delay=150) + new card module, jack UCM bind-mounted over
+  /usr/share/alsa/ucm2/conf.d/gtactive3 (all in /var/tmp/audio-fix;
+  `systemd-run sh /var/tmp/audio-fix/test.sh restore` undoes the modules and
+  the UCM). The owner heard the speaker and recorded their voice.
+- Permanent, handed to the coordinator and "Mainline boot image testing"
+  for cand/1035 / r25: src/linux drv/audio-fix 0f44582cd (worktree
+  build/wt/audio-fix; drv/jack and drv/audio2 superseded) and device r48
+  (pmaports a5e035f, UCM JackControl/JackHWMute).
+- Waits for the owner: plug and unplug headphones (owner.sh plug/unplug),
+  then TESTPLAN D11 on r25 as booted. Follow-up: callaudiod aborts and
+  xdg-desktop-portal segfaults whenever PipeWire is restarted (upstream
+  behaviour, only seen with test restarts).
+- Next three steps: unchanged, see PLAN.md "Next three steps".
+
 ## State 2026-10-24 16:50 (session "Animated screen rotation in phoc")
 
 - The black frame on each rotation is phoc's modeset shield (userspace).
