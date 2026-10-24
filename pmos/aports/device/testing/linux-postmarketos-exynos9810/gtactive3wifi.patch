@@ -2541,10 +2541,10 @@ index 0000000000000000000000000000000000000000..768acdadfe3958c7452e8cd3b4bda0d9
 +};
 diff --git a/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b583081ff8611f7f33868943fc49dc8d1af3aea9
+index 0000000000000000000000000000000000000000..8331bf88b81c74c16cd2637facfe07c7b370663d
 --- /dev/null
 +++ b/arch/arm64/boot/dts/exynos/exynos9810-gtactive3wifi.dts
-@@ -0,0 +1,2189 @@
+@@ -0,0 +1,2199 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/*
 + * Samsung Galaxy Tab Active3 Wi-Fi (gtactive3wifi/SM-T570) device tree source
@@ -3367,14 +3367,16 @@ index 0000000000000000000000000000000000000000..b583081ff8611f7f33868943fc49dc8d
 +	};
 +
 +	/*
-+	 * Rear camera module EEPROM, 16 KiB (stock rear_eeprom@58, powered
-+	 * with the sensor I/O): AF infinity/macro DAC codes and AWB
-+	 * calibration, read-only.
++	 * Rear camera module EEPROM, 16 KiB (stock rear_eeprom@58): AF
++	 * infinity/macro DAC codes and AWB calibration, read-only. Its supply
++	 * is the AF rail: stock's READ_ROM sequence (fimc-is-device-module-
++	 * 3l6.c) turns on VDD_RCAM_AF_2P8, then VDD_CAM_IO_1P8 for the bus
++	 * (always on here). Without the AF rail it never answers.
 +	 */
 +	eeprom@58 {
 +		compatible = "atmel,24c128";
 +		reg = <0x58>;
-+		vcc-supply = <&s2mps18_ldo44>;
++		vcc-supply = <&s2mps18_ldo45>;
 +		read-only;
 +
 +		nvmem-layout {
@@ -3806,10 +3808,16 @@ index 0000000000000000000000000000000000000000..b583081ff8611f7f33868943fc49dc8d
 +				regulator-max-microvolt = <1050000>;
 +			};
 +
++			/*
++			 * LDO35/42/43: the sensors behind the BCM4775 hub (accel,
++			 * light/proximity and its IR LED, magnetometer). S-Boot
++			 * leaves them off; the hub finds no sensors without them.
++			 */
 +			s2mps18_ldo35: LDO35 {
 +				regulator-name = "VDD_SENSOR_1P8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
 +				regulator-always-on;
-+				/* stock: 1800 mV */
 +			};
 +
 +			/* RT5665 MICVDD: S-Boot leaves it off (LCTRL 0x3c) */
@@ -3850,14 +3858,16 @@ index 0000000000000000000000000000000000000000..b583081ff8611f7f33868943fc49dc8d
 +
 +			s2mps18_ldo42: LDO42 {
 +				regulator-name = "vdd_proxy_led_3p3";
++				regulator-min-microvolt = <3300000>;
++				regulator-max-microvolt = <3300000>;
 +				regulator-always-on;
-+				/* stock: 3300 mV */
 +			};
 +
 +			s2mps18_ldo43: LDO43 {
 +				regulator-name = "vdd_ldo43";
++				regulator-min-microvolt = <3300000>;
++				regulator-max-microvolt = <3300000>;
 +				regulator-always-on;
-+				/* stock: 3300 mV */
 +			};
 +
 +			s2mps18_ldo44: LDO44 {
@@ -21134,7 +21144,7 @@ index e4fd4572472f9805c6cfb11e00c599714e754114..2b9d5198ffc21be18288e82c267e6c36
  	depends on OF
  	select MFD_SEC_CORE
 diff --git a/drivers/mfd/sec-acpm.c b/drivers/mfd/sec-acpm.c
-index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511eeb70a98 100644
+index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..e89cfcf3a12ad2f3d33706cba58a073b050b56a7 100644
 --- a/drivers/mfd/sec-acpm.c
 +++ b/drivers/mfd/sec-acpm.c
 @@ -3,7 +3,7 @@
@@ -21168,7 +21178,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  
  	const struct regmap_config *regmap_cfg_common;
  	const struct regmap_config *regmap_cfg_pmic;
-@@ -365,10 +373,113 @@ static const struct regmap_config s2mpg11_regmap_config_meter = {
+@@ -365,10 +373,114 @@ static const struct regmap_config s2mpg11_regmap_config_meter = {
  	.cache_type = REGCACHE_FLAT,
  };
  
@@ -21210,6 +21220,8 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
 + * (stock SM-T570 DT names):
 + *   LDO2  vqmmc, LDO31 vmmc (microSD card),
 + *   LDO28/32/34/39/44/45 (camera sensors),
++ *   LDO35 VDD_SENSOR_1P8, LDO42 vdd_proxy_led_3p3, LDO43 vdd_ldo43
++ *     (sensors behind the BCM4775 hub, stock always-on, no other user),
 + *   LDO36 regulator_3v3 (RT5665 codec MICVDD: microphone bias),
 + *   LDO37 vdd_mcu_1p8 (BCM4775 sensor hub),
 + *   LDO40 VDD_GRIP_3P0 (grip sensor), LDO41 VDD_NFC_1P8 (NFC).
@@ -21220,9 +21232,8 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
 +	regmap_reg_range(S2MPS18_REG_LCTRL(28), S2MPS18_REG_LCTRL(28)),
 +	regmap_reg_range(S2MPS18_REG_LCTRL(31), S2MPS18_REG_LCTRL(32)),
 +	regmap_reg_range(S2MPS18_REG_LCTRL(34), S2MPS18_REG_LCTRL(34)),
-+	regmap_reg_range(S2MPS18_REG_LCTRL(36), S2MPS18_REG_LCTRL(37)),
-+	regmap_reg_range(S2MPS18_REG_LCTRL(39), S2MPS18_REG_LCTRL(41)),
-+	regmap_reg_range(S2MPS18_REG_LCTRL(44), S2MPS18_REG_LCTRL(45)),
++	regmap_reg_range(S2MPS18_REG_LCTRL(35), S2MPS18_REG_LCTRL(37)),
++	regmap_reg_range(S2MPS18_REG_LCTRL(39), S2MPS18_REG_LCTRL(45)),
 +};
 +
 +static const struct regmap_access_table s2mps18_pmic_wr_table = {
@@ -21282,7 +21293,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  };
  
  enum sec_pmic_acpm_accesstype {
-@@ -383,8 +494,25 @@ enum sec_pmic_acpm_accesstype {
+@@ -383,8 +495,25 @@ enum sec_pmic_acpm_accesstype {
  struct sec_pmic_acpm_bus_context {
  	struct sec_pmic_acpm_shared_bus_context *shared;
  	enum sec_pmic_acpm_accesstype type;
@@ -21308,7 +21319,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  static int sec_pmic_acpm_bus_write(void *context, const void *data,
  				   size_t count)
  {
-@@ -401,6 +529,9 @@ static int sec_pmic_acpm_bus_write(void *context, const void *data,
+@@ -401,6 +530,9 @@ static int sec_pmic_acpm_bus_write(void *context, const void *data,
  
  	reg = d[0];
  
@@ -21318,7 +21329,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  	return pmic_ops->bulk_write(acpm, ctx->shared->acpm_chan_id, ctx->type, reg,
  				    ctx->shared->speedy_channel, val_count, vals);
  }
-@@ -431,6 +562,9 @@ static int sec_pmic_acpm_bus_reg_update_bits(void *context, unsigned int reg, un
+@@ -431,6 +563,9 @@ static int sec_pmic_acpm_bus_reg_update_bits(void *context, unsigned int reg, un
  	struct acpm_handle *acpm = ctx->shared->acpm;
  	const struct acpm_pmic_ops *pmic_ops = &acpm->ops->pmic;
  
@@ -21328,7 +21339,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  	return pmic_ops->update_reg(acpm, ctx->shared->acpm_chan_id, ctx->type, reg & 0xff,
  				    ctx->shared->speedy_channel, val, mask);
  }
-@@ -457,6 +591,7 @@ static struct regmap *sec_pmic_acpm_regmap_init(struct device *dev,
+@@ -457,6 +592,7 @@ static struct regmap *sec_pmic_acpm_regmap_init(struct device *dev,
  
  	ctx->shared = shared_ctx;
  	ctx->type = type;
@@ -21336,7 +21347,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  
  	regmap = devm_regmap_init(dev, &sec_pmic_acpm_regmap_bus, ctx, cfg);
  	if (IS_ERR(regmap))
-@@ -491,9 +626,13 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
+@@ -491,9 +627,13 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
  	if (IS_ERR(acpm))
  		return dev_err_probe(dev, PTR_ERR(acpm), "failed to get acpm\n");
  
@@ -21353,7 +21364,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  
  	shared_ctx = devm_kzalloc(dev, sizeof(*shared_ctx), GFP_KERNEL);
  	if (!shared_ctx)
-@@ -502,6 +641,7 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
+@@ -502,6 +642,7 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
  	shared_ctx->acpm = acpm;
  	shared_ctx->acpm_chan_id = pdata->acpm_chan_id;
  	shared_ctx->speedy_channel = pdata->speedy_channel;
@@ -21361,7 +21372,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  
  	regmap_common = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_COMMON,
  						  pdata->regmap_cfg_common, true);
-@@ -520,10 +660,24 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
+@@ -520,10 +661,24 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
  			return PTR_ERR(regmap);
  	}
  
@@ -21390,7 +21401,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  
  	ret = sec_pmic_probe(dev, pdata->device_type, irq, regmap_pmic, NULL);
  	if (ret)
-@@ -544,6 +698,7 @@ static const struct sec_pmic_acpm_platform_data s2mpg10_data = {
+@@ -544,6 +699,7 @@ static const struct sec_pmic_acpm_platform_data s2mpg10_data = {
  	.device_type = S2MPG10,
  	.acpm_chan_id = 2,
  	.speedy_channel = 0,
@@ -21398,7 +21409,7 @@ index d11fbf5b94b792031f9c6968d6e66e8d7183cb5e..0bb68c16c92e6b93419b57680dac2511
  	.regmap_cfg_common = &s2mpg10_regmap_config_common,
  	.regmap_cfg_pmic = &s2mpg10_regmap_config_pmic,
  	.regmap_cfg_rtc = &s2mpg10_regmap_config_rtc,
-@@ -554,14 +709,31 @@ static const struct sec_pmic_acpm_platform_data s2mpg11_data = {
+@@ -554,14 +710,31 @@ static const struct sec_pmic_acpm_platform_data s2mpg11_data = {
  	.device_type = S2MPG11,
  	.acpm_chan_id = 2,
  	.speedy_channel = 1,
@@ -24659,7 +24670,7 @@ index 89789ac7a786c8c4c4a750cdcaa27a205762ac18..2ba3b0901e14652cc4f27bac9f57c1a8
  	 Buck converters including Dual-Phase Buck converter, Buck-Boost
  	 converter, various LDOs.
 diff --git a/drivers/regulator/s2mps11.c b/drivers/regulator/s2mps11.c
-index 0fb54617b8a7d6abe59e95cddf467419605d28aa..9050f37e1c02e1679922f1af52e99569a79a6bb5 100644
+index 0fb54617b8a7d6abe59e95cddf467419605d28aa..ce6929daaf67459425a2f6cab81523274934642d 100644
 --- a/drivers/regulator/s2mps11.c
 +++ b/drivers/regulator/s2mps11.c
 @@ -23,6 +23,7 @@
@@ -24687,8 +24698,8 @@ index 0fb54617b8a7d6abe59e95cddf467419605d28aa..9050f37e1c02e1679922f1af52e99569
 +
 +/*
 + * The LDOs that only feed board peripherals (camera sensors, SD card,
-+ * grip sensor, NFC, sensor hub), the only ones the PMIC bus lets us
-+ * write: enable (normal mode, bits 7:6 = 11) and voltage.
++ * grip sensor, NFC, the sensor hub and its sensors), the only ones the
++ * PMIC bus lets us write: enable (normal mode, bits 7:6 = 11) and voltage.
 + */
 +static const struct regulator_ops s2mps18_reg_sw_ops = {
 +	.list_voltage		= regulator_list_voltage_linear,
@@ -24774,15 +24785,15 @@ index 0fb54617b8a7d6abe59e95cddf467419605d28aa..9050f37e1c02e1679922f1af52e99569
 +	regulator_desc_s2mps18_sw_ldo(32, 3, 2),
 +	regulator_desc_s2mps18_ldo(33, 1, 2),
 +	regulator_desc_s2mps18_sw_ldo(34, 1, 1),
-+	regulator_desc_s2mps18_ldo(35, 1, 2),
++	regulator_desc_s2mps18_sw_ldo(35, 1, 2),
 +	regulator_desc_s2mps18_ldo(36, 3, 2),
 +	regulator_desc_s2mps18_sw_ldo(37, 1, 2),
 +	regulator_desc_s2mps18_ldo(38, 1, 2),
 +	regulator_desc_s2mps18_sw_ldo(39, 1, 1),
 +	regulator_desc_s2mps18_sw_ldo(40, 3, 2),
 +	regulator_desc_s2mps18_sw_ldo(41, 1, 2),
-+	regulator_desc_s2mps18_ldo(42, 3, 2),
-+	regulator_desc_s2mps18_ldo(43, 3, 2),
++	regulator_desc_s2mps18_sw_ldo(42, 3, 2),
++	regulator_desc_s2mps18_sw_ldo(43, 3, 2),
 +	regulator_desc_s2mps18_sw_ldo(44, 1, 2),
 +	regulator_desc_s2mps18_sw_ldo(45, 3, 2),
 +	regulator_desc_s2mps18_buck_out1(1),
