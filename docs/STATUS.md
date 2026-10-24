@@ -22,8 +22,8 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | **microSD** | dw_mmc-exynos (exynos9810-dw-mshc → exynos7), CMU_FSYS1 SD clocks, vmmc LDO31 / vqmmc LDO2 (drv/hwgaps) | ? | ◐ driver probes (26102219~test2), card detect + insert untested | insert a card: SDR104 tuning, read rate, hotplug |
 | **Display** 8.0" 1200×1920 TFT, Himax HX83102E TDDI, dual-link DSI | new `exynos` KMS driver: takes over DECON window 5 / IDMA_G0, page flips at vsync | ✔ fbcon on hardware scanout, clean | ✘ **pixelated/glitchy** (old simpledrm + software path; the new driver is not in a booted Duranium yet) | boot it in Duranium, verify GNOME on the GPU (screenshots via debugfs scanout); real panel/DSI power control (blank/unblank, DPMS) |
 | **Backlight** | DSIM DCS 0x51, both links, 0-3977 | ◐ values accepted; brightness change not visually confirmed | ✘ no slider in GNOME (needs a DSI connector, now provided) | verify slider + visible change |
-| **Rotation** (manual) | Mutter software rotation | ? | ? (reported broken) | verify with the KMS driver |
-| **Auto-rotate** (accelerometer) | behind the BCM4773 sensor hub (proprietary protocol) | — | — | sensor hub protocol (RE notes in docs/re, local) |
+| **Rotation** (manual) | compositor rotation (phoc: output transform, a modeset commit per turn) | ? | ✔ Phosh landscape + touch (user, 2026-10-24, logs/test-runs/2026-10-24-eight-cores-gpu-rotation, 2026-10-24-shub) | GNOME (Mutter) not retested |
+| **Auto-rotate** (accelerometer) | bcm4775_shub (r23) → IIO accel → iio-sensor-proxy → Phosh; the sensors need S2MPS18 LDO35/42/43, which r23 leaves off | — | ◐ Phosh rotates by itself, ~1 s, no animation (user, 2026-10-24, logs/test-runs/2026-10-24-shub; LDOs switched on by a test module, r23 alone: hub finds no sensors) | drv/shub3 (LDO35/42/43 switchable, stock voltages) in an export, then retest after a reboot; delay is iio-sensor-proxy's 700 ms read interval |
 | **Touch** Himax HX83102E (SPI) | detected; frame realignment; 10 MHz | ✔ (user drags: 0 bad frames / 1400) | ◐ "very poor" before the fix; fixed driver not yet in a booted Duranium | verify in GNOME |
 | **S Pen** Wacom W9019 (I2C) | wacom_w9000 + W9019 variant | ◐ device registers, no pen test | ? | pen test in GNOME (hover/pressure) |
 | **Keys** Power, Vol+ | gpio-keys | ✔ | ✔ | — |
@@ -44,7 +44,7 @@ Legend: ✔ verified · ◐ partly / with caveats (stated) · ✘ broken or not 
 | **Grip sensor** A96T3x6 | driver, bus at 100 kHz, VDD_GRIP_3P0 = LDO40 | ✘ needs LDO40 | ◐ probes: fw 0x01 vendor 0xab model 0x50 (was no response) | proximity values with a hand near the edge (user) |
 | **Pogo pins** SM5504 MUIC | extcon-sm5502 | ✘ probe fails (no USB role switch) | ? | dwc3 role switch |
 | **Cameras** S5K3L6 8 MP rear, GC5035 5 MP front | exynos9810-csis raw capture (16-bit RAW10 words) + s5k3l6 + gc5035 (drv/cam), libcamera simple pipeline + SoftISP | — | ◐ both sensors probe and stream at 30 fps; rear test pattern = exact colour bars (64..1023); libcamera registers both, PipeWire shows Built-in Front/Back Camera (2026-10-23) | Snapshot in a lit room (user); libcamera sensor helpers (patches/libcamera/0002) |
-| **Sensors** accel/gyro/mag/light/proximity | behind BCM4773 sensor hub | — | — | sensor hub protocol |
+| **Sensors** accel/gyro/mag/light/proximity | BCM4775 hub (bcm4775_shub): accel, light, proximity as IIO; hub reports 0x50d730e07f69f (gyro, mag, ... present, not exposed) | — | ◐ accel ✔ (~1 g, 20 Hz), light ✔ 62 lux in iio-sensor-proxy, proximity reads 0, near untested (2026-10-24-shub, LDOs by test module) | same as Auto-rotate; proximity near test 👆; auto-brightness; gyro/mag later |
 | **GPS** | BCM4773 GNSS | — | — | GNSS protocol |
 | **Fingerprint** | TrustZone-owned | — | — | not reachable from Linux |
 

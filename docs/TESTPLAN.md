@@ -134,6 +134,21 @@ without `sd-uhs-sdr104`, then without `sd-uhs-sdr50`. In Phosh: automount.
   hand, repeat; C `cam -l`, `cam -c 1 --capture=10`; D Snapshot in Phosh
   (screenshot, rotation).
 
+### D8. Sensor hub, auto-rotate (drv/shub3, SHUB)
+
+After boot, no hands: `cat /sys/kernel/debug/spi1.0/status` → `state
+running`, `ssp: up 1, present 0x50d730e07f69f`; dmesg "SSP up: sensors ...";
+VDD_SENSOR_1P8 / vdd_proxy_led_3p3 / vdd_ldo43 enabled at 1.8 / 3.3 / 3.3 V
+(`/sys/class/regulator/*/{name,state,microvolts}`); `in_accel_{x,y,z}_raw`
+of `bcm4775-accel` ≈ 4000 LSB magnitude at rest; `monitor-sensor` shows
+an accelerometer with an orientation, light in lux, proximity.
+👆 Auto Rotate on in Phosh's quick settings, turn to landscape and back:
+the screen follows (~1 s: iio-sensor-proxy reads every 700 ms). Cover
+the proximity sensor 👆 (by the front camera [?]): proximity near. FAIL "the hub found no sensors" =
+sensor LDOs off (r23 without drv/shub3: live workaround
+build/dkmod/shubldo + `echo 1 > /sys/kernel/debug/spi1.0/boot`, then
+restart iio-sensor-proxy). Evidence: logs/test-runs/2026-10-24-shub.
+
 ### D9. Update remote (GitHub releases, RELEASE)
 
 Local images 26102209-26102213 point sysupdate at postmarketOS and/or lack

@@ -68,5 +68,7 @@ what is verified today.
 ## Layer 6: the rest
 - [ ] Audio (ABOX, RT5665, RT5510) — `audio`
 - [ ] MUIC SM5504, hall sensor, jack, vibrator, keys, NFC (S3FWRN5), grip sensor,
-      accelerometer/light sensors — `misc`
+      accelerometer/light sensors — `misc` (2026-10-24: accel/light/
+      proximity through the BCM4775 hub verified live, Phosh auto-rotate
+      works; needs drv/shub3 (sensor LDOs) in an export: docs/STATUS.md)
 - [ ] Fingerprint, GPS, cameras: research first (feasibility documented by `misc`)

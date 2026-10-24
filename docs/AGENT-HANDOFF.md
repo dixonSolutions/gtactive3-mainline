@@ -5,6 +5,24 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-24 14:02 (session "Auto-rotate: BCM4775 sensor hub accelerometer")
+
+- Auto-rotate works on the tablet (live): r23's bcm4775_shub boots the
+  hub, but the hub found no sensors because S2MPS18 LDO35/42/43 (stock
+  always-on) were off. A test module (build/dkmod/shubldo, only those three
+  LCTRL registers, the user's go, device lock, coordinator told) switched
+  them on at 13:48; after `echo 1 > /sys/kernel/debug/spi1.0/boot` and an
+  iio-sensor-proxy restart, Phosh rotates when the user turns the tablet
+  (~1 s, no animation: iio-sensor-proxy's 700 ms read interval, phoc).
+  Evidence: logs/test-runs/2026-10-24-shub; STATUS.md Auto-rotate/Sensors.
+- The rails stay on only until the next reboot. Permanent fix: src/linux
+  `drv/shub3` 9655ab5e4 on cand/1032 (worktree build/wt/shub3), handed to
+  the coordinator for the next export; retest D8 (TESTPLAN.md) after the
+  A/B update boots.
+- Next three steps: unchanged, see PLAN.md "Next three steps".
+- Waits for the owner: proximity "near" test (cover the sensor) when
+  convenient.
+
 ## State 2026-10-24 09:45 (coordinator "PostmarketOS duranium bootloader unlock")
 
 - Repo: exynos-linux/samsung-gtactive3wifi, values in config.toml

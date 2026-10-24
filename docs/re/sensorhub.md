@@ -58,6 +58,14 @@ verified.
   frame, iio-sensor-proxy wants the gravity vector: y < 0 = upright).
   Still untested on the device. The hwdb ACCEL_MOUNT_MATRIX cannot be used
   (systemd's 60-sensor.rules only matches usb/i2c/platform parents).
+- (2026-10-24) On the device (r23, cand/1032): download and hub start
+  work, but SENSOR_SCANNING stays 0 until S2MPS18 LDO35 VDD_SENSOR_1P8,
+  LDO42 vdd_proxy_led_3p3 (3.3 V) and LDO43 (3.3 V) are on: the stock DT
+  keeps them always-on (DT4:3752-3759, 3819-3828, 3830-3837), S-Boot
+  leaves them off. With them on: sensors 0x50d730e07f69f, accel range 8,
+  20 Hz accel through IIO, iio-sensor-proxy and Phosh auto-rotate
+  (logs/test-runs/2026-10-24-shub). Fix: src/linux drv/shub3. The hub's
+  "CPUART: NOT COMPLETE(WR)" messages appear either way (not the cause).
 - Previously missing for a lhd-free mainline: (a) exact power/NSTDBY timing (small),
   (b) the ROM bootloader handshake and patch download protocol (the real
   unknown), (c) the host TX side of the packet layer (sequence numbers, acks,

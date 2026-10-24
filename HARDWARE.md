@@ -32,7 +32,7 @@ persistent=sda17, misc=sda18, metadata=sda24, cache=sda28. Also cpefs=sdd1.
 | spi1.0 | egis_fingerprint | fingerprint |
 | spi7.0 | p3 | eSE (NFC secure element) |
 | spi17.0 | dbmd_4_8-spi | DSP Group voice DSP |
-| spi20.0 | brcm gps spi | GPS |
+| spi20.0 | brcm gps spi | GPS + sensor hub: Broadcom BCM4775 with accel ICM-42605M, light/proximity TMD3725, magnetometer AK09916 on its own buses; hub MCU on S2MPS18 LDO37, sensors on LDO35/42/43 (stock always-on: firmware/stock/dtbo-4.dts:3752, 3819, 3830; measured on the device 2026-10-24); docs/re/sensorhub.md |
 | spi21.0 | himax_tp | touchscreen (input1) |
 | PCIe | dhd (Broadcom FullMAC) | Wi-Fi, chip unconfirmed (likely BCM4361) |
 
