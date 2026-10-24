@@ -109,6 +109,25 @@ yourself, autonomously, overnight. Keep going until the mission is met.
 - scripts/duranium-update has an uncommitted 3-line change in the main
   checkout from another session.
 
+## State 2026-10-24 17:20 ("Suspend, updates, cores")
+
+- The owner: everything in the kernel and drivers, the Phosh image stays
+  unmodified (no forks, no overlays). The libcamera patch overlay is
+  PARKED, not pushed: local branch ci/overlays (worktree
+  build/wt/ci-overlays): 675d2fbb (ci/overlays, native arm64 job, export
+  guards) + WIP 209d6231 (the r25 integrator's review fixes: verification
+  covers pmos/overlays, `ci/overlays build` in postmarketOS's arm64
+  container with --entrypoint /bin/sh, -F0 proof, check-image, pipefail;
+  pmos/overlays/temp/libcamera with 3 patches that fit upstream r4 and
+  apply in arm64 abuild prepare). Revive only on the owner's word.
+- Kept from that work, already on main: the pkgname check idea is in the
+  parked branch only; main's scripts/pmos-export has the sums-order check
+  (3481da96) and CI keeps the kernel ccache (2a7c815a).
+- Focus now: kernel root causes. (1) The r24 boot hang the watchdog did
+  not reset (C2 with eight cores suspected; r25 logs RST_STAT and the PMIC
+  on/off sources at boot, drv/bootreason). (2) Deep sleep and battery, in
+  drivers.
+
 ## State 2026-10-24 16:10 ("Suspend, updates, cores": export owner for r23-r25)
 
 - Tablet: r24 local 26102402~test1 (kernel cand/1033 #25, device r46),
