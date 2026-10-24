@@ -230,7 +230,8 @@ log "hashes match"
 
 # In the initrd (the disk passphrase not typed yet) /var is the initrd's
 # tmpfs, not the encrypted root: extensions copied there vanish at the reboot.
-INITRD=$(t "cat /etc/initrd-release" 2>/dev/null | grep -c . || true)
+# (count os-release fields: the console answers "error" for a missing file)
+INITRD=$(t "cat /etc/initrd-release" 2>/dev/null | grep -c '^[A-Z_]*=' || true)
 if [ "${#EXTS[@]}" -gt 0 ] && [ "${INITRD:-0}" -gt 0 ]; then
 	log "extensions: skipped, the tablet is in the initrd (root still locked); run the update again from the booted system to install them"
 	EXTS=()
