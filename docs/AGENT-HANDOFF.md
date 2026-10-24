@@ -5,6 +5,42 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-24 18:45 (session "Mainline boot image testing": r25 integrated and exported)
+
+- r25 = kernel cand/1035 (091acc188) + device r48 + duranium-build as
+  before, exported to pmos/ and pushed to main (CI publishes it to the
+  dev channels as 26102403). Kernel + DT only, per the user: no image or
+  userspace package changes; the libcamera overlay (ci/overlays,
+  "Suspend, updates, cores") is parked after review (verification ignored
+  pmos/overlays; no local build path), no libcamera fork anywhere.
+- cand/1035 = cand/1034 (boot reason logging, csis cacheable buffers +
+  error-burst mute) + drv/cam-stock (cacheable buffers asked at
+  REQBUFS/CREATE_BUFS, vb2-dma-contig dma-buf CPU sync, rear lens at the
+  module's pan focus 592 = EEPROM 296 on the DAC scale, receiver AF opt-in
+  af=1, EEPROM read retry) + drv/audio-fix 7e3507579 (RT5665 JD1+JD2 jack
+  and buttons, LDO36 mic supply, 150 ms mic delay, jack works serialised;
+  all review findings fixed, live-tested). Every branch had a release
+  review (independent reviewers); drv/wifi-recover had a crash bug, fixed
+  (721862e82) but not live-tested, so it waits for r26.
+- Verified before the build: cameras on STOCK libcamera with the cand/1035
+  csis/vb2-dc as live modules on r24 (user "good", fixed focus 592),
+  audio live (jack, mic, no thump), auto-rotate D8 (r24).
+- Packages built locally in 3 min 16 s on the warm ccache (kernel r25,
+  device r48). The laptop froze once at ~17:37 (disk 98 % full, 12 GB
+  swap, a build and two cleanups at once): one heavy job at a time;
+  ~20 GB of stale outputs were removed with the user's OK.
+- Tablet: still r24 (26102402~test1) with live modules (cam-stock csis +
+  vb2-dc, audio rt5665, af=N, lens 592, PipeWire drop-ins renamed .off).
+  USB is unplugged for charging; Tailscale pings but ssh hung. The r25
+  update: the local image 26102403~test1 over USB when it is back, or the
+  tablet's own sysupdate from the dev channel.
+- Next (r26): drv/cam-caf ad4c4689c (autofocus that climbs in small steps
+  and holds still, test with the user), standard V4L2 camera controls on
+  the lens and sensors (the user wants them adjustable from apps),
+  drv/wifi-recover, the audio session's r49 (mic slider). Old uncommitted
+  worktrees from 2026-10-21..23 (mfc, power, sensorpwr, shub, wifi) are
+  untouched, their owners' to finish.
+
 ## State 2026-10-24 17:05 (session "Audio fixes", side session of the coordinator)
 
 - Owner's audio report on r24: phantom headphones (default sink
