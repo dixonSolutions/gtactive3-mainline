@@ -161,6 +161,12 @@ restart iio-sensor-proxy). Evidence: logs/test-runs/2026-10-24-shub.
 Result 2026-10-24: PASS on r24 (26102402~test1, kernel cand/1033 #25): no
 hands part logs/test-runs/2026-10-24-r24/d8.log; the user turned the tablet
 and Phosh followed.
+Black frame on each turn: phoc's modeset shield (2026-10-24-shub/06), fixed
+only upstream (MR prepared, logs/test-runs/2026-10-24-phoc-rotate: a
+headless phoc on renderD128 + GTK test window, `wlr-randr --transform`,
+`grim` during the turn; PASS = the old frame turns upright, no black, then
+the new layout). Once a phoc with it reaches postmarketOS: 👆 turn the
+tablet, no black frame.
 
 ### D9. Update remote (GitHub releases, RELEASE)
 

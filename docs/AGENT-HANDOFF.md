@@ -5,6 +5,25 @@ If you are the agent reading this after compaction: **you are the lead**. You
 coordinate, integrate, flash the tablet and test every change on the device
 yourself, autonomously, overnight. Keep going until the mission is met.
 
+## State 2026-10-24 16:50 (session "Animated screen rotation in phoc")
+
+- The black frame on each rotation is phoc's modeset shield (userspace).
+  A phoc patch turns the last frame into the new orientation instead
+  (fit + darkened backdrop, 280 ms, then a fade): headless phoc on the
+  tablet PASS on r24, phoc `meson test` 80/80 (logs/test-runs/
+  2026-10-24-phoc-rotate). The user decided no userspace forks in our
+  images, so it goes upstream only: MR branch output-shield-rotate in
+  build/phoc/phoc-upstream (3 commits on phoc main), text in
+  build/phoc/MR.md; nothing posted.
+- Unmerged, keep or delete: pmaports branch phoc-rotate (temp/phoc,
+  build/wt/pmaports-phoc), repo branch phoc-rotate (ci/build-native + arm64
+  job, build/wt/main-phoc). Test files on the tablet in /run/phoctest
+  (gone at the next reboot); /usr/bin/phoc not touched.
+- Next three steps: unchanged, see PLAN.md "Next three steps".
+- Waits for the owner: submit the phoc MR from their gitlab.gnome.org
+  account (or say no); whether they want a live trial in their session
+  (logs out once).
+
 ## State 2026-10-24 15:05 (session "Mainline boot image testing", cameras)
 
 - The user asked for: all cores and both "GPUs" with activity (verified,
