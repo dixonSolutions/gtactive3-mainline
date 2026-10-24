@@ -1,0 +1,75 @@
+From 33709b908a4111813fc37680941026fea525c7e5 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 14:07:10 +1100
+Subject: [PATCH] libcamera: v4l2: Ask for non-coherent memory for internal
+ buffers
+
+The software ISP reads every raw frame on the CPU for its statistics and
+already syncs around those reads with DMA_BUF_IOCTL_SYNC. Buffers that
+V4L2VideoDevice::allocateBuffers() creates stay inside the pipeline
+handler, so request them with V4L2_MEMORY_FLAG_NON_COHERENT: drivers that
+set allow_cache_hints then give cacheable memory, others clear the flag.
+
+On the Exynos 9810 CSIS (SM-T570), CPU statistics on uncached 2064x1548
+RAW10 frames took 50 ms a frame.
+---
+ include/libcamera/internal/v4l2_videodevice.h |  1 +
+ src/libcamera/v4l2_videodevice.cpp            | 15 ++++++++++++++-
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/include/libcamera/internal/v4l2_videodevice.h b/include/libcamera/internal/v4l2_videodevice.h
+index 10367e4..a5fa210 100644
+--- a/include/libcamera/internal/v4l2_videodevice.h
++++ b/include/libcamera/internal/v4l2_videodevice.h
+@@ -279,6 +279,7 @@ private:
+ 
+ 	enum v4l2_buf_type bufferType_;
+ 	enum v4l2_memory memoryType_;
++	bool nonCoherent_ = false;
+ 
+ 	std::unique_ptr<V4L2BufferCache> cache_;
+ 	std::map<unsigned int, FrameBuffer *> queuedBuffers_;
+diff --git a/src/libcamera/v4l2_videodevice.cpp b/src/libcamera/v4l2_videodevice.cpp
+index ca87598..bdaeccc 100644
+--- a/src/libcamera/v4l2_videodevice.cpp
++++ b/src/libcamera/v4l2_videodevice.cpp
+@@ -1316,6 +1316,8 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
+ 	rb.count = count;
+ 	rb.type = bufferType_;
+ 	rb.memory = memoryType;
++	if (nonCoherent_ && count && memoryType == V4L2_MEMORY_MMAP)
++		rb.flags = V4L2_MEMORY_FLAG_NON_COHERENT;
+ 
+ 	ret = ioctl(VIDIOC_REQBUFS, &rb);
+ 	if (ret < 0) {
+@@ -1333,7 +1335,9 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
+ 		return -ENOMEM;
+ 	}
+ 
+-	LOG(V4L2, Debug) << rb.count << " buffers requested.";
++	LOG(V4L2, Debug) << rb.count << " buffers requested"
++			 << (rb.flags & V4L2_MEMORY_FLAG_NON_COHERENT ?
++			     ", non-coherent" : "");
+ 
+ 	return 0;
+ }
+@@ -1369,7 +1373,16 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
+ int V4L2VideoDevice::allocateBuffers(unsigned int count,
+ 				     std::vector<std::unique_ptr<FrameBuffer>> *buffers)
+ {
++	/*
++	 * Buffers allocated here stay inside the pipeline handler, whose
++	 * consumers (the software ISP) bracket CPU access with
++	 * DMA_BUF_IOCTL_SYNC. Ask for cacheable memory where the driver
++	 * allows it: CPU reads from uncached memory are several times
++	 * slower. Drivers without cache hints clear the flag.
++	 */
++	nonCoherent_ = true;
+ 	int ret = createBuffers(count, buffers);
++	nonCoherent_ = false;
+ 	if (ret < 0)
+ 		return ret;
+ 
+-- 
+2.56.0
+

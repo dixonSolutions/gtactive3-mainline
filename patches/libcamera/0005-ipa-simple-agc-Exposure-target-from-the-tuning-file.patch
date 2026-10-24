@@ -1,0 +1,77 @@
+From 598dcf9bb502c9cd21938425c5a431200a56b4ef Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 14:17:55 +1100
+Subject: [PATCH] ipa: simple: agc: Exposure target from the tuning file
+
+The AGC aims the mean of its five-bin luminance histogram at mid-scale.
+The histogram is of linear (pre-gamma) values, so mid-scale is about 50%
+grey and comes out near 73% after gamma: bright scenes look washed out
+on the SM-T570 cameras. Read the target from the tuning file ("target",
+1..5, default unchanged).
+---
+ src/ipa/simple/algorithms/agc.cpp | 18 +++++++++++++++++-
+ src/ipa/simple/algorithms/agc.h   |  4 ++++
+ 2 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index a13a755..b7e61ee 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -62,15 +62,31 @@ static constexpr float kExpProportionalGain = 0.04;
+ static constexpr float kExpMaxStep = 0.15;
+ 
+ Agc::Agc()
++	: exposureTarget_(kExposureOptimal)
+ {
+ }
+ 
++/**
++ * \copydoc libcamera::ipa::Algorithm::init
++ *
++ * The mean sample value the exposure aims for, on the 1..5 scale of the
++ * five-bin histogram of the (linear, pre-gamma) luminance, can be tuned
++ * per sensor with "target". The default, mid-scale, is about 50% linear
++ * grey, which gamma lifts to ~73%: bright scenes come out washed out.
++ */
++int Agc::init([[maybe_unused]] IPAContext &context, const ValueNode &tuningData)
++{
++	exposureTarget_ = std::clamp(tuningData["target"].get<float>(kExposureOptimal),
++				     1.0f, static_cast<float>(kExposureBinsCount));
++	return 0;
++}
++
+ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
+ {
+ 	int32_t &exposure = frameContext.sensor.exposure;
+ 	double &again = frameContext.sensor.gain;
+ 
+-	double error = kExposureOptimal - exposureMSV;
++	double error = exposureTarget_ - exposureMSV;
+ 
+ 	if (std::abs(error) <= kExposureSatisfactory)
+ 		return;
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 112d9f5..57ef6f3 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -19,6 +19,8 @@ public:
+ 	Agc();
+ 	~Agc() = default;
+ 
++	int init(IPAContext &context, const ValueNode &tuningData) override;
++
+ 	void process(IPAContext &context, const uint32_t frame,
+ 		     IPAFrameContext &frameContext,
+ 		     const SwIspStats *stats,
+@@ -26,6 +28,8 @@ public:
+ 
+ private:
+ 	void updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV);
++
++	float exposureTarget_;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */
+-- 
+2.56.0
+

@@ -1,0 +1,561 @@
+From 579cec8c962e75da9e1590739ede0cdd2a5ea101 Mon Sep 17 00:00:00 2001
+From: dixonSolutions <203963471+dixonSolutions@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 14:21:50 +1100
+Subject: [PATCH] ipa: simple: Contrast autofocus with a focus lens
+
+The simple pipeline handler never drove a focus lens, so modules with a
+voice coil (the SM-T570's S5K3L6 + DW9808) stayed at a fixed position.
+
+- SwStatsCpu (packed 10-bit Bayer): a focus measure, the squared green
+  differences within and between sampled 2x2 blocks over the central
+  third of each statistics line, and the green sum it was taken over.
+- IPA: an Af algorithm, enabled by an "Af" block in the sensor tuning
+  file: coarse scan over the lens range, fine scan around the best
+  coarse step, hold; rescan when the measure drops or the brightness
+  changes for a few statistics frames.
+- IPA interface: setFocusPosition(int32), forwarded by SoftwareIsp to the
+  simple pipeline handler, which moves the sensor's CameraLens.
+---
+ .../internal/software_isp/software_isp.h      |   1 +
+ .../internal/software_isp/swisp_stats.h       |  11 +
+ include/libcamera/ipa/soft.mojom              |   1 +
+ src/ipa/simple/algorithms/af.cpp              | 189 ++++++++++++++++++
+ src/ipa/simple/algorithms/af.h                |  66 ++++++
+ src/ipa/simple/algorithms/meson.build         |   1 +
+ src/ipa/simple/ipa_context.h                  |   6 +
+ src/ipa/simple/soft_simple.cpp                |   5 +
+ src/libcamera/pipeline/simple/simple.cpp      |  11 +
+ src/libcamera/software_isp/software_isp.cpp   |   4 +
+ src/libcamera/software_isp/swstats_cpu.cpp    |  42 ++++
+ 11 files changed, 337 insertions(+)
+ create mode 100644 src/ipa/simple/algorithms/af.cpp
+ create mode 100644 src/ipa/simple/algorithms/af.h
+
+diff --git a/include/libcamera/internal/software_isp/software_isp.h b/include/libcamera/internal/software_isp/software_isp.h
+index 4f72dce..63ca20d 100644
+--- a/include/libcamera/internal/software_isp/software_isp.h
++++ b/include/libcamera/internal/software_isp/software_isp.h
+@@ -87,6 +87,7 @@ public:
+ 	Signal<uint32_t, uint32_t> ispStatsReady;
+ 	Signal<uint32_t, const ControlList &> metadataReady;
+ 	Signal<const ControlList &> setSensorControls;
++	Signal<int32_t> setFocusPosition;
+ 
+ private:
+ 	void saveIspParams();
+diff --git a/include/libcamera/internal/software_isp/swisp_stats.h b/include/libcamera/internal/software_isp/swisp_stats.h
+index d9d0d9b..9f19cc7 100644
+--- a/include/libcamera/internal/software_isp/swisp_stats.h
++++ b/include/libcamera/internal/software_isp/swisp_stats.h
+@@ -43,6 +43,17 @@ struct SwIspStats {
+ 	 * \brief A histogram of luminance values of all the sampled pixels
+ 	 */
+ 	Histogram yHistogram;
++	/**
++	 * \brief Focus measure: sum of green-pixel differences (diagonal
++	 * within a 2x2 block and horizontal between sampled blocks) over the
++	 * central third of the window, packed 10-bit Bayer only
++	 */
++	uint64_t sharpness;
++	/**
++	 * \brief Sum of the green values the sharpness was taken over, to
++	 * normalise it against exposure changes
++	 */
++	uint64_t sharpnessBase;
+ };
+ 
+ } /* namespace libcamera */
+diff --git a/include/libcamera/ipa/soft.mojom b/include/libcamera/ipa/soft.mojom
+index 77328c5..9361afd 100644
+--- a/include/libcamera/ipa/soft.mojom
++++ b/include/libcamera/ipa/soft.mojom
+@@ -33,6 +33,7 @@ interface IPASoftInterface {
+ 
+ interface IPASoftEventInterface {
+ 	setSensorControls(libcamera.ControlList sensorControls);
++	setFocusPosition(int32 position);
+ 	setIspParams();
+ 	metadataReady(uint32 frame, libcamera.ControlList metadata);
+ };
+diff --git a/src/ipa/simple/algorithms/af.cpp b/src/ipa/simple/algorithms/af.cpp
+new file mode 100644
+index 0000000..4d8c0f7
+--- /dev/null
++++ b/src/ipa/simple/algorithms/af.cpp
+@@ -0,0 +1,189 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Contrast autofocus for the simple software ISP
++ *
++ * A full-range coarse scan of the lens, a fine scan around the sharpest
++ * coarse position, then hold. The focus measure is the green-pixel
++ * gradient energy the CPU statistics gather over the central third of the
++ * frame, normalised by its brightness. A held position is rescanned when
++ * the measure falls well below the value it locked at, or the scene
++ * brightness changes a lot, both for a few statistics frames in a row.
++ *
++ * The algorithm only runs when the sensor's tuning file has an "Af" block
++ * (the sensor has a focus lens); keys: min, max, park, coarseStep,
++ * fineStep, rescanDrop, rescanLuma, holdStats.
++ */
++
++#include "af.h"
++
++#include <algorithm>
++#include <cmath>
++
++#include <libcamera/base/log.h>
++
++namespace libcamera {
++
++LOG_DEFINE_CATEGORY(IPASoftAf)
++
++namespace ipa::soft::algorithms {
++
++/* a coarse step this far below the best counts as past the peak */
++static constexpr double kPastPeak = 0.85;
++/* best/worst coarse measure below this: nothing to focus on */
++static constexpr double kMinContrast = 1.08;
++
++int Af::init([[maybe_unused]] IPAContext &context, const ValueNode &tuningData)
++{
++	min_ = tuningData["min"].get<int32_t>(min_);
++	max_ = tuningData["max"].get<int32_t>(max_);
++	park_ = std::clamp(tuningData["park"].get<int32_t>((min_ + max_) / 2), min_, max_);
++	coarseStep_ = std::max(tuningData["coarseStep"].get<int32_t>(coarseStep_), 1);
++	fineStep_ = std::max(tuningData["fineStep"].get<int32_t>(fineStep_), 1);
++	rescanDrop_ = tuningData["rescanDrop"].get<float>(rescanDrop_);
++	rescanLuma_ = tuningData["rescanLuma"].get<float>(rescanLuma_);
++	holdStats_ = tuningData["holdStats"].get<unsigned int>(holdStats_);
++
++	return 0;
++}
++
++int Af::configure(IPAContext &context,
++		  [[maybe_unused]] const IPAConfigInfo &configInfo)
++{
++	/* configure() resets the active state: (re)enable here */
++	context.activeState.af.enabled = true;
++	moveTo(context, park_);
++	startScan(context);
++	return 0;
++}
++
++void Af::moveTo(IPAContext &context, int32_t position)
++{
++	position_ = std::clamp(position, min_, max_);
++	context.activeState.af.position = position_;
++	context.activeState.af.changed = true;
++	/*
++	 * Statistics come every fourth frame: the lens is set while the
++	 * next three are in flight and has settled before the one after
++	 * them is exposed, so no statistics frame is skipped.
++	 */
++}
++
++void Af::startScan(IPAContext &context)
++{
++	scan_.clear();
++	for (int32_t p = min_; p < max_; p += coarseStep_)
++		scan_.push_back(p);
++	scan_.push_back(max_);
++	scanIndex_ = 0;
++	bestMeasure_ = -1.0;
++	minMeasure_ = 1e30;
++	belowBest_ = 0;
++	state_ = State::Coarse;
++	moveTo(context, scan_[0]);
++	LOG(IPASoftAf, Debug) << "coarse scan, " << scan_.size() << " steps";
++}
++
++void Af::startFine(IPAContext &context)
++{
++	int32_t lo = std::max(bestPosition_ - coarseStep_, min_);
++	int32_t hi = std::min(bestPosition_ + coarseStep_, max_);
++
++	scan_.clear();
++	for (int32_t p = lo; p <= hi; p += fineStep_)
++		scan_.push_back(p);
++	scanIndex_ = 0;
++	bestMeasure_ = -1.0;
++	state_ = State::Fine;
++	moveTo(context, scan_[0]);
++}
++
++void Af::process(IPAContext &context,
++		 [[maybe_unused]] const uint32_t frame,
++		 [[maybe_unused]] IPAFrameContext &frameContext,
++		 const SwIspStats *stats,
++		 [[maybe_unused]] ControlList &metadata)
++{
++	if (!stats->valid || !stats->sharpnessBase)
++		return;
++
++	double luma = static_cast<double>(stats->sharpnessBase);
++	double measure = static_cast<double>(stats->sharpness) / luma;
++
++	switch (state_) {
++	case State::Coarse:
++	case State::Fine:
++		if (measure > bestMeasure_) {
++			bestMeasure_ = measure;
++			bestPosition_ = scan_[scanIndex_];
++			belowBest_ = 0;
++		} else if (measure < bestMeasure_ * kPastPeak) {
++			belowBest_++;
++		}
++		minMeasure_ = std::min(minMeasure_, measure);
++		LOG(IPASoftAf, Debug)
++			<< (state_ == State::Coarse ? "coarse " : "fine ")
++			<< scan_[scanIndex_] << ": " << measure;
++
++		/* a coarse scan stops once it is clearly past a peak */
++		if (++scanIndex_ < scan_.size() &&
++		    !(state_ == State::Coarse && belowBest_ >= 2)) {
++			moveTo(context, scan_[scanIndex_]);
++			break;
++		}
++
++		if (state_ == State::Coarse) {
++			/* a flat scene has no peak to find: park mid-distance */
++			if (bestMeasure_ < minMeasure_ * kMinContrast) {
++				LOG(IPASoftAf, Debug) << "no contrast, parking";
++				bestPosition_ = park_;
++				moveTo(context, park_);
++				state_ = State::Locked;
++				lockedMeasure_ = 0.0;
++				lowCount_ = 0;
++				sinceLock_ = 0;
++				break;
++			}
++			startFine(context);
++			break;
++		}
++
++		moveTo(context, bestPosition_);
++		state_ = State::Locked;
++		lockedMeasure_ = 0.0;
++		lowCount_ = 0;
++		sinceLock_ = 0;
++		LOG(IPASoftAf, Info) << "focus locked at " << bestPosition_;
++		break;
++
++	case State::Locked:
++		/* the first frame at the final position sets the reference */
++		if (lockedMeasure_ == 0.0) {
++			lockedMeasure_ = measure;
++			lockedLuma_ = luma;
++			break;
++		}
++
++		sinceLock_++;
++		lockedMeasure_ = std::max(lockedMeasure_, measure);
++
++		if (measure < lockedMeasure_ * (1.0 - rescanDrop_) ||
++		    std::abs(luma - lockedLuma_) > lockedLuma_ * rescanLuma_)
++			lowCount_++;
++		else
++			lowCount_ = 0;
++
++		if (lowCount_ >= 3 && sinceLock_ >= holdStats_) {
++			LOG(IPASoftAf, Debug)
++				<< "scene changed (" << measure << " vs "
++				<< lockedMeasure_ << "), rescanning";
++			startScan(context);
++		}
++		break;
++	}
++}
++
++REGISTER_IPA_ALGORITHM(Af, "Af")
++
++} /* namespace ipa::soft::algorithms */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/algorithms/af.h b/src/ipa/simple/algorithms/af.h
+new file mode 100644
+index 0000000..3edd214
+--- /dev/null
++++ b/src/ipa/simple/algorithms/af.h
+@@ -0,0 +1,66 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Contrast autofocus for the simple software ISP
++ */
++
++#pragma once
++
++#include <vector>
++
++#include "algorithm.h"
++
++namespace libcamera {
++
++namespace ipa::soft::algorithms {
++
++class Af : public Algorithm
++{
++public:
++	Af() = default;
++	~Af() = default;
++
++	int init(IPAContext &context, const ValueNode &tuningData) override;
++	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
++	void process(IPAContext &context, const uint32_t frame,
++		     IPAFrameContext &frameContext,
++		     const SwIspStats *stats,
++		     ControlList &metadata) override;
++
++private:
++	enum class State {
++		Coarse,
++		Fine,
++		Locked,
++	};
++
++	void moveTo(IPAContext &context, int32_t position);
++	void startScan(IPAContext &context);
++	void startFine(IPAContext &context);
++
++	int32_t min_ = 0;
++	int32_t max_ = 1023;
++	int32_t park_ = 512;
++	int32_t coarseStep_ = 96;
++	int32_t fineStep_ = 24;
++	float rescanDrop_ = 0.5f;
++	float rescanLuma_ = 0.35f;
++	unsigned int holdStats_ = 15;
++
++	State state_ = State::Locked;
++	int32_t position_ = 0;
++	std::vector<int32_t> scan_;
++	size_t scanIndex_ = 0;
++	int32_t bestPosition_ = 0;
++	double bestMeasure_ = 0.0;
++	double minMeasure_ = 0.0;
++	unsigned int belowBest_ = 0;
++
++	double lockedMeasure_ = 0.0;
++	double lockedLuma_ = 0.0;
++	unsigned int lowCount_ = 0;
++	unsigned int sinceLock_ = 0;
++};
++
++} /* namespace ipa::soft::algorithms */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/algorithms/meson.build b/src/ipa/simple/algorithms/meson.build
+index 73c6372..1cd58d5 100644
+--- a/src/ipa/simple/algorithms/meson.build
++++ b/src/ipa/simple/algorithms/meson.build
+@@ -2,6 +2,7 @@
+ 
+ soft_simple_ipa_algorithms = files([
+     'adjust.cpp',
++    'af.cpp',
+     'awb.cpp',
+     'agc.cpp',
+     'blc.cpp',
+diff --git a/src/ipa/simple/ipa_context.h b/src/ipa/simple/ipa_context.h
+index 8ccfacb..11cb5c5 100644
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -55,6 +55,12 @@ struct IPAActiveState {
+ 
+ 	Matrix<float, 3, 3> combinedMatrix;
+ 
++	struct {
++		bool enabled;
++		bool changed;
++		int32_t position;
++	} af;
++
+ 	struct {
+ 		float gamma;
+ 		/* 0..2 range, 1.0 = normal */
+diff --git a/src/ipa/simple/soft_simple.cpp b/src/ipa/simple/soft_simple.cpp
+index 8bffd2a..93c6844 100644
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -323,6 +323,11 @@ void IPASoftSimple::processStats(const uint32_t frame,
+ 		algo->process(context_, frame, frameContext, stats_, metadata);
+ 	metadataReady.emit(frame, metadata);
+ 
++	if (context_.activeState.af.enabled && context_.activeState.af.changed) {
++		context_.activeState.af.changed = false;
++		setFocusPosition.emit(context_.activeState.af.position);
++	}
++
+ 	/* Sanity check */
+ 	if (!sensorControls.contains(V4L2_CID_EXPOSURE) ||
+ 	    !sensorControls.contains(V4L2_CID_ANALOGUE_GAIN)) {
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 181a99d..7b7baff 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -33,6 +33,7 @@
+ #include <libcamera/stream.h>
+ 
+ #include "libcamera/internal/camera.h"
++#include "libcamera/internal/camera_lens.h"
+ #include "libcamera/internal/camera_manager.h"
+ #include "libcamera/internal/camera_sensor.h"
+ #include "libcamera/internal/camera_sensor_properties.h"
+@@ -373,6 +374,7 @@ private:
+ 	void ispStatsReady(uint32_t frame, uint32_t bufferId);
+ 	void metadataReady(uint32_t frame, const ControlList &metadata);
+ 	void setSensorControls(const ControlList &sensorControls);
++	void setFocusPosition(int32_t position);
+ };
+ 
+ class SimpleCameraConfiguration : public CameraConfiguration
+@@ -627,6 +629,7 @@ int SimpleCameraData::init()
+ 			swIsp_->ispStatsReady.connect(this, &SimpleCameraData::ispStatsReady);
+ 			swIsp_->metadataReady.connect(this, &SimpleCameraData::metadataReady);
+ 			swIsp_->setSensorControls.connect(this, &SimpleCameraData::setSensorControls);
++			swIsp_->setFocusPosition.connect(this, &SimpleCameraData::setFocusPosition);
+ 		}
+ 	}
+ 
+@@ -1042,6 +1045,14 @@ void SimpleCameraData::metadataReady(uint32_t frame, const ControlList &metadata
+ 	tryCompleteRequest(info->request);
+ }
+ 
++void SimpleCameraData::setFocusPosition(int32_t position)
++{
++	CameraLens *lens = sensor_->focusLens();
++
++	if (lens)
++		lens->setFocusPosition(position);
++}
++
+ void SimpleCameraData::setSensorControls(const ControlList &sensorControls)
+ {
+ 	delayedCtrls_->push(sensorControls);
+diff --git a/src/libcamera/software_isp/software_isp.cpp b/src/libcamera/software_isp/software_isp.cpp
+index 74973d9..795832d 100644
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -185,6 +185,10 @@ SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, const CameraSensor *sensor,
+ 					    metadataReady.emit(frame, metadata);
+ 				    });
+ 	ipa_->setSensorControls.connect(this, &SoftwareIsp::setSensorCtrls);
++	ipa_->setFocusPosition.connect(this,
++				       [this](int32_t position) {
++					       setFocusPosition.emit(position);
++				       });
+ 
+ 	debayer_->moveToThread(&ispWorkerThread_);
+ }
+diff --git a/src/libcamera/software_isp/swstats_cpu.cpp b/src/libcamera/software_isp/swstats_cpu.cpp
+index 0d33594..2749708 100644
+--- a/src/libcamera/software_isp/swstats_cpu.cpp
++++ b/src/libcamera/software_isp/swstats_cpu.cpp
+@@ -195,6 +195,34 @@ static constexpr unsigned int kBlueYMul = 29; /* 0.114 * 256 */
+ 	stats.sum_.g() += sumG;     \
+ 	stats.sum_.b() += sumB;
+ 
++/*
++ * Focus measure over the central third of the line: the two greens of a
++ * 2x2 block differ by the diagonal detail, consecutive sampled blocks by
++ * the horizontal detail. Squared, so strong edges dominate sensor noise.
++ */
++#define SWSTATS_START_SHARPNESS()                            \
++	const unsigned int afStart = widthInBytes / 15 * 5;  \
++	const unsigned int afEnd = widthInBytes / 15 * 10;   \
++	int gPrev = -1;                                      \
++	uint64_t sharp = 0;                                  \
++	uint64_t sharpBase = 0;
++
++#define SWSTATS_ACCUMULATE_SHARPNESS(x)                      \
++	if ((x) >= afStart && (x) < afEnd) {                 \
++		int dd = static_cast<int>(g) - g2;           \
++		sharp += dd * dd;                            \
++		if (gPrev >= 0) {                            \
++			int dh = static_cast<int>(g) - gPrev;\
++			sharp += dh * dh;                    \
++		}                                            \
++		gPrev = g;                                   \
++		sharpBase += g;                              \
++	}
++
++#define SWSTATS_FINISH_SHARPNESS()        \
++	stats.sharpness += sharp;         \
++	stats.sharpnessBase += sharpBase;
++
+ void SwStatsCpu::statsBGGR8Line0(const uint8_t *src[], SwIspStats &stats)
+ {
+ 	const uint8_t *src0 = src[1] + window_.x;
+@@ -283,6 +311,8 @@ void SwStatsCpu::statsBGGR10PLine0(const uint8_t *src[], SwIspStats &stats)
+ 
+ 	SWSTATS_START_LINE_STATS(uint8_t)
+ 
++	SWSTATS_START_SHARPNESS()
++
+ 	/* x += 5 sample every other 2x2 block */
+ 	for (unsigned int x = 0; x < widthInBytes; x += 5) {
+ 		/* BGGR */
+@@ -290,12 +320,14 @@ void SwStatsCpu::statsBGGR10PLine0(const uint8_t *src[], SwIspStats &stats)
+ 		g = src0[x + 1];
+ 		g2 = src1[x];
+ 		r = src1[x + 1];
++		SWSTATS_ACCUMULATE_SHARPNESS(x)
+ 		g = (g + g2) / 2;
+ 		/* Data is already 8 bits, divide by 1 */
+ 		SWSTATS_ACCUMULATE_LINE_STATS(1)
+ 	}
+ 
+ 	SWSTATS_FINISH_LINE_STATS()
++	SWSTATS_FINISH_SHARPNESS()
+ }
+ 
+ void SwStatsCpu::statsGBRG10PLine0(const uint8_t *src[], SwIspStats &stats)
+@@ -309,6 +341,8 @@ void SwStatsCpu::statsGBRG10PLine0(const uint8_t *src[], SwIspStats &stats)
+ 
+ 	SWSTATS_START_LINE_STATS(uint8_t)
+ 
++	SWSTATS_START_SHARPNESS()
++
+ 	/* x += 5 sample every other 2x2 block */
+ 	for (unsigned int x = 0; x < widthInBytes; x += 5) {
+ 		/* GBRG */
+@@ -316,12 +350,14 @@ void SwStatsCpu::statsGBRG10PLine0(const uint8_t *src[], SwIspStats &stats)
+ 		b = src0[x + 1];
+ 		r = src1[x];
+ 		g2 = src1[x + 1];
++		SWSTATS_ACCUMULATE_SHARPNESS(x)
+ 		g = (g + g2) / 2;
+ 		/* Data is already 8 bits, divide by 1 */
+ 		SWSTATS_ACCUMULATE_LINE_STATS(1)
+ 	}
+ 
+ 	SWSTATS_FINISH_LINE_STATS()
++	SWSTATS_FINISH_SHARPNESS()
+ }
+ 
+ void SwStatsCpu::statsQuadRGGB10P(const uint8_t *src[], SwIspStats &stats)
+@@ -421,6 +457,8 @@ void SwStatsCpu::startFrame(uint32_t frame)
+ 	for (auto &s : stats_) {
+ 		s.sum_ = RGB<uint64_t>({ 0, 0, 0 });
+ 		s.yHistogram.fill(0);
++		s.sharpness = 0;
++		s.sharpnessBase = 0;
+ 	}
+ }
+ 
+@@ -438,8 +476,12 @@ void SwStatsCpu::finishFrame(uint32_t frame, uint32_t bufferId)
+ 	if (valid) {
+ 		sharedStats_->sum_ = RGB<uint64_t>({ 0, 0, 0 });
+ 		sharedStats_->yHistogram.fill(0);
++		sharedStats_->sharpness = 0;
++		sharedStats_->sharpnessBase = 0;
+ 		for (const auto &s : stats_) {
+ 			sharedStats_->sum_ += s.sum_;
++			sharedStats_->sharpness += s.sharpness;
++			sharedStats_->sharpnessBase += s.sharpnessBase;
+ 			for (unsigned int j = 0; j < SwIspStats::kYHistogramSize; j++)
+ 				sharedStats_->yHistogram[j] += s.yHistogram[j];
+ 		}
+-- 
+2.56.0
+
