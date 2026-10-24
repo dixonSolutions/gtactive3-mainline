@@ -141,6 +141,16 @@ without `sd-uhs-sdr104`, then without `sd-uhs-sdr50`. In Phosh: automount.
 - B Duranium: blacklist the three modules for the first boot, modprobe by
   hand, repeat; C `cam -l`, `cam -c 1 --capture=10`; D Snapshot in Phosh
   (screenshot, rotation).
+- E Stock libcamera (no drop-ins): WirePlumber maps /usr/lib/libcamera;
+  `cam -c 1 --capture=180` from a tools copy: debayer ms/frame in the
+  Benchmark log (cacheable buffers: ~11 ms, uncached ~18 ms); the CSIS
+  interrupts grow by one per frame (no ERR_OVER loop);
+  `cat /sys/devices/platform/soc@0/16230000.csis/af_status`: samples and
+  sample_us (budget < 1 ms, < 2 % of a core). PASS 2026-10-24 (r24 + the
+  cand/1035 csis/vb2-dc as live modules, user "good" in Snapshot).
+- F Autofocus (user): back camera near (~20 cm) then far (> 2 m), each
+  sharp within ~2 s; covering the lens parks it (af_status "locked" at
+  the park position), uncovering rescans.
 
 ### D8. Sensor hub, auto-rotate (drv/shub3, SHUB)
 
