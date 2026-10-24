@@ -20,7 +20,7 @@ yourself, autonomously, overnight. Keep going until the mission is met.
   `systemd-run sh /var/tmp/audio-fix/test.sh restore` undoes the modules and
   the UCM). The owner heard the speaker and recorded their voice.
 - Permanent, handed to the coordinator and "Mainline boot image testing"
-  for cand/1035 / r25: src/linux drv/audio-fix 0f44582cd (worktree
+  for cand/1035 / r25: src/linux drv/audio-fix 7e3507579 (worktree
   build/wt/audio-fix; drv/jack and drv/audio2 superseded) and device r48
   (pmaports a5e035f, UCM JackControl/JackHWMute).
 - Waits for the owner: plug and unplug headphones (owner.sh plug/unplug),
